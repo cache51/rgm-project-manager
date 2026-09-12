@@ -1,0 +1,16 @@
+{
+  "name": "rgm-project-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Developer ↔ tester communication hub — first build slice (audit foundation + agent-handoff contracts)",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

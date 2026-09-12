@@ -1,0 +1,94 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  packetEntryName, packetEntryNames, packetSlug, packetArchiveName,
+  isSafeRelativePath, assertSafeRelativePath, packetPathFor, buildPacketMeta
+} from '../src/packet.js';
+
+test('packet entry names are server-assigned and zero-padded', () => {
+  assert.equal(packetEntryName(1), 'screenshot_01.png');
+  assert.equal(packetEntryName(12), 'screenshot_12.png');
+  assert.deepEqual(packetEntryNames(3),
+    ['screenshot_01.png', 'screenshot_02.png', 'screenshot_03.png']);
+  assert.throws(() => packetEntryName(0), RangeError);
+  assert.throws(() => packetEntryNames(-1), RangeError);
+});
+
+// ── RGM3-007: zip-slip ─────────────────────────────────────────────────────
+const UNSAFE = [
+  '../etc/passwd',
+  '../../.git/hooks/pre-commit',
+  'a/../../b.png',
+  '/etc/passwd',
+  'C:/Windows/system32/evil.dll',
+  '\\\\server\\share\\evil.png',
+  '~/.ssh/authorized_keys',
+  'dir//file.png',
+  './file.png',
+  'nul\0byte.png',
+  'back\\slash.png',
+  '..',
+  '.',
+  ''
+];
+
+test('path guard rejects every traversal shape', () => {
+  for (const p of UNSAFE) {
+    assert.equal(isSafeRelativePath(p), false, `should reject: ${JSON.stringify(p)}`);
+    assert.throws(() => assertSafeRelativePath(p), /unsafe packet entry path/);
+  }
+});
+
+test('path guard accepts ordinary names', () => {
+  for (const p of ['bug.md', 'meta.json', 'screenshot_01.png', 'a/b/c.png']) {
+    assert.equal(isSafeRelativePath(p), true, `should accept: ${p}`);
+    assert.equal(assertSafeRelativePath(p), p);
+  }
+});
+
+test('packetPathFor refuses a traversal entry even under a valid base', () => {
+  assert.equal(packetPathFor('/repo/.rgm/BUG-142', 'bug.md'), '/repo/.rgm/BUG-142/bug.md');
+  assert.throws(() => packetPathFor('/repo/.rgm/BUG-142', '../../.git/config'));
+  // trailing slash on the base is normalised, not doubled
+  assert.equal(packetPathFor('/repo/.rgm/BUG-142/', 'bug.md'), '/repo/.rgm/BUG-142/bug.md');
+});
+
+test('a tester-supplied filename never becomes the archive name', () => {
+  const hostile = '../../../../.bashrc';
+  const name = packetArchiveName('BUG-142', 'Total carton count is wrong');
+  assert.equal(name, 'BUG-142-total-carton-count-is-wrong.zip');
+  assert.ok(!name.includes(hostile));
+  // slug can never carry a separator or a leading dash
+  assert.equal(packetSlug(hostile), 'bashrc');
+  assert.equal(packetSlug('--exec=oops'), 'exec-oops');
+  assert.equal(packetSlug(''), 'bug');
+  assert.ok(!packetSlug(hostile).startsWith('-'));
+});
+
+test('meta keeps the original filename as data, entry name as the path', () => {
+  const meta = buildPacketMeta({
+    bug: {
+      id: 'BUG-142', severity: 'high', status: 'fixing', tester: 'Nguyễn Thị Hoa',
+      createdAt: '2026-09-12T09:41:00Z', updatedAt: '2026-09-12T10:40:00Z',
+      milestoneCode: 'M2'
+    },
+    project: { id: 'p1', name: 'Packing', client: 'Lucky Brand', env: 'staging' },
+    attachments: [
+      { filename: '../../evil.png', contentType: 'image/png' },
+      { filename: 'Screen Shot 2026-09-12.png', contentType: 'image/png' }
+    ]
+  });
+
+  assert.equal(meta.attachments.length, 2);
+  // entry name is what touches the filesystem, and it is server-assigned
+  assert.deepEqual(meta.attachments.map(a => a.name),
+    ['screenshot_01.png', 'screenshot_02.png']);
+  for (const a of meta.attachments) assert.equal(isSafeRelativePath(a.name), true);
+  // the hostile original survives only as a string value
+  assert.equal(meta.attachments[0].original_filename, '../../evil.png');
+  assert.equal(isSafeRelativePath(meta.attachments[0].original_filename), false);
+  // serialising the meta cannot introduce a path
+  const json = JSON.stringify(meta);
+  assert.ok(json.includes('../../evil.png'));
+  assert.equal(meta.milestone, 'M2');
+});
