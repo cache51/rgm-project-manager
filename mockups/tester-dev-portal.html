@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RGM Project Manager — Mock UI</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#0f172a; --muted:#64748b; --line:#e2e8f0;
+    --side:#0f172a; --side-ink:#cbd5e1; --accent:#4f46e5; --accent-soft:#eef2ff;
+    --high:#dc2626; --high-bg:#fef2f2; --med:#d97706; --med-bg:#fffbeb; --low:#0891b2; --low-bg:#ecfeff;
+    --ok:#059669; --ok-bg:#ecfdf5; --radius:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,
+      "PingFang SC","Hiragino Sans GB","Noto Sans",sans-serif;
+    background:var(--bg); color:var(--ink); -webkit-font-smoothing:antialiased;
+  }
+  .app{display:flex;height:100vh;overflow:hidden}
+  .side{width:262px;flex:0 0 262px;background:var(--side);color:var(--side-ink);
+        display:flex;flex-direction:column;padding:18px 14px;gap:16px;overflow-y:auto}
+  .brand{display:flex;align-items:center;gap:10px;padding:0 6px}
+  .brand .mark{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,#6366f1,#a855f7);
+       display:grid;place-items:center;color:#fff;font-weight:700;font-size:13px;flex:0 0 auto}
+  .brand b{color:#fff;font-size:14px;letter-spacing:.2px}
+  .brand span{display:block;font-size:11px;color:#7c8798;font-weight:400}
+  .side h4{margin:0 6px 7px;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+           color:#64748b;font-weight:600}
+  .roles{display:flex;flex-direction:column;gap:4px}
+  .role{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:8px;cursor:pointer;
+        border:1px solid transparent;color:var(--side-ink);font-size:13px;transition:.15s}
+  .role:hover{background:#1e293b}
+  .role.on{background:#1e293b;border-color:#334155;color:#fff}
+  .role .dot{width:7px;height:7px;border-radius:50%;background:#475569;margin-left:auto;flex:0 0 auto}
+  .role.on .dot{background:#34d399;box-shadow:0 0 0 3px rgba(52,211,153,.18)}
+  .plist{display:flex;flex-direction:column;gap:3px}
+  .proj{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;cursor:pointer;
+        font-size:12.5px;color:var(--side-ink);transition:.15s;border:1px solid transparent}
+  .proj:hover{background:#1e293b}
+  .proj.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .proj .sq{width:8px;height:8px;border-radius:3px;flex:0 0 auto}
+  .proj .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .proj .cnt{margin-left:auto;font-size:10px;font-weight:700;background:#334155;color:#e2e8f0;
+        padding:1px 6px;border-radius:20px;flex:0 0 auto}
+  .proj.on .cnt{background:rgba(255,255,255,.28);color:#fff}
+  .proj .cnt.zero{background:transparent;color:#475569}
+  nav{display:flex;flex-direction:column;gap:3px}
+  .nav{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;cursor:pointer;
+       font-size:13px;color:var(--side-ink);transition:.15s}
+  .nav:hover{background:#1e293b}
+  .nav.on{background:#1e293b;color:#fff;box-shadow:inset 3px 0 0 var(--accent)}
+  .nav .badge{margin-left:auto;background:#334155;color:#e2e8f0;font-size:10.5px;font-weight:600;
+       padding:1px 7px;border-radius:20px}
+  .side .spacer{flex:1;min-height:8px}
+  .langbox{border-top:1px solid #1e293b;padding-top:12px}
+  .langrow{display:flex;gap:5px;padding:0 4px}
+  .lang{flex:1;text-align:center;padding:6px 4px;border-radius:7px;font-size:11.5px;cursor:pointer;
+        color:#94a3b8;border:1px solid #1e293b;transition:.15s}
+  .lang:hover{background:#1e293b}
+  .lang.on{background:#eef2ff;color:#3730a3;border-color:#c7d2fe;font-weight:600}
+  .synced{font-size:10.5px;color:#64748b;padding:0 6px;margin-top:2px}
+  .synced b{color:#94a3b8;font-weight:600}
+
+  main{flex:1;overflow-y:auto}
+  .top{background:var(--panel);border-bottom:1px solid var(--line);padding:16px 26px;
+       position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:14px}
+  .top .project{font-size:12px;color:var(--muted)}
+  .top h2{margin:1px 0 0;font-size:17px;letter-spacing:-.2px}
+  .top .right{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .pill{font-size:11px;padding:4px 10px;border-radius:20px;background:var(--accent-soft);
+        color:#3730a3;font-weight:600;white-space:nowrap}
+  .pill.gray{background:#f1f5f9;color:#475569}
+  .who{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+  .av{width:28px;height:28px;border-radius:50%;background:#e0e7ff;color:#3730a3;display:grid;
+      place-items:center;font-size:11px;font-weight:700}
+  .wrap{padding:22px 26px 60px;max-width:1180px}
+  .hint{background:#fff;border:1px dashed #cbd5e1;border-radius:var(--radius);padding:10px 14px;
+        font-size:12.5px;color:var(--muted);margin-bottom:18px}
+  .hint b{color:var(--ink)}
+  .grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(330px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+        padding:16px 17px;transition:.15s}
+  .card:hover{box-shadow:0 4px 16px rgba(15,23,42,.07);transform:translateY(-1px)}
+  .card h3{margin:0 0 4px;font-size:14.5px;letter-spacing:-.1px}
+  .card .meta{font-size:11.5px;color:var(--muted);margin-bottom:11px}
+  .st{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;
+      padding:3px 9px;border-radius:20px}
+  .st::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+  .st.ready{background:var(--med-bg);color:var(--med)}
+  .st.done{background:var(--ok-bg);color:var(--ok)}
+  .st.wip{background:var(--accent-soft);color:var(--accent)}
+  .st.plan{background:#f1f5f9;color:#64748b}
+  .bar{height:5px;border-radius:4px;background:#eef2f6;overflow:hidden;margin:12px 0 10px}
+  .bar i{display:block;height:100%;background:linear-gradient(90deg,#6366f1,#8b5cf6)}
+  .card .foot{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted)}
+  .stamps{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted);
+        margin:10px 0 0;padding-top:10px;border-top:1px dashed var(--line)}
+  .stamps div{display:flex;gap:6px;align-items:baseline}
+  .stamps em{font-style:normal;color:#94a3b8;min-width:66px;display:inline-block}
+  .stamps b{font-weight:600;color:#475569;font-variant-numeric:tabular-nums}
+  .stamps .rel{color:#94a3b8}
+  .btn{border:1px solid var(--line);background:#fff;color:var(--ink);padding:6px 12px;border-radius:8px;
+       font-size:12px;cursor:pointer;font-family:inherit;transition:.15s;white-space:nowrap}
+  .btn:hover{background:#f8fafc;border-color:#cbd5e1}
+  .btn.pri{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .btn.pri:hover{background:#4338ca}
+  .btn.sm{padding:4px 9px;font-size:11.5px}
+  .row{display:flex;gap:14px;align-items:flex-start;background:var(--panel);border:1px solid var(--line);
+       border-radius:var(--radius);padding:14px 16px;margin-bottom:10px;cursor:pointer;transition:.15s}
+  .row:hover{border-color:#c7d2fe;box-shadow:0 3px 12px rgba(79,70,229,.07)}
+  .sev{font-size:10.5px;font-weight:700;padding:3px 8px;border-radius:6px;letter-spacing:.03em;
+       flex:0 0 auto;margin-top:2px}
+  .sev.high{background:var(--high-bg);color:var(--high)}
+  .sev.med{background:var(--med-bg);color:var(--med)}
+  .sev.low{background:var(--low-bg);color:var(--low)}
+  .row .body{flex:1;min-width:0}
+  .row .id{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .row .ttl{font-weight:600;margin:2px 0 3px;letter-spacing:-.1px}
+  .row .sub{font-size:12px;color:var(--muted)}
+  .ts{font-variant-numeric:tabular-nums}
+  .row .tags{display:flex;gap:6px;margin-top:9px;flex-wrap:wrap}
+  .tag{font-size:11px;background:#f1f5f9;color:#475569;padding:2.5px 8px;border-radius:6px}
+  .shots{margin-left:auto;display:flex;gap:5px;flex:0 0 auto}
+  .shot{width:46px;height:34px;border-radius:5px;border:1px solid var(--line);overflow:hidden;
+        background:linear-gradient(#eef2f7,#dde5ee);position:relative}
+  .shot::after{content:"";position:absolute;left:5px;right:5px;top:6px;height:3px;border-radius:2px;
+        background:#b9c6d6;box-shadow:0 6px 0 #cbd5e1,0 12px 0 #dbe3ec}
+  .empty{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:34px;
+        text-align:center;color:var(--muted);font-size:13px}
+  .back{margin-bottom:14px}
+  .det{display:grid;grid-template-columns:1.35fr .95fr;gap:18px;align-items:start}
+  @media (max-width:1000px){.det{grid-template-columns:1fr}}
+  .box{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+       padding:17px 18px;margin-bottom:14px}
+  .box h4{margin:0 0 3px;font-size:13.5px}
+  .box .cap{font-size:11.5px;color:var(--muted);margin-bottom:12px}
+  .quote{background:#f8fafc;border-left:3px solid #cbd5e1;border-radius:0 8px 8px 0;
+         padding:12px 14px;font-size:13.5px;line-height:1.65;white-space:pre-wrap}
+  .quote.tr{background:var(--accent-soft);border-left-color:var(--accent)}
+  .kv{display:grid;grid-template-columns:104px 1fr;gap:8px 12px;font-size:12.5px}
+  .kv dt{color:var(--muted)} .kv dd{margin:0}
+  .kv dd .ts{font-variant-numeric:tabular-nums}
+  .kv dd .rel{color:#94a3b8;font-size:11.5px;margin-left:5px}
+
+  /* timeline */
+  .tl{position:relative;padding-left:22px}
+  .tl::before{content:"";position:absolute;left:6px;top:6px;bottom:6px;width:2px;background:var(--line)}
+  .ev{position:relative;padding-bottom:16px}
+  .ev:last-child{padding-bottom:0}
+  .ev::before{content:"";position:absolute;left:-22px;top:4px;width:11px;height:11px;border-radius:50%;
+        background:#fff;border:2.5px solid #cbd5e1;box-sizing:border-box}
+  .ev.filed::before{border-color:var(--high)}
+  .ev.translated::before{border-color:var(--accent)}
+  .ev.status::before{border-color:var(--med)}
+  .ev.comment::before{border-color:#94a3b8}
+  .ev.done::before{border-color:var(--ok)}
+  .ev .etxt{font-size:12.5px;line-height:1.5}
+  .ev .etxt b{font-weight:600}
+  .ev .etime{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;margin-top:2px}
+  .ev .etime .rel{color:#94a3b8;margin-left:5px}
+  .ev .enote{font-size:11.5px;color:var(--muted);background:#f8fafc;border-radius:6px;
+        padding:6px 9px;margin-top:6px;font-style:italic}
+
+  .shots-lg{display:flex;gap:10px;flex-wrap:wrap}
+  .shot-lg{width:100%;border:1px solid var(--line);border-radius:8px;overflow:hidden;cursor:zoom-in;
+        background:#fff}
+  .sbar{background:#f1f5f9;border-bottom:1px solid var(--line);padding:6px 9px;font-size:10.5px;
+        color:var(--muted);display:flex;gap:5px;align-items:center}
+  .sdot{width:7px;height:7px;border-radius:50%;background:#e2e8f0}
+  .sbody{padding:16px 14px;background:repeating-linear-gradient(180deg,#fff,#fff 13px,#f7f9fc 13px,#f7f9fc 14px)}
+  .fake{height:9px;border-radius:3px;background:#e8eef5;margin-bottom:9px}
+  .fake.w40{width:40%} .fake.w70{width:70%} .fake.w55{width:55%}
+  .fake.hl{background:#fde68a}
+  .statusbar{display:flex;gap:7px;flex-wrap:wrap}
+  .chip{font-size:11.5px;padding:4px 11px;border-radius:20px;border:1px solid var(--line);
+        cursor:pointer;background:#fff;color:#475569;font-family:inherit}
+  .chip:hover{background:#f8fafc}
+  .chip.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .copybox{background:linear-gradient(135deg,#1e293b,#0f172a);color:#e2e8f0;border-radius:var(--radius);
+        padding:15px 17px}
+  .copybox h4{color:#fff;margin:0 0 3px;font-size:13.5px}
+  .copybox p{margin:0 0 11px;font-size:11.5px;color:#94a3b8}
+  .copybox textarea{width:100%;height:150px;background:#0b1220;color:#cbd5e1;border:1px solid #334155;
+        border-radius:8px;padding:10px;font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
+        resize:vertical}
+  .copyrow{display:flex;gap:8px;margin-top:10px;align-items:center}
+
+  /* ── download surfaces (§10) ───────────────────────────────── */
+  .dlrow{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:12px}
+  .dlhint{font-size:11px;color:var(--muted);line-height:1.45}
+  .dl{font-size:10.5px;color:var(--muted);cursor:pointer;border:1px solid var(--line);
+      background:#fff;border-radius:5px;padding:1px 7px;margin-left:auto;font-family:inherit;
+      flex:0 0 auto}
+  .dl:hover{background:#eef2ff;color:var(--accent);border-color:#c7d2fe}
+  .clibox{background:#0f172a;border-radius:var(--radius);padding:15px 17px;margin-top:14px;color:#e2e8f0}
+  .clibox h4{color:#fff;margin:0 0 3px;font-size:13.5px}
+  .clibox p{margin:0 0 11px;font-size:11.5px;color:#94a3b8;line-height:1.5}
+  .cmdrow{display:flex;align-items:center;gap:9px;background:#0b1220;border:1px solid #334155;
+      border-radius:8px;padding:8px 11px}
+  .cmdrow code{color:#a5f3fc;flex:1;overflow-x:auto;white-space:nowrap;
+      font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+  .cmdrow .btn{background:#1e293b;border-color:#334155;color:#e2e8f0;flex:0 0 auto}
+  .cmdrow .btn:hover{background:#334155;border-color:#475569}
+  .cliout{margin-top:10px;font:11px/1.75 ui-monospace,SFMono-Regular,Menlo,monospace;color:#94a3b8}
+  .cliout b{color:#34d399;font-weight:600}
+  .cliout .arrow{color:#c7d2fe}
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);
+        background:#0f172a;color:#fff;padding:10px 18px;border-radius:9px;font-size:12.5px;
+        opacity:0;transition:.25s;pointer-events:none;z-index:99;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+  .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+  .lb{position:fixed;inset:0;background:rgba(15,23,42,.82);display:none;place-items:center;z-index:100;padding:40px}
+  .lb.on{display:grid}
+  .lb .inner{background:#fff;border-radius:12px;max-width:760px;width:100%;overflow:hidden}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="mark">RGM</div>
+      <div><b>Project Manager</b><span>Dev ↔ Tester</span></div>
+    </div>
+    <div class="roles">
+      <div class="role on" data-role="tester"><span>🧪</span><span id="r-tester">Tester</span><span class="dot"></span></div>
+      <div class="role" data-role="dev"><span>💻</span><span id="r-dev">Developer</span><span class="dot"></span></div>
+    </div>
+    <div>
+      <h4 id="h-proj">Projects</h4>
+      <div class="plist" id="plist"></div>
+    </div>
+    <div>
+      <h4 id="h-nav">Navigation</h4>
+      <nav id="nav">
+        <div class="nav on" data-view="milestones"><span>🎯</span><span id="n-ms">Milestones</span></div>
+        <div class="nav" data-view="bugs"><span>🐞</span><span id="n-bugs">Bugs</span>
+          <span class="badge" id="bg-count">0</span></div>
+      </nav>
+    </div>
+    <div class="spacer"></div>
+    <div class="langbox" id="langbox">
+      <h4 id="h-lang">Language</h4>
+      <div class="langrow">
+        <div class="lang on" data-lang="vi">Tiếng Việt</div>
+        <div class="lang" data-lang="zh">中文</div>
+        <div class="lang" data-lang="en">EN</div>
+      </div>
+      <div class="synced" id="synced"></div>
+    </div>
+  </aside>
+
+  <main>
+    <div class="top">
+      <div>
+        <div class="project" id="t-proj"></div>
+        <h2 id="t-title"></h2>
+      </div>
+      <div class="right">
+        <span class="pill" id="t-role"></span>
+        <span class="pill gray" id="t-env">Staging</span>
+        <div class="who"><div class="av" id="t-av">NH</div><span id="t-who"></span></div>
+      </div>
+    </div>
+    <div class="wrap">
+      <div class="hint" id="hint"></div>
+      <div id="view"></div>
+    </div>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="lb" id="lb"><div class="inner" id="lb-inner"></div></div>
+
+<script>
+/* ══════════  CLOCK: the mock's "now" — every relative time is derived from this  ══════════ */
+const NOW = new Date("2026-09-12T11:05:00+07:00");
+
+/* ═══════════════════════  DATA  ═══════════════════════ */
+const PROJECTS = [
+  {
+    id:"packing", color:"#6366f1",
+    vi:"Tự động hoá packing list", zh:"裝箱單自動化", en:"Packing List Automation",
+    client:"Lucky Brand", env:"staging", updated:"2026-09-12 10:40",
+    milestones:[
+      { code:"M1", vi:"Đọc dữ liệu packing list từ FGSystem", zh:"從 FGSystem 讀取裝箱單資料",
+        en:"Read packing-list data from FGSystem", st:"done", pct:100, dev:"陳大文",
+        due:"2026-09-02", completed:"2026-09-02 17:32", updated:"2026-09-02 17:32" },
+      { code:"M2", vi:"Chuẩn hoá snapshot + màn hình duyệt", zh:"快照正規化 + 人工審核畫面",
+        en:"Normalize snapshots + human review screen", st:"ready", pct:100, dev:"Alex Chan",
+        due:"2026-09-10", completed:"2026-09-10 15:08", updated:"2026-09-12 09:41" },
+      { code:"M3", vi:"Xuất Excel theo format Lucky Brand", zh:"依 Lucky Brand 格式匯出 Excel",
+        en:"Export Excel in Lucky Brand format", st:"wip", pct:60, dev:"陳大文",
+        due:"2026-09-22", completed:null, updated:"2026-09-11 18:20" },
+      { code:"M4", vi:"Bot upload lên TradeLink One (PackOne)", zh:"上傳至 TradeLink One 的機器人",
+        en:"Upload bot for TradeLink One (PackOne)", st:"plan", pct:0, dev:"—",
+        due:"2026-10-05", completed:null, updated:"2026-09-08 09:15" }
+    ],
+    bugs:[
+      { id:"BUG-142", ms:"M2", sev:"high", status:"fixing", tester:"Nguyễn Thị Hoa",
+        when:"2026-09-12 09:41", updated:"2026-09-12 10:40", shots:2,
+        tags:["Chrome","PO LB-2026-0871"],
+        viT:"Tổng số thùng (carton) hiển thị sai khi xuất packing list",
+        zhT:"匯出裝箱單時,總箱數顯示錯誤", enT:"Total carton count is wrong when exporting a packing list",
+        viDesc:"Khi tôi xuất packing list cho Lucky Brand, tổng số thùng hiển thị là 128 nhưng thực tế trong file Excel là 132. Tôi đã kiểm tra lại techpack thì đúng là 132 thùng. Có vẻ hệ thống bỏ sót 4 thùng ở dòng cuối.\n\nCác bước: Mở M2 → chọn PO LB-2026-0871 → bấm \"Xuất Excel\" → xem ô Total Cartons ở sheet Summary.",
+        zhDesc:"當我為 Lucky Brand 匯出裝箱單時,總箱數顯示為 128,但 Excel 檔案裡實際是 132。我重新核對 techpack,確實是 132 箱。看起來系統漏掉了最後一行的 4 箱。\n\n操作步驟:開啟 M2 → 選擇 PO LB-2026-0871 → 點「匯出 Excel」→ 查看 Summary 工作表的 Total Cartons 欄位。",
+        enDesc:"When exporting the Lucky Brand packing list, the total carton count shows 128 but the Excel file actually contains 132. I re-checked the techpack and it really is 132. It looks like the system dropped 4 cartons from the last row.\n\nSteps: Open M2 → select PO LB-2026-0871 → click \"Export Excel\" → check the Total Cartons cell on the Summary sheet.",
+        events:[
+          { at:"2026-09-12 09:41", kind:"filed", actor:"Nguyễn Thị Hoa", what:"filed",
+            note:null },
+          { at:"2026-09-12 09:41", kind:"translated", actor:"system", what:"translated", note:null },
+          { at:"2026-09-12 10:12", kind:"status", actor:"陳大文", what:"statusNew",
+            to:"fixing", note:null },
+          { at:"2026-09-12 10:40", kind:"comment", actor:"陳大文", what:"comment",
+            note:"Đã tái hiện được. Lỗi ở bước gộp dòng cuối — dòng thiếu cột CTN. Sẽ sửa trong M2.1." }
+        ] },
+      { id:"BUG-141", ms:"M2", sev:"med", status:"fixing", tester:"Trần Văn Minh",
+        when:"2026-09-11 16:20", updated:"2026-09-12 10:48", shots:1,
+        tags:["Chrome","Snapshot"],
+        viT:"Không lưu được ghi chú khi duyệt snapshot", zhT:"審核快照時無法儲存備註",
+        enT:"Cannot save a note while reviewing a snapshot",
+        viDesc:"Tôi nhập ghi chú vào ô \"Ghi chú duyệt\" rồi bấm Lưu, nhưng khi mở lại thì ghi chú bị mất. Đã thử 3 lần, trình duyệt Chrome, không báo lỗi gì.",
+        zhDesc:"我在「審核備註」欄位輸入備註後按儲存,重新開啟時備註卻不見了。試了 3 次,使用 Chrome,沒有任何錯誤訊息。",
+        enDesc:"I typed a note into the \"Review note\" field and clicked Save, but the note is gone when I reopen it. Tried 3 times on Chrome, no error message shown.",
+        events:[
+          { at:"2026-09-11 16:20", kind:"filed", actor:"Trần Văn Minh", what:"filed", note:null },
+          { at:"2026-09-11 16:21", kind:"translated", actor:"system", what:"translated", note:null },
+          { at:"2026-09-12 08:05", kind:"status", actor:"Alex Chan", what:"statusNew",
+            to:"fixing", note:null },
+          { at:"2026-09-12 10:48", kind:"comment", actor:"Alex Chan", what:"comment",
+            note:"Debounce + optimistic save. Patch ready, waiting on packM2.1." }
+        ] },
+      { id:"BUG-139", ms:"M1", sev:"low", status:"retest", tester:"Lê Thu Hà",
+        when:"2026-09-09 11:05", updated:"2026-09-11 14:33", shots:1,
+        tags:["Import","Excel"],
+        viT:"Cột số lượng PO bị trống sau khi import", zhT:"匯入後 PO 數量欄位空白",
+        enT:"PO quantity column is empty after import",
+        viDesc:"Sau khi import file PO, cột \"Số lượng\" bị trống ở một số dòng. Những dòng đó có số lượng trong file gốc.",
+        zhDesc:"匯入 PO 檔案後,部分資料列的「數量」欄位空白。這些列在原始檔案中是有數量的。",
+        enDesc:"After importing the PO file, the \"Quantity\" column is empty in some rows. Those rows do have a quantity in the source file.",
+        events:[
+          { at:"2026-09-09 11:05", kind:"filed", actor:"Lê Thu Hà", what:"filed", note:null },
+          { at:"2026-09-09 11:06", kind:"translated", actor:"system", what:"translated", note:null },
+          { at:"2026-09-10 15:22", kind:"status", actor:"陳大文", what:"statusNew", to:"fixing", note:null },
+          { at:"2026-09-11 14:33", kind:"done", actor:"陳大文", what:"statusTo",
+            to:"retest", note:null }
+        ] }
+    ]
+  },
+  {
+    id:"leave", color:"#0ea5e9",
+    vi:"Hệ thống nghỉ phép (HR Leave)", zh:"RGM 請假系統", en:"HR Leave Request System",
+    client:"RGM — Internal", env:"staging", updated:"2026-09-12 08:15",
+    milestones:[
+      { code:"M1", vi:"Đăng ký nghỉ phép + phê duyệt", zh:"請假申請與簽核流程",
+        en:"Leave request + approval flow", st:"done", pct:100, dev:"陳大文",
+        due:"2026-08-20", completed:"2026-08-19 16:44", updated:"2026-09-05 14:02" },
+      { code:"M2", vi:"Tính số ngày phép còn lại", zh:"剩餘特休天數計算",
+        en:"Remaining leave-day calculation", st:"ready", pct:100, dev:"Alex Chan",
+        due:"2026-09-08", completed:"2026-09-08 11:30", updated:"2026-09-12 08:15" },
+      { code:"M3", vi:"Báo cáo phép theo phòng ban", zh:"部門請假報表",
+        en:"Leave report by department", st:"wip", pct:35, dev:"Alex Chan",
+        due:"2026-09-30", completed:null, updated:"2026-09-11 09:12" }
+    ],
+    bugs:[
+      { id:"BUG-118", ms:"M2", sev:"high", status:"new", tester:"Phạm Quốc Anh",
+        when:"2026-09-12 08:15", updated:"2026-09-12 08:15", shots:2, tags:["Chrome","Annual leave"],
+        viT:"Số ngày phép còn lại bị trừ sai khi nghỉ nửa ngày",
+        zhT:"請半天假時剩餘天數扣減錯誤", enT:"Remaining leave days deducted wrongly for half-day leave",
+        viDesc:"Tôi đăng ký nghỉ nửa ngày (buổi sáng), nhưng hệ thống trừ mất 1 ngày phép. Số dư đúng phải là 7.5 ngày, hiển thị chỉ còn 6.5 ngày.\n\nTài khoản: pham.quoc.anh · Kỳ: 2026",
+        zhDesc:"我申請半天假(上午),但系統扣了整整 1 天特休。正確餘額應為 7.5 天,畫面卻顯示 6.5 天。\n\n帳號:pham.quoc.anh · 週期:2026",
+        enDesc:"I requested a half-day leave (morning), but the system deducted a full day. The correct balance should be 7.5 days; it shows 6.5.\n\nAccount: pham.quoc.anh · Period: 2026",
+        events:[
+          { at:"2026-09-12 08:15", kind:"filed", actor:"Phạm Quốc Anh", what:"filed", note:null },
+          { at:"2026-09-12 08:15", kind:"translated", actor:"system", what:"translated", note:null }
+        ] },
+      { id:"BUG-116", ms:"M1", sev:"med", status:"closed", tester:"Nguyễn Thị Hoa",
+        when:"2026-09-05 14:02", updated:"2026-09-11 09:15", shots:1, tags:["Safari","Email"],
+        viT:"Email thông báo phê duyệt không được gửi cho quản lý",
+        zhT:"簽核通知信未寄給主管", enT:"Approval notification email not sent to the manager",
+        viDesc:"Sau khi trưởng phòng duyệt, tôi không nhận được email thông báo. Kiểm tra hộp thư rác cũng không có.",
+        zhDesc:"主管簽核後,我沒有收到通知信。檢查垃圾郵件匣也沒有。",
+        enDesc:"After my manager approved, I never received the notification email. I checked the spam folder too.",
+        events:[
+          { at:"2026-09-05 14:02", kind:"filed", actor:"Nguyễn Thị Hoa", what:"filed", note:null },
+          { at:"2026-09-05 14:03", kind:"translated", actor:"system", what:"translated", note:null },
+          { at:"2026-09-08 10:15", kind:"status", actor:"Alex Chan", what:"statusNew", to:"fixing", note:null },
+          { at:"2026-09-10 09:47", kind:"done", actor:"Alex Chan", what:"statusTo", to:"retest", note:null },
+          { at:"2026-09-11 09:15", kind:"done", actor:"Nguyễn Thị Hoa", what:"retestPass",
+            note:"Đã kiểm thử lại trên Safari — email đã được gửi đúng. Đóng lỗi." }
+        ] }
+    ]
+  },
+  {
+    id:"ie", color:"#10b981",
+    vi:"Cân đối IE & Sắp xếp chuyền", zh:"IE 工時平衡與排線", en:"IE Balance & Line Arrangement",
+    client:"Internal — IE", env:"production", updated:"2026-09-11 10:30",
+    milestones:[
+      { code:"M1", vi:"Nhập định mức thời gian (SAM)", zh:"標準工時(SAM)匯入",
+        en:"Import standard time (SAM)", st:"done", pct:100, dev:"陳大文",
+        due:"2026-07-15", completed:"2026-07-14 18:05", updated:"2026-07-14 18:05" },
+      { code:"M2", vi:"Cân đối chuyền tự động", zh:"自動工站平衡",
+        en:"Automatic line balancing", st:"ready", pct:100, dev:"陳大文",
+        due:"2026-09-11", completed:"2026-09-11 09:40", updated:"2026-09-11 10:30" },
+      { code:"M3", vi:"Xuất sơ đồ sắp xếp chuyền", zh:"排線圖匯出",
+        en:"Export line-layout chart", st:"plan", pct:0, dev:"—",
+        due:"2026-10-18", completed:null, updated:"2026-09-06 13:50" }
+    ],
+    bugs:[
+      { id:"BUG-097", ms:"M2", sev:"med", status:"new", tester:"Đặng Minh Tuấn",
+        when:"2026-09-11 10:30", updated:"2026-09-11 10:30", shots:1, tags:["Chrome","Balance"],
+        viT:"Cân đối chuyền bỏ qua công đoạn có 2 máy",
+        zhT:"平衡計算忽略需要兩台機器的工序", enT:"Balancing ignores operations that need two machines",
+        viDesc:"Với công đoạn cần 2 máy, hệ thống chỉ tính 1 máy nên thời gian chu kỳ bị sai. Chuyền 5 (mã LINE-5A-2026) bị lệch khoảng 12%.",
+        zhDesc:"對於需要兩台機器的工序,系統只計算了一台,導致週期時間錯誤。第 5 線(LINE-5A-2026)偏差約 12%。",
+        enDesc:"For operations needing two machines, the system counts only one, so cycle time is wrong. Line 5 (LINE-5A-2026) is off by about 12%.",
+        events:[
+          { at:"2026-09-11 10:30", kind:"filed", actor:"Đặng Minh Tuấn", what:"filed", note:null },
+          { at:"2026-09-11 10:30", kind:"translated", actor:"system", what:"translated", note:null }
+        ] }
+    ]
+  },
+  {
+    id:"lwms", color:"#f59e0b",
+    vi:"Quản lý kho giặt (LWMS)", zh:"洗衣倉庫管理系統 (LWMS)", en:"Laundry Warehouse Management (LWMS)",
+    client:"Internal — Warehouse", env:"production", updated:"2026-09-09 16:20",
+    milestones:[
+      { code:"M1", vi:"Quét mã QR khi nhập kho", zh:"入庫 QR 掃碼",
+        en:"QR scan on inbound", st:"done", pct:100, dev:"Alex Chan",
+        due:"2026-08-01", completed:"2026-07-31 15:12", updated:"2026-07-31 15:12" },
+      { code:"M2", vi:"Theo dõi lô giặt theo khách hàng", zh:"依客戶追蹤洗滌批次",
+        en:"Track laundry batches per customer", st:"wip", pct:45, dev:"Alex Chan",
+        due:"2026-09-28", completed:null, updated:"2026-09-09 16:20" },
+      { code:"M3", vi:"Cảnh báo tồn kho tối thiểu", zh:"最低庫存警示",
+        en:"Minimum stock alert", st:"plan", pct:0, dev:"—",
+        due:"2026-10-20", completed:null, updated:"2026-09-02 11:00" }
+    ],
+    bugs:[]
+  }
+];
+
+/* ═══════════════════════  i18n  ═══════════════════════ */
+const T = {
+  vi:{
+    projects:"Dự án", ms:"Các cột mốc", bugs:"Danh sách lỗi", nav:"Điều hướng", lang:"Ngôn ngữ",
+    tester:"Tester", dev:"Developer", roleT:"Chế độ: Tester (Tiếng Việt)",
+    who:"Nguyễn Thị Hoa · Tester",
+    hintT:"Chào Hoa 👋 Đây là các cột mốc đã sẵn sàng để kiểm thử. Nhấn vào một cột mốc để gửi lỗi kèm ảnh chụp màn hình.",
+    hintB:"Bạn đang kiểm thử dự án đang chọn ở cột bên trái. Kiểm thử xong, tìm thấy lỗi? Mở cột mốc → mô tả bằng tiếng Việt → tải ảnh chụp → Gửi.",
+    ready:"Sẵn sàng kiểm thử", done:"Đã xong", wip:"Đang làm", plan:"Kế hoạch",
+    due:"Hạn", report:"Báo lỗi", view:"Xem", send:"Gửi báo lỗi",
+    titleDetail:"Chi tiết lỗi", back:"← Quay lại danh sách lỗi",
+    original:"Mô tả gốc của tester (Tiếng Việt)", translated:"Bản dịch cho developer",
+    shots:"Ảnh chụp màn hình", info:"Thông tin", testerL:"Tester", whenL:"Báo cáo lúc",
+    msL:"Cột mốc", statusL:"Trạng thái", client:"Khách hàng", updatedL:"Cập nhật lúc",
+    completedL:"Hoàn thành lúc", createdL:"Tạo lúc", timeline:"Lịch sử hoạt động",
+    filed:"đã báo lỗi", translatedEv:"đã tự động dịch sang 中文 / English",
+    statusNew:"đổi trạng thái", comment:"bình luận", statusTo:"chuyển sang",
+    synced:"Đồng bộ lần cuối", justNow:"vừa xong", mAgo:" phút trước", hAgo:" giờ trước", dAgo:" ngày trước",
+    copyT:"Sao chép cho AI agent",
+    copyP:"Thay vì tự copy–paste, bấm một nút để lấy đúng nội dung lỗi đã định dạng sẵn — dán thẳng vào Claude hoặc Codex.",
+    copyBtn:"📋 Sao chép", copied:"Đã sao chép — dán vào AI agent",
+    stNew:"Mới", stFixing:"Đang sửa", stRetest:"Chờ test lại", stClosed:"Đã đóng",
+    noBugs:"Chưa có lỗi nào cho dự án này 🎉"
+  },
+  zh:{
+    projects:"專案", ms:"里程碑", bugs:"Bug 列表", nav:"導覽", lang:"語言",
+    tester:"測試人員", dev:"開發人員", roleT:"模式:開發人員(中文)",
+    who:"陳大文 · Developer",
+    hintT:"開發人員檢視:可切換左側專案,每個專案的里程碑與 bug 各自獨立。 👨‍💻",
+    hintB:"每筆 bug 都附有越南文原文與自動翻譯,並記錄每個動作的時間。按「複製」即可把整份 bug 貼進 AI agent。",
+    ready:"待測試", done:"已完成", wip:"進行中", plan:"規劃中",
+    due:"期限", report:"回報問題", view:"檢視", send:"送出",
+    titleDetail:"Bug 詳情", back:"← 返回 Bug 列表",
+    original:"測試人員原文(越南文)", translated:"開發人員檢視譯文",
+    shots:"螢幕截圖", info:"基本資訊", testerL:"測試人員", whenL:"回報時間",
+    msL:"所屬里程碑", statusL:"狀態", client:"客戶", updatedL:"最後更新",
+    completedL:"完成時間", createdL:"建立時間", timeline:"活動時間軸",
+    filed:"回報了此問題", translatedEv:"已自動翻譯為 中文 / English",
+    statusNew:"變更狀態", comment:"留言", statusTo:"變更為",
+    synced:"最後同步", justNow:"剛剛", mAgo:" 分鐘前", hAgo:" 小時前", dAgo:" 天前",
+    copyT:"複製給 AI agent",
+    copyP:"不必再手動 copy–paste:一鍵取得已排版好的 bug 內容(含所有時間戳),直接貼進 Claude 或 Codex。",
+    copyBtn:"📋 複製", copied:"已複製 — 貼進 AI agent 即可",
+    stNew:"新回報", stFixing:"修復中", stRetest:"待回歸測試", stClosed:"已關閉",
+    noBugs:"這個專案目前沒有 bug 🎉"
+  },
+  en:{
+    projects:"Projects", ms:"Milestones", bugs:"Bug reports", nav:"Navigation", lang:"Language",
+    tester:"Tester", dev:"Developer", roleT:"Mode: Developer (English)",
+    who:"Alex Chan · Developer",
+    hintT:"Developer view — switch projects on the left; each has its own milestones and bugs. 💻",
+    hintB:"Every bug carries the Vietnamese original, a translation, and a timestamped activity trail. Hit Copy to drop the whole thing into an AI agent.",
+    ready:"Ready for testing", done:"Done", wip:"In progress", plan:"Planned",
+    due:"Due", report:"Report bug", view:"View", send:"Submit report",
+    titleDetail:"Bug detail", back:"← Back to bug list",
+    original:"Tester's original (Vietnamese)", translated:"Translation for developer",
+    shots:"Screenshots", info:"Details", testerL:"Tester", whenL:"Reported",
+    msL:"Milestone", statusL:"Status", client:"Client", updatedL:"Last updated",
+    completedL:"Completed", createdL:"Created", timeline:"Activity timeline",
+    filed:"filed this bug", translatedEv:"auto-translated to 中文 / English",
+    statusNew:"changed status", comment:"commented", statusTo:"moved to",
+    synced:"Last synced", justNow:"just now", mAgo:"m ago", hAgo:"h ago", dAgo:"d ago",
+    copyT:"Copy for AI agent",
+    copyP:"Skip the manual copy-paste — one click gives you the formatted bug, timestamps included, ready for Claude or Codex.",
+    copyBtn:"📋 Copy", copied:"Copied — paste into your AI agent",
+    stNew:"New", stFixing:"Fixing", stRetest:"Awaiting retest", stClosed:"Closed",
+    noBugs:"No bugs in this project yet 🎉"
+  }
+};
+const SEV = { high:{vi:"Cao",zh:"高",en:"High"}, med:{vi:"Trung bình",zh:"中",en:"Medium"}, low:{vi:"Thấp",zh:"低",en:"Low"} };
+
+/* ── download / agent-handoff strings (PLAN §10) ─────────────────────────── */
+Object.assign(T.vi, {
+  dlAll:"⬇ Tải tất cả", dlFile:"⬇ Tải",
+  dlHint:"Tên tệp gốc của tester được giữ trên giao diện. Gói packet dùng tên do máy chủ đặt (screenshot_01.png…) để việc giải nén không thể ghi ra ngoài thư mục đích.",
+  dlZip:"Đã tạo gói ZIP (mô phỏng) — xem thư mục Tải về",
+  cliT:"Lấy tất cả vào repo — ít bước nhất",
+  cliP:"Một lệnh ghi bug.md và toàn bộ ảnh chụp vào repo bạn đang làm việc. Sau đó chỉ cần nói: \"sửa BUG-142\".",
+  cliDone:"Đã sao chép lệnh",
+  mlNote:"Ảnh chụp là khung mô phỏng; tệp ZIP là thật, chứa bug.md, meta.json và các tệp ảnh giữ chỗ."
+});
+Object.assign(T.zh, {
+  dlAll:"⬇ 全部下載", dlFile:"⬇ 下載",
+  dlHint:"介面保留測試人員上傳的原始檔名;packet 內改用伺服器指派的名稱(screenshot_01.png…),確保解壓縮時不會寫出目標資料夾。",
+  dlZip:"已產生 ZIP(模擬)——請查看「下載」資料夾",
+  cliT:"一鍵取回 repo —— 最省事的做法",
+  cliP:"一行指令把 bug.md 與所有截圖寫進你正在開發的 repo,接著只要說「修好 BUG-142」。",
+  cliDone:"已複製指令",
+  mlNote:"截圖為模擬框線;ZIP 是真實檔案,內含 bug.md、meta.json 與佔位圖檔。"
+});
+Object.assign(T.en, {
+  dlAll:"⬇ Download all", dlFile:"⬇ Get",
+  dlHint:"The tester's original filename is kept in the UI; the packet uses server-assigned names (screenshot_01.png…) so extraction can never write outside the target folder.",
+  dlZip:"ZIP generated (simulated) — check your Downloads folder",
+  cliT:"Pull everything into the repo — least effort",
+  cliP:"One command writes bug.md and every screenshot into the repo you are working in. Then just say: \"fix BUG-142\".",
+  cliDone:"Command copied",
+  mlNote:"Screenshots are drawn placeholders; the ZIP is a real archive containing bug.md, meta.json and placeholder image files."
+});
+
+/* ═══════════════════════  TIME HELPERS  ═══════════════════════ */
+const asDate = ts => new Date(String(ts).replace(" ", "T") + TZ_OFFSET);
+const TZ = "Asia/Ho_Chi_Minh";
+const TZ_OFFSET = "+07:00";
+const fmtLocal = d => new Intl.DateTimeFormat("sv-SE", {
+  timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hour12: false
+}).format(d);
+function rel(ts){
+  const mins = Math.round((NOW - asDate(ts)) / 60000);
+  if(mins < 1)    return t("justNow");
+  if(mins < 60)   return mins + t("mAgo");
+  if(mins < 1440) return Math.round(mins/60) + t("hAgo");
+  return Math.round(mins/1440) + t("dAgo");
+}
+const stamp = ts => `<span class="ts">${ts}</span><span class="rel">${rel(ts)}</span>`;
+
+/* ═══════════════════════  STATE  ═══════════════════════ */
+let LANG = "vi", ROLE = "tester", PROJ = PROJECTS[0].id, VIEW = "milestones", OPEN = null;
+const t = k => T[LANG][k];
+
+// Deep links: ?role=dev&lang=zh&project=leave&view=bugs&bug=BUG-118
+(function(){
+  const q = new URLSearchParams(location.search);
+  const qRole = q.get("role"), qLang = q.get("lang"),
+        qProj = q.get("project"), qView = q.get("view"), qBug = q.get("bug");
+  if(["tester","dev"].includes(qRole)) ROLE = qRole;
+  if(["vi","zh","en"].includes(qLang)) LANG = qLang;
+  else if(qRole === "dev") LANG = "zh";
+  if(PROJECTS.some(p => p.id === qProj)) PROJ = qProj;
+  if(["milestones","bugs"].includes(qView)) VIEW = qView;
+  if(qBug) OPEN = qBug;
+})();
+
+const proj     = () => PROJECTS.find(p => p.id === PROJ);
+const openBugs = p => (p.bugs || []).filter(b => b.status !== "closed").length;
+const findBug  = (p, id) => (p.bugs || []).find(b => b.id === id);
+const lastActivity = p => {
+  const hits = [...p.milestones.map(m=>m.updated), ...(p.bugs||[]).map(b=>b.updated)];
+  return hits.sort().pop();
+};
+
+function bugTitle(b){ return LANG==="vi" ? b.viT : LANG==="zh" ? b.zhT : b.enT; }
+function msTitle(m){ return LANG==="vi" ? m.vi : LANG==="zh" ? m.zh : m.en; }
+function pName(p){ return LANG==="vi" ? p.vi : LANG==="zh" ? p.zh : p.en; }
+function bugTr(b){ return LANG==="zh" ? b.zhDesc : b.enDesc; }
+function stClass(s){ return s==="ready"?"ready":s==="done"?"done":s==="wip"?"wip":"plan"; }
+function statusLabel(s){
+  return s==="new"?t("stNew") : s==="fixing"?t("stFixing")
+       : s==="retest"?t("stRetest") : t("stClosed");
+}
+
+/* ═══════════════════════  RENDER  ═══════════════════════ */
+function render(){
+  const P = proj();
+  document.documentElement.lang = LANG;
+
+  document.getElementById("h-proj").textContent = t("projects");
+  document.getElementById("h-nav").textContent  = t("nav");
+  document.getElementById("h-lang").textContent = t("lang");
+  document.getElementById("n-ms").textContent   = t("ms");
+  document.getElementById("n-bugs").textContent = t("bugs");
+  document.getElementById("r-tester").textContent = t("tester");
+  document.getElementById("r-dev").textContent    = t("dev");
+  document.getElementById("synced").innerHTML =
+     `${t("synced")}: <b class="ts">${fmtLocal(NOW)}</b>`;
+
+  document.getElementById("plist").innerHTML = PROJECTS.map(p => {
+    const n = openBugs(p);
+    return `<div class="proj ${p.id===PROJ?"on":""}" data-project="${p.id}" title="${pName(p)}">
+      <span class="sq" style="background:${p.color}"></span>
+      <span class="nm">${pName(p)}</span>
+      <span class="cnt ${n?"":"zero"}">${n||""}</span>
+    </div>`;
+  }).join("");
+
+  document.getElementById("bg-count").textContent = openBugs(P);
+  document.querySelectorAll(".role").forEach(e=>e.classList.toggle("on", e.dataset.role===ROLE));
+  document.querySelectorAll(".nav").forEach(e=>e.classList.toggle("on", e.dataset.view===VIEW && !OPEN));
+  document.querySelectorAll(".lang").forEach(e=>e.classList.toggle("on", e.dataset.lang===LANG));
+
+  const lb = document.getElementById("langbox");
+  lb.style.opacity = ROLE==="tester" ? .45 : 1;
+  lb.style.pointerEvents = ROLE==="tester" ? "none" : "auto";
+
+  document.getElementById("t-proj").textContent =
+    `${pName(P)} · ${t("client")}: ${P.client}`;
+  const bugOpen = OPEN ? findBug(P, OPEN) : null;
+  document.getElementById("t-title").textContent =
+    bugOpen ? t("titleDetail") : VIEW==="milestones" ? t("ms") : t("bugs");
+  document.getElementById("t-role").textContent = t("roleT");
+  const act = lastActivity(P);          // single source of truth for project activity
+  document.getElementById("t-env").innerHTML =
+    `${P.env}${act ? ` · <span class="ts">${act}</span><span class="rel">${rel(act)}</span>` : ""}`;
+  document.getElementById("t-who").textContent  = t("who");
+  document.getElementById("t-av").textContent   = ROLE==="tester" ? "NH" : (LANG==="zh" ? "陳" : "AC");
+
+  document.getElementById("hint").innerHTML = `<b>${t("hintT")}</b><br>${t("hintB")}`;
+
+  const v = document.getElementById("view");
+  if(bugOpen) v.innerHTML = detailHTML(P, bugOpen);
+  else if(VIEW==="milestones") v.innerHTML = milestonesHTML(P);
+  else v.innerHTML = bugsHTML(P);
+
+  bind();
+}
+
+function milestonesHTML(P){
+  if(!P.milestones.length) return `<div class="empty">—</div>`;
+  return `<div class="grid">` + P.milestones.map(m=>`
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span class="pill gray">${m.code}</span>
+        <span class="st ${stClass(m.st)}">${t(m.st)}</span>
+      </div>
+      <h3>${msTitle(m)}</h3>
+      <div class="meta">${t("due")} <span class="ts">${m.due}</span> · ${m.dev}</div>
+      <div class="bar"><i style="width:${m.pct}%"></i></div>
+      <div class="stamps">
+        ${m.completed?`<div><em>${t("completedL")}</em><b>${m.completed}</b></div>`:""}
+        <div><em>${t("updatedL")}</em><b>${m.updated}</b><span class="rel">${rel(m.updated)}</span></div>
+      </div>
+      <div class="foot" style="margin-top:11px">
+        <span>${m.pct}%</span>
+        ${m.st==="ready" ? `<button class="btn pri sm" style="margin-left:auto" data-report="${m.code}">${t("report")}</button>`
+          : m.st==="done" ? `<button class="btn sm" style="margin-left:auto" data-open="1">${t("view")}</button>` : ``}
+      </div>
+    </div>`).join("") + `</div>`;
+}
+
+function bugsHTML(P){
+  if(!P.bugs.length) return `<div class="empty">${t("noBugs")}</div>`;
+  return P.bugs.map(b=>`
+    <div class="row" data-bug="${b.id}">
+      <span class="sev ${b.sev}">${SEV[b.sev][LANG].toUpperCase()}</span>
+      <div class="body">
+        <div class="id">${b.id} · ${b.ms} · ${SEV[b.sev][LANG]}</div>
+        <div class="ttl">${bugTitle(b)}</div>
+        <div class="sub">${t("testerL")}: ${b.tester} · ${statusLabel(b.status)}</div>
+        <div class="sub" style="margin-top:3px">
+          ${t("whenL")}: <span class="ts">${b.when}</span>
+          <span class="rel">${rel(b.when)}</span>
+          · ${t("updatedL")}: <span class="ts">${b.updated}</span>
+          <span class="rel">${rel(b.updated)}</span>
+        </div>
+        <div class="tags">${(b.tags||[]).map(x=>`<span class="tag">${x}</span>`).join("")}<span class="tag">${b.ms}</span></div>
+      </div>
+      <div class="shots">${Array.from({length:b.shots}).map(()=>`<div class="shot"></div>`).join("")}</div>
+    </div>`).join("");
+}
+
+function fakeShot(title){
+  return `<div class="shot-lg">
+    <div class="sbar"><span class="sdot"></span><span class="sdot"></span><span class="sdot"></span>
+      <span style="margin-left:8px">${title}</span>
+      <button class="dl" data-dl="${title}">${t("dlFile")}</button></div>
+    <div class="sbody">
+      <div class="fake w40"></div><div class="fake w70"></div><div class="fake w55"></div>
+      <div class="fake hl w40"></div><div class="fake w70"></div><div class="fake w55"></div>
+      <div class="fake w40"></div><div class="fake w70"></div>
+    </div></div>`;
+}
+
+function eventText(e){
+  if(e.what === "filed")       return `<b>${e.actor}</b> ${t("filed")}`;
+  if(e.what === "translated")  return `${t("translatedEv")}`;
+  if(e.what === "statusNew")   return `<b>${e.actor}</b> ${t("statusNew")} → ${statusLabel(e.to)}`;
+  if(e.what === "statusTo")    return `<b>${e.actor}</b> ${t("statusTo")} ${statusLabel(e.to)}`;
+  if(e.what === "comment")     return `<b>${e.actor}</b> ${t("comment")}`;
+  if(e.what === "retestPass")  return `<b>${e.actor}</b> ${t("statusTo")} ${statusLabel("closed")}`;
+  return "";
+}
+
+function timelineHTML(b){
+  return `<div class="tl">` + (b.events||[]).map(e=>`
+    <div class="ev ${e.kind}">
+      <div class="etxt">${eventText(e)}</div>
+      <div class="etime">${stamp(e.at)}</div>
+      ${e.note?`<div class="enote">${e.note}</div>`:""}
+    </div>`).join("") + `</div>`;
+}
+
+function detailHTML(P, b){
+  const m = P.milestones.find(x => x.code === b.ms);
+  return `
+  <div class="back"><button class="btn" data-back="1">${t("back")}</button></div>
+  <div class="det">
+    <div>
+      <div class="box">
+        <h4>${t("original")}</h4>
+        <div class="cap">${b.id} — ${b.viT}</div>
+        <div class="quote">${b.viDesc}</div>
+      </div>
+      <div class="box">
+        <h4>${t("translated")} ${LANG==="zh"?"(中文)":"(English)"}</h4>
+        <div class="cap">${LANG==="zh"?"自動翻譯 · 供開發人員閱讀":"Auto-translated for the developer"}</div>
+        <div class="quote tr">${bugTr(b)}</div>
+      </div>
+      <div class="box">
+        <h4>${t("timeline")}</h4>
+        <div class="cap">${(b.events||[]).length} events</div>
+        ${timelineHTML(b)}
+      </div>
+      <div class="box">
+        <h4>${t("shots")}</h4>
+        <div class="cap">${b.shots} file(s) · screenshot_01.png${b.shots>1?", screenshot_02.png":""}</div>
+        <div class="dlrow">
+          <button class="btn pri sm" data-zip="1">${t("dlAll")} (${b.shots})</button>
+          <span class="dlhint">${t("dlHint")}</span>
+        </div>
+        <div class="shots-lg">
+          ${fakeShot("screenshot_01.png")}
+          ${b.shots>1?fakeShot("screenshot_02.png"):""}
+        </div>
+        <div class="dlhint" style="margin-top:10px">${t("mlNote")}</div>
+      </div>
+    </div>
+    <div>
+      <div class="box">
+        <h4>${t("info")}</h4>
+        <dl class="kv">
+          <dt>${t("client")}</dt><dd>${P.client}</dd>
+          <dt>${t("testerL")}</dt><dd>${b.tester}</dd>
+          <dt>${t("whenL")}</dt><dd>${stamp(b.when)}</dd>
+          <dt>${t("updatedL")}</dt><dd>${stamp(b.updated)}</dd>
+          <dt>${t("msL")}</dt><dd>${b.ms}${m ? " — " + msTitle(m) : ""}</dd>
+          <dt>${t("statusL")}</dt><dd><span class="st ${b.status==="new"?"ready":b.status==="fixing"?"wip":"done"}">${statusLabel(b.status)}</span></dd>
+        </dl>
+        <div style="margin-top:14px">
+          <div class="statusbar">
+            <span class="chip ${b.status==="new"?"on":""}">${t("stNew")}</span>
+            <span class="chip ${b.status==="fixing"?"on":""}">${t("stFixing")}</span>
+            <span class="chip ${b.status==="retest"?"on":""}">${t("stRetest")}</span>
+            <span class="chip ${b.status==="closed"?"on":""}">${t("stClosed")}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="copybox">
+        <h4>${t("copyT")}</h4>
+        <p>${t("copyP")}</p>
+        <textarea id="aiprompt" readonly>${aiPrompt(P, b)}</textarea>
+        <div class="copyrow">
+          <button class="btn pri" data-copy="1">${t("copyBtn")}</button>
+          <span style="font-size:11px;color:#94a3b8">→ Claude / Codex</span>
+        </div>
+      </div>
+
+      <div class="clibox">
+        <h4>${t("cliT")}</h4>
+        <p>${t("cliP")}</p>
+        <div class="cmdrow">
+          <code>$ rgm pull ${b.id.replace("BUG-", "")}</code>
+          <button class="btn sm" data-cmd="rgm pull ${b.id.replace("BUG-", "")}">📋</button>
+        </div>
+        <div class="cliout">
+          <b>✔</b> .rgm/${b.id}/bug.md<br>
+          <b>✔</b> .rgm/${b.id}/meta.json<br>
+          ${Array.from({ length: b.shots }).map((_, i) =>
+            `<b>✔</b> .rgm/${b.id}/screenshot_0${i + 1}.png<br>`).join("")}
+          <span class="arrow">→</span> "fix ${b.id}"
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function aiPrompt(P, b){
+  const m = P.milestones.find(x => x.code === b.ms);
+  const tl = (b.events||[]).map(e=>{
+    const label = e.what==="filed" ? "filed the bug"
+                : e.what==="translated" ? "auto-translated"
+                : e.what==="statusNew" ? "changed status to " + e.to
+                : e.what==="statusTo" ? "moved to " + e.to
+                : e.what==="comment" ? "commented"
+                : e.what==="retestPass" ? "passed retest, closed the bug"
+                : e.what==="retestFail" ? "failed retest, returned to fixing"
+                : "event: " + e.what;          // never render a bare kind again
+    return `  [${e.at}] ${e.actor} — ${label}${e.note ? " :: " + e.note : ""}`;
+  }).join("\n");
+  return `Bug ${b.id} — ${b.enT}
+Project: ${P.en} (client: ${P.client})
+Milestone: ${b.ms}${m ? " — " + m.en : ""}
+Severity: ${SEV[b.sev].en}  |  Status: ${b.status}
+Tester: ${b.tester}
+Reported: ${b.when}
+Last updated: ${b.updated}
+Environment: ${P.env}
+
+--- Original report (Vietnamese) ---
+${b.viDesc}
+
+--- English translation ---
+${b.enDesc}
+
+--- Activity timeline ---
+${tl}
+
+--- Attachments ---
+${Array.from({length:b.shots}).map((_,i)=>`screenshot_0${i+1}.png`).join(", ")}
+`;
+}
+
+/* ═══════════════════════  BIND (delegated)  ═══════════════════════ */
+let BOUND = false;
+function bind(){
+  if(BOUND) return; BOUND = true;
+  document.getElementById("lb").onclick = e => { if(e.target.id==="lb") e.currentTarget.classList.remove("on"); };
+
+  document.addEventListener("click", e => {
+    const hit = sel => e.target.closest(sel);
+    let el;
+
+    if((el = hit("[data-role]"))){
+      ROLE = el.dataset.role;
+      LANG = ROLE==="tester" ? "vi" : (LANG==="vi" ? "zh" : LANG);
+      OPEN = null; render(); return;
+    }
+    if((el = hit("[data-project]"))){
+      PROJ = el.dataset.project; OPEN = null;
+      toast(pName(proj()));
+      render(); return;
+    }
+    if((el = hit("[data-view]"))){
+      VIEW = el.dataset.view; OPEN = null; render(); return;
+    }
+    if((el = hit("[data-lang]"))){
+      if(ROLE === "tester") return;          // testers only ever see Vietnamese
+      LANG = el.dataset.lang; render(); return;
+    }
+    if((el = hit("[data-bug]"))){
+      OPEN = el.dataset.bug; render(); return;
+    }
+    if((el = hit("[data-back]"))){
+      OPEN = null; render(); return;
+    }
+    if((el = hit("[data-open]"))){
+      VIEW = "bugs"; OPEN = null; render(); return;
+    }
+    if((el = hit("[data-report]"))){
+      VIEW = "bugs"; OPEN = null;
+      toast(LANG==="vi" ? "Mở biểu mẫu báo lỗi cho " + el.dataset.report
+          : LANG==="zh" ? "開啟 " + el.dataset.report + " 的 bug 回報表單"
+          : "Opening bug form for " + el.dataset.report);
+      render(); return;
+    }
+    if((el = hit("[data-copy]"))){
+      const ta = document.getElementById("aiprompt");
+      if(!ta) return;
+      ta.focus(); ta.select();                 // keep the text selected either way
+      const FAIL = {
+        vi: "Không sao chép được — nội dung đã được chọn, hãy nhấn ⌘C",
+        zh: "複製失敗 — 內容已選取,請按 ⌘C 手動複製",
+        en: "Copy failed — text is selected, press ⌘C to copy manually"
+      };
+      const ok = () => {
+        el.textContent = "✓ " + t("copyBtn").replace("📋 ","");
+        toast(t("copied"));
+        setTimeout(()=>{ el.textContent = t("copyBtn"); }, 2000);
+      };
+      const fail = () => toast(FAIL[LANG]);    // never claim a copy we did not get
+      let legacy = false;
+      try { legacy = document.execCommand("copy"); } catch(err){ legacy = false; }
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(ta.value).then(ok).catch(() => legacy ? ok() : fail());
+      } else if(legacy){ ok(); } else { fail(); }
+      return;
+    }
+    if((el = hit("[data-dl]"))){                 // one screenshot → real PNG bytes
+      const name = el.dataset.dl;
+      placeholderPngBytes(name).then(bytes => {
+        saveBlob(new Blob([bytes], { type: "image/png" }), name);
+        toast("⬇ " + name);
+      });
+      return;
+    }
+    if((el = hit("[data-zip]"))){                // "Download all" → the real packet
+      const P = proj(), b = findBug(P, OPEN);
+      if(!b) return;
+      packetZip(P, b).then(({ blob, name }) => {
+        saveBlob(blob, name);
+        toast(t("dlZip"));
+      });
+      return;
+    }
+    if((el = hit("[data-cmd]"))){                // copy the CLI handoff command
+      const cmd = el.dataset.cmd;
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(cmd)
+          .then(() => toast(t("cliDone") + " — $ " + cmd))
+          .catch(() => toast("$ " + cmd));       // still show it if the write failed
+      } else { toast("$ " + cmd); }
+      return;
+    }
+    if((el = hit(".shot-lg"))){
+      document.getElementById("lb-inner").innerHTML = el.outerHTML;
+      document.getElementById("lb").classList.add("on");
+      return;
+    }
+  });
+}
+
+/* ═══════════════  PACKET / DOWNLOAD HELPERS (PLAN §10)  ═══════════════ */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++){
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes){
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+const u8cat = parts => {
+  const n = parts.reduce((s, p) => s + p.length, 0);
+  const out = new Uint8Array(n);
+  let o = 0;
+  for (const p of parts){ out.set(p, o); o += p.length; }
+  return out;
+};
+/* Real PNG bytes, drawn in-browser — so the downloaded file is an actual image
+   rather than a renamed text file. */
+async function placeholderPngBytes(name){
+  const c = document.createElement("canvas");
+  c.width = 720; c.height = 440;
+  const g = c.getContext("2d");
+  g.fillStyle = "#eef2f7"; g.fillRect(0, 0, 720, 440);
+  g.strokeStyle = "#b9c6d6"; g.lineWidth = 2; g.strokeRect(24, 24, 672, 392);
+  g.fillStyle = "#64748b";
+  g.font = "18px -apple-system, BlinkMacSystemFont, sans-serif";
+  g.fillText("screenshot placeholder", 48, 78);
+  g.font = "14px ui-monospace, SFMono-Regular, Menlo, monospace";
+  g.fillText(name, 48, 112);
+  g.fillText("In the real build this is the tester's uploaded image,", 48, 152);
+  g.fillText("re-encoded server-side with EXIF stripped (PLAN.md §8, §13).", 48, 174);
+  g.fillStyle = "#94a3b8";
+  g.fillText("mock UI — not a real screenshot", 48, 388);
+  const blob = await new Promise(res => c.toBlob(res, "image/png"));
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+/* Minimal STORE-method ZIP, so the mock emits a genuinely openable archive. */
+function makeZip(files){
+  const enc = new TextEncoder();
+  const u16 = n => new Uint8Array([n & 255, (n >> 8) & 255]);
+  const u32 = n => new Uint8Array([n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >> 24) & 255]);
+  const d = new Date();
+  const tm = ((d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1)) & 0xFFFF;
+  const dt = (((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate()) & 0xFFFF;
+  const local = [], central = [];
+  let offset = 0;
+  for (const f of files){
+    const nb = enc.encode(f.name), db = (f.data || enc.encode(f.text)), crc = crc32(db);
+    const lh = u8cat([u32(0x04034b50), u16(20), u16(0x0800), u16(0), u16(tm), u16(dt),
+                      u32(crc), u32(db.length), u32(db.length), u16(nb.length), u16(0)]);
+    local.push(lh, nb, db);
+    central.push(u8cat([u32(0x02014b50), u16(20), u16(20), u16(0x0800), u16(0), u16(tm), u16(dt),
+                        u32(crc), u32(db.length), u32(db.length), u16(nb.length),
+                        u16(0), u16(0), u16(0), u16(0), u32(0), u32(offset)]), nb);
+    offset += lh.length + nb.length + db.length;
+  }
+  const cd = u8cat(central);
+  const eocd = u8cat([u32(0x06054b50), u16(0), u16(0), u16(files.length), u16(files.length),
+                      u32(cd.length), u32(offset), u16(0)]);
+  return new Blob([...local, cd, eocd], { type: "application/zip" });
+}
+function saveBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+/* Packet entry names are SERVER-assigned. A tester-controlled filename is kept
+   only as data inside meta.json — it must never become a path on disk (zip-slip). */
+async function packetFiles(P, b){
+  const slug = b.enT.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+  const meta = {
+    id: b.id,
+    project: { id: P.id, name: P.en, client: P.client, env: P.env },
+    milestone: b.ms, severity: SEV[b.sev].en, status: b.status,
+    tester: b.tester, reported_at: b.when, updated_at: b.updated,
+    attachments: Array.from({ length: b.shots }, (_, i) => ({
+      name: `screenshot_0${i + 1}.png`,
+      original_filename: `screenshot_0${i + 1}.png`,
+      content_type: "image/png"
+    }))
+  };
+  const files = [
+    { name: "bug.md",    text: aiPrompt(P, b) },   // byte-identical to the clipboard payload
+    { name: "meta.json", text: JSON.stringify(meta, null, 2) }
+  ];
+  for (let i = 0; i < b.shots; i++){
+    files.push({
+      name: `screenshot_0${i + 1}.png`,
+      data: await placeholderPngBytes(`screenshot_0${i + 1}.png`)
+    });
+  }
+  return { files, slug };
+}
+async function packetZip(P, b){
+  const { files, slug } = await packetFiles(P, b);
+  return { blob: makeZip(files), name: `${b.id}-${slug}.zip` };
+}
+
+let toastTimer;
+function toast(msg){
+  const el = document.getElementById("toast");
+  el.textContent = msg; el.classList.add("on");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>el.classList.remove("on"), 2400);
+}
+render();
+</script>
+</body>
+</html>
