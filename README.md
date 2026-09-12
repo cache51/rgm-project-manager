@@ -71,48 +71,68 @@ it must come from an append-only events table — never from mutable columns.
 
 ## Status
 
-The **mock** is sample data only — nothing persists, no backend.
+The **mock** (`mockups/tester-dev-portal.html`) is sample data only — nothing persists, no backend. It shows the intended UX shape (vi/zh/en, multi-project, timestamps, download UI).
 
-The **build** has started. Slice 1 implements the audit foundation and the
-agent-handoff contracts (PLAN.md §6, §8, §10) — the parts the reviews showed were
-load-bearing:
+The **build** is a working, tested server + worker + CLI.
 
 ```bash
 npm install
-npm test          # 46 tests, all against a real Postgres (WASM), no server needed
+npm test          # 130 tests against a real Postgres (WASM) over real HTTP
+npm run migrate
+npm start         # http://127.0.0.1:3000
+npm run worker    # drains the translation queue and the notification outbox
+npx rgm login --url http://127.0.0.1:3000 --token <api-token>
+npx rgm pull 1    # write .rgm/BUG-1/{bug.md,meta.json,screenshot_01.png}
 ```
 
-### Slice 1 — what exists
+### What is built
 
-| Path | Closes |
+| Path | What it does |
 |---|---|
-| `db/migrations/001_init.sql` | **RGM3-001/RGM3-002** — the `CHECK` that made invitation redemption uncommittable; **RGM-016** — composite FKs (adds the missing `UNIQUE(project_id, id)`); plus RGM-011, RGM-012, RGM-008, RGM3-011, RGM2-012 |
-| `src/transitions.js` | **RGM2-010** — explicit transition table; `closed→retest` / `new→retest` are now unrepresentable, stale retests rejected |
-| `src/prompt.js` | **RGM3-014** — prompt-injection boundary: fixed preamble, tokenised fences, region markers that untrusted text cannot forge |
-| `src/packet.js` | **RGM3-007** — zip-slip: packet entries are server-named, tester filenames are data only |
-| `src/claim.js` | **RGM3-006/RGM3-001** — lease claim that can actually reclaim a dead worker |
-| `test/schema.test.js` | executes the real migration and asserts the constraints, per test |
+| `db/migrations/001_init.sql` | The schema. Typed event subjects (**RGM3-001/002**), composite FKs (**RGM-016**), leases, per-field translations, bug numbering, append-only `events` trigger |
+| `src/auth.js` | Login links, sessions, API tokens, invitations, membership revocation. `activeMembership` is the single definition of "is this actor a member" |
+| `src/api.js` | Every HTTP route. Each one authorizes against the **target resource's** project |
+| `src/server.js` | App assembly + `node:http` server |
+| `src/transitions.js` | Explicit transition tables (**RGM2-010**); `closed→retest` / `new→retest` unrepresentable |
+| `src/prompt.js` | Prompt-injection boundary (**RGM3-014**): fixed preamble, tokenised fences |
+| `src/packet.js` | Zip-slip defence (**RGM3-007**): server-named entries, tester filenames are data |
+| `src/claim.js` | Lease claims that actually reclaim a dead worker (**RGM3-006**) |
+| `src/translate.js` | Translation queue + worker; per-language status; event notes translated (**RGM2-005**) |
+| `src/notify.js` | Outbox worker; dedupe key doubles as the provider idempotency key (**RGM-020**) |
+| `src/storage.js` | Screenshot storage behind an S3-shaped interface; HMAC-signed upload capabilities |
+| `src/zip.js` / `src/unzip.js` | Dependency-free ZIP writer and reader (STORE + DEFLATE) |
+| `src/cli.js` | `rgm` — the developer handoff CLI (§10) |
+| `src/worker.js` | Background loop for translations + notifications |
 
 ### Deliberate deviations from PLAN.md
 
 Each is a judgement call, not an oversight — challenge them:
 
-1. **Plain ESM JavaScript, not TypeScript.** No build step means the contracts are
-   runnable and testable immediately. They port to TS trivially when the Next.js
-   app lands. The plan's stack choice (§Decisions 1) still stands for the app.
-2. **PGlite for tests** (Postgres compiled to WASM) because no Postgres server is
-   installed and the Docker daemon is down. Semantics are real Postgres, so the
-   composite FKs, `CHECK`s, partial unique indexes, triggers and
-   `FOR UPDATE SKIP LOCKED` claims are genuinely exercised.
-3. **No Next.js app yet.** These are framework-agnostic modules; the web layer is
-   the next slice.
+1. **Plain ESM JavaScript, not TypeScript.** No build step, so the whole system runs
+   and is testable immediately.
+2. **PGlite as the database**, not a Postgres server — none is installed on this
+   machine and the Docker daemon was down. It *is* Postgres (compiled to WASM), so
+   composite FKs, `CHECK`s, partial indexes, triggers, `plpgsql` and
+   `FOR UPDATE SKIP LOCKED` are all genuinely exercised. `src/db.js` is the only file
+   that knows this; its surface is `pg`-shaped.
+3. **No Next.js app.** The plan's stack choice still stands for the UI; the API is
+   framework-agnostic and the mock is not yet wired to it.
+4. **Local filesystem storage, not S3.** `FsStorage` implements the same shape
+   (put/get/head/delete + presigned URLs) so a real bucket is a drop-in.
+5. **Stub translation provider.** `StubProvider` is deterministic and clearly fake;
+   a real MT or LLM provider plugs in at the same seam (`provider.translate`).
 
 ### Not built yet
 
-Auth endpoints, HTTP routes, the upload path, translation workers, the CLI, and
-the web UI. The plan is v3 and **unapproved** — both reviewers returned REVISE
-(see `PLAN-REVIEW-LOG.md`).
-
+- The **web UI** — the mock is still a standalone file with its own duplicate
+  `aiPrompt` and `packetFiles` implementations. It must be rewired to call
+  `GET /api/bugs/:id/prompt` instead, or the two prompt builders will drift. This is
+  the largest remaining piece of drift in the repo.
+- A **real translation provider** and a **real mailer** (both are behind seams).
+- **RGM-S1-006** (open): `buildPrompt` never renders `translations.title`, and reports
+  unavailability only when *both* body languages are missing.
+- The plan is still v3 and **unapproved** — both reviewers returned REVISE
+  (see `PLAN-REVIEW-LOG.md`).
 
 ### Model allocation for the loop
 

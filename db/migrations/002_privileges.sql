@@ -1,4 +1,5 @@
 -- 002_privileges.sql — role separation for the events table
+-- @skip-when: no-roles
 -- Closes RGM-017 / RGM-S1-009.
 --
 -- 001_init.sql's comment claimed this file existed; it did not. The append-only

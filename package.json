@@ -1,13 +1,20 @@
 {
   "name": "rgm-project-manager",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Developer ↔ tester communication hub — first build slice (audit foundation + agent-handoff contracts)",
-  "scripts": {
-    "test": "node --test test/"
+  "description": "Developer ↔ tester communication hub: multi-project bug tracking with Vietnamese/Chinese/English translation and one-command AI-agent handoff",
+  "bin": {
+    "rgm": "./src/cli.js"
   },
-  "devDependencies": {
+  "scripts": {
+    "start": "node src/server.js",
+    "worker": "node src/worker.js",
+    "migrate": "node src/migrate.js",
+    "bootstrap": "node src/bootstrap.js",
+    "test": "node --test --test-concurrency=1 test/"
+  },
+  "dependencies": {
     "@electric-sql/pglite": "^0.5.8"
   },
   "engines": {

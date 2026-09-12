@@ -294,6 +294,7 @@ CREATE TABLE notifications_outbox (
   -- Includes the milestone's ready_count, so a genuine second readiness notice
   -- is not suppressed as a duplicate (RGM3-011).
   dedupe_key          text NOT NULL UNIQUE,
+  payload             jsonb NOT NULL DEFAULT '{}'::jsonb,
   status              text NOT NULL DEFAULT 'pending'
                         CHECK (status IN ('pending','running','sending','sent','failed','cancelled')),
   attempts            integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
