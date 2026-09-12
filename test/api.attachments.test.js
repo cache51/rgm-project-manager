@@ -77,6 +77,31 @@ describe('attachments: two-phase upload', () => {
     assert.equal(att.originalFilename, '../../etc/passwd');
   });
 
+  test('each screenshot gets a distinct entry name, matching the packet', async () => {
+    // Regression: a hard-coded index made every attachment render as
+    // "screenshot_01.png" in the UI while the packet numbered them correctly.
+    const multi = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    for (const [type, name] of [['image/png', 'one.png'], ['image/jpeg', 'two.jpg'],
+                                ['image/png', 'three.png']]) {
+      const presign = (await w.testerClient.post(`/api/bugs/${multi.id}/attachments/presign`,
+        { contentType: type, byteSize: PNG_BYTES.length })).json;
+      await w.testerClient.put(presign.uploadUrl, PNG_BYTES);
+      await w.testerClient.post(`/api/bugs/${multi.id}/attachments/complete`,
+        { storageKey: presign.storageKey, uploadToken: presign.uploadToken, filename: name });
+    }
+
+    const payload = (await w.testerClient.get(`/api/bugs/${multi.id}`)).json;
+    assert.deepEqual(payload.attachments.map((a) => a.name),
+      ['screenshot_01.png', 'screenshot_02.jpg', 'screenshot_03.png'],
+      'entry names are numbered by position and typed by content');
+
+    // The names the detail view shows are exactly the ones inside the archive.
+    const packet = await w.devClient.get(`/api/bugs/${multi.id}/packet`);
+    const { names } = await zipEntries(packet.buf, w.dir);
+    assert.deepEqual(names.slice(2), payload.attachments.map((a) => a.name),
+      'the UI and the packet must agree on every entry name');
+  });
+
   test('completing with a tampered token is refused', async () => {
     const presign = (await w.testerClient.post(`/api/bugs/${bug.id}/attachments/presign`,
       { contentType: 'image/png', byteSize: PNG_BYTES.length })).json;

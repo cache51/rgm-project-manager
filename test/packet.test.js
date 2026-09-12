@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   packetEntryName, packetEntryNames, packetSlug, packetArchiveName, extensionFor,
-  isSafeRelativePath, assertSafeRelativePath, packetPathFor, buildPacketMeta
+  isSafeRelativePath, assertSafeRelativePath, packetPathFor, buildPacketMeta,
+  contentDisposition
 } from '../src/packet.js';
 
 test('packet entry names are server-assigned and zero-padded', () => {
@@ -63,6 +64,34 @@ test('a tester-supplied filename never becomes the archive name', () => {
   assert.equal(packetSlug('--exec=oops'), 'exec-oops');
   assert.equal(packetSlug(''), 'bug');
   assert.ok(!packetSlug(hostile).startsWith('-'));
+});
+
+test('a Vietnamese or Chinese title survives the slug — safety is not ascii-ness', () => {
+  // Regression: restricting the slug to [a-z0-9] turned a Vietnamese title into
+  // 's-l-ng-th-ng-kh-ng-...', which is useless to the developer reading it.
+  assert.equal(packetSlug('Số lượng thùng không khớp'), 'số-lượng-thùng-không-khớp');
+  assert.equal(packetSlug('紙箱數量驗證'), '紙箱數量驗證');
+  assert.equal(packetArchiveName('BUG-1', 'Số lượng thùng'),
+    'BUG-1-số-lượng-thùng.zip');
+
+  // ...while separators, dots and dashes are still removed.
+  assert.equal(packetSlug('a/b\\c'), 'a-b-c');
+  assert.equal(packetSlug('../..'), 'bug');
+  assert.equal(packetSlug('Số lượng/thùng 3'), 'số-lượng-thùng-3');
+  assert.equal(packetSlug('-rm -rf /'), 'rm-rf');
+  assert.ok(!packetSlug('-rm -rf /').startsWith('-'));
+});
+
+test('contentDisposition is RFC 6266: ascii fallback plus the encoded name', () => {
+  const name = 'BUG-1-số-lượng-thùng.zip';
+  const header = contentDisposition(name, 'BUG-1.zip');
+
+  const quoted = /filename="([^"]*)"/.exec(header)[1];
+  assert.ok(/^[\x20-\x7E]*$/.test(quoted), `the quoted form must be ascii, got ${quoted}`);
+  assert.equal(quoted, 'BUG-1.zip');
+  assert.ok(header.includes("filename*=UTF-8''" + encodeURIComponent(name)),
+    'the utf-8 form must carry the real name');
+  assert.ok(!header.includes(name), 'raw non-ascii must not sit in the header');
 });
 
 test('meta keeps the original filename as data, entry name as the path', () => {

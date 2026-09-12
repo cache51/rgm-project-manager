@@ -6,11 +6,67 @@
  * storage, mailer and database without touching routes.
  */
 import { createServer } from 'node:http';
+import { readFile } from 'node:fs/promises';
+import { join, resolve, extname, sep, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createDb, migrate } from './db.js';
 import { FsStorage } from './storage.js';
 import { buildRoutes } from './api.js';
-import { resolveActor, sendJson } from './http.js';
+import { resolveActor, sendJson, sendBytes, redirect, parseCookies,
+         serializeCookie } from './http.js';
 import { resolveSession, resolveApiToken } from './auth.js';
+
+const here = dirname(fileURLToPath(import.meta.url));
+export const PUBLIC_DIR = join(here, '..', 'public');
+
+const CONTENT_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2'
+};
+
+/**
+ * Serve a file from public/.
+ *
+ * The path is decoded, resolved and then checked to be inside PUBLIC_DIR, so
+ * neither `../` nor a percent-encoded `%2e%2e%2f` can escape the directory.
+ */
+async function serveStatic(pathname, res) {
+  let rel;
+  try {
+    rel = decodeURIComponent(pathname);
+  } catch {
+    sendJson(res, 400, { error: 'bad_path', message: 'malformed path' });
+    return;
+  }
+  rel = rel.replace(/^\/+/, '');
+  if (rel === '') rel = 'index.html';
+  else if (!extname(rel)) rel += '.html';
+
+  const target = resolve(PUBLIC_DIR, rel);
+  const inside = target === PUBLIC_DIR || target.startsWith(PUBLIC_DIR + sep);
+  if (!inside) {
+    sendJson(res, 403, { error: 'forbidden', message: 'path escapes the public directory' });
+    return;
+  }
+
+  try {
+    const data = await readFile(target);
+    sendBytes(res, 200, data, CONTENT_TYPES[extname(target)] ?? 'application/octet-stream',
+      { 'cache-control': 'no-store' });
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'EISDIR') {
+      sendJson(res, 404, { error: 'not_found', message: 'no such file' });
+      return;
+    }
+    throw err;
+  }
+}
 
 export function createApp({
   db,
@@ -27,6 +83,22 @@ export function createApp({
       url = new URL(req.url, 'http://localhost');
     } catch {
       sendJson(res, 400, { error: 'bad_url', message: 'malformed request target' });
+      return;
+    }
+
+    // Everything outside /api/ is a static asset. The UI is plain files served by
+    // this same process, so there is no build step and no second origin.
+    if (!url.pathname.startsWith('/api')) {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        sendJson(res, 405, { error: 'method_not_allowed', message: 'static files are GET-only' });
+        return;
+      }
+      serveStatic(url.pathname, res).catch((err) => {
+        if (!res.headersSent) {
+          sendJson(res, 500, { error: 'internal_error', message: 'unexpected server error' });
+        }
+        if (onError) onError(err);
+      });
       return;
     }
 

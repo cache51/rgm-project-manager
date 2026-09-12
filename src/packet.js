@@ -49,16 +49,23 @@ export function packetEntryNames(count, contentTypes = []) {
 }
 
 /**
- * Slug used in the derived zip filename (e.g. BUG-142-total-carton-count.zip).
- * Only [a-z0-9-] survives, so it cannot carry a separator, a dot-segment, or a
- * leading dash that would be read as an option by a CLI.
+ * Slug used in the derived zip filename (e.g. BUG-142-ton-carton-sai.zip).
+ *
+ * Safety comes from stripping every separator and dot-segment — NOT from
+ * discarding non-ASCII. Restricting this to [a-z0-9] turned a Vietnamese title
+ * into `s-l-ng-th-ng-kh-ng-...`, which is useless to the developer reading it.
+ * So: keep letters and digits in ANY script (NFC-normalised), collapse everything
+ * else to a dash, and never leave a leading dash (which a CLI would read as a
+ * flag) or a trailing one.
  */
 export function packetSlug(text, maxLength = 40) {
   const slug = String(text ?? '')
+    .normalize('NFC')
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, '-')   // any separator, dot or punctuation -> '-'
     .replace(/^-+|-+$/g, '')
-    .slice(0, maxLength)
+    // slice by code point so a multi-byte character is never cut in half
+    .split('').slice(0, maxLength).join('')
     .replace(/-+$/g, '');
   return slug || 'bug';
 }
@@ -66,6 +73,20 @@ export function packetSlug(text, maxLength = 40) {
 /** Derived archive name. Never built from the tester's filename. */
 export function packetArchiveName(bugId, title, maxLength = 40) {
   return `${bugId}-${packetSlug(title, maxLength)}.zip`;
+}
+
+/**
+ * RFC 6266 Content-Disposition for a filename that may not be ASCII.
+ *
+ * HTTP header values are not defined for raw UTF-8, so a Vietnamese archive name
+ * needs both a quoted ASCII fallback and the `filename*` form with percent
+ * encoding. Sending only the raw name mangles it in some clients.
+ */
+export function contentDisposition(filename, asciiFallback) {
+  const ascii = String(asciiFallback ?? filename)
+    .replace(/[^\x20-\x7E]/g, '_')
+    .replace(/["\\]/g, '_');
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 }
 
 /**

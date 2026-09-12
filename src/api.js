@@ -13,8 +13,8 @@ import {
 } from './auth.js';
 import { withTransaction } from './db.js';
 import { buildPrompt } from './prompt.js';
-import { packetEntryNames, packetArchiveName, isSafeRelativePath,
-         extensionFor, buildPacketMeta } from './packet.js';
+import { packetEntryName, packetEntryNames, packetArchiveName, isSafeRelativePath,
+         extensionFor, buildPacketMeta, contentDisposition } from './packet.js';
 import { resolveTransition, availableTransitions, isOpenBug } from './transitions.js';
 import { makeZip } from './zip.js';
 import {
@@ -97,7 +97,7 @@ function projectRef(bug) {
            env: bug.project_env, timezone: bug.project_timezone };
 }
 
-async function bugPayload(db, bug) {
+async function bugPayload(db, bug, role = 'developer') {
   const [translations, timeline, attachments] = await Promise.all([
     translationsFor(db, bug.id), timelineFor(db, bug.id), attachmentsFor(db, bug.id)
   ]);
@@ -119,13 +119,17 @@ async function bugPayload(db, bug) {
     updatedAt: iso(bug.updated_at),
     translations,
     timeline,
-    attachments: attachments.map(a => ({
-      id: a.id, name: packetEntryNames(1, [a.content_type])[0],
+    // Index by position: a hard-coded 1 here labelled every screenshot
+    // "screenshot_01.png" even though the packet itself numbered them correctly.
+    attachments: attachments.map((a, i) => ({
+      id: a.id, name: packetEntryName(i + 1, a.content_type),
       originalFilename: a.filename, contentType: a.content_type,
       byteSize: Number(a.byte_size), uploadedAt: iso(a.uploaded_at),
       url: `/api/attachments/${a.id}`
     })),
-    availableActions: availableTransitions('bug', bug.status, 'developer')
+    // Actions the CALLER can actually take — a tester must not be offered
+    // developer-only transitions the server would reject.
+    availableActions: availableTransitions('bug', bug.status, role)
   };
 }
 
@@ -408,10 +412,10 @@ export function buildRoutes() {
   }));
 
   r.get('/api/bugs/:id', handle(async (req, res, ctx) => {
-    await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
+    const { role } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
     const bug = await loadBug(ctx.db, ctx.params.id);
     if (!bug) throw new HttpError(404, 'not_found', 'bug not found');
-    sendJson(res, 200, await bugPayload(ctx.db, bug));
+    sendJson(res, 200, await bugPayload(ctx.db, bug, role));
   }));
 
   r.get('/api/bugs/:id/prompt', handle(async (req, res, ctx) => {
@@ -647,8 +651,9 @@ export function buildRoutes() {
         JSON.stringify({ attachmentId: att.id, filename: att.filename })]);
 
     const bytes = await ctx.storage.get(att.storage_key);
+    const entryName = packetEntryNames(1, [att.content_type])[0];
     sendBytes(res, 200, bytes, att.content_type, {
-      'content-disposition': `attachment; filename="${packetEntryNames(1, [att.content_type])[0]}"`
+      'content-disposition': contentDisposition(entryName, entryName)
     });
   }));
 
@@ -689,7 +694,8 @@ export function buildRoutes() {
     const zip = makeZip(files);
     const archive = packetArchiveName(`BUG-${bug.bug_number}`, bug.title_vi);
     sendBytes(res, 200, Buffer.from(zip), 'application/zip', {
-      'content-disposition': `attachment; filename="${archive}"`,
+      // Non-ASCII names need the RFC 6266 form, with an ASCII fallback.
+      'content-disposition': contentDisposition(archive, `BUG-${bug.bug_number}.zip`),
       'x-packet-entries': entries.length + 2
     });
   }));
@@ -699,12 +705,29 @@ export function buildRoutes() {
   return r;
 }
 
+/**
+ * Timestamps in the handoff prompt are rendered in the PROJECT's timezone, not as
+ * raw UTC. A tester in Vietnam and a developer reading the prompt must see the same
+ * wall-clock time the UI shows; handing an agent `...T22:52Z` for an event the UI
+ * calls `05:52` invites it to reason about the wrong day.
+ */
+function stampIn(iso, timezone) {
+  if (!iso) return null;
+  const when = new Date(iso);
+  const text = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  }).format(when);
+  return `${text} (${timezone})`;
+}
+
 /** Assemble the handoff prompt from the stored state. */
 export async function buildPromptFor(db, bug) {
   const [translations, timeline, attachments] = await Promise.all([
     translationsFor(db, bug.id), timelineFor(db, bug.id), attachmentsFor(db, bug.id)
   ]);
   const entries = packetEntryNames(attachments.length, attachments.map(a => a.content_type));
+  const tz = bug.project_timezone ?? 'UTC';
 
   const pick = (field, lang) => {
     const t = translations[field]?.[lang];
@@ -717,14 +740,15 @@ export async function buildPromptFor(db, bug) {
     bug: {
       id: `BUG-${bug.bug_number}`, severity: bug.severity, status: bug.status,
       titleVi: bug.title_vi, bodyVi: bug.body_vi,
-      createdAt: iso(bug.created_at), updatedAt: iso(bug.updated_at)
+      createdAt: stampIn(iso(bug.created_at), tz),
+      updatedAt: stampIn(iso(bug.updated_at), tz)
     },
     project: projectRef(bug),
     milestone: { code: bug.milestone_code, title: bug.milestone_title },
     reporter: bug.reporter_name,
     translations: { body, state: overall },
     timeline: timeline.map(e => ({
-      at: e.at, actor: e.actor, kind: e.kind, note: e.note ?? e.reason
+      at: stampIn(e.at, tz), actor: e.actor, kind: e.kind, note: e.note ?? e.reason
     })),
     attachments: attachments.map((a, i) => ({
       name: entries[i], originalFilename: a.filename

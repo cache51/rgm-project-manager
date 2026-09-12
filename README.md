@@ -9,7 +9,43 @@ Tool to manage **developer ↔ tester** communication across multiple projects.
   pre-formatted block straight into an AI agent (Claude / Codex) — replacing the current
   manual copy-paste step.
 
-## Mock UI
+## The web UI
+
+`public/` — served by the API server itself, so there is no build step, no second
+origin, and no bundler to keep in sync. Plain ES modules calling the real API.
+
+```bash
+npm start          # then open http://127.0.0.1:3000
+```
+
+Sign-in is the real magic-link flow: `/login` requests a link, and the dev mailer
+prints it to the server console as `[mail] … token=…`. Open `/login?token=…` (or use
+the printed URL) to get a session.
+
+| Screen | What it does |
+|---|---|
+| Milestones | Cards per milestone; a tester only sees **Report bug** on a `ready` milestone |
+| Bugs | Rows with severity, status, milestone, attachment count and timestamps |
+| Bug detail | Vietnamese original beside the translation, the activity timeline with translated notes, real screenshot downloads, the server-built prompt for the AI agent, and role-appropriate actions |
+| Report | Vietnamese title/body + screenshots, uploaded through the real two-phase flow |
+
+Two things the UI deliberately does **not** do:
+
+1. **It does not build the handoff prompt.** It calls `GET /api/bugs/:id/prompt`.
+   The mock had its own `aiPrompt` implementation; that duplication was the largest
+   drift risk in the repo, and this removes it. `test/ui.test.js` asserts the fence
+   token never appears in client code.
+2. **It does not lay out the packet.** It downloads `GET /api/bugs/:id/packet` and
+   saves the archive the server produced.
+
+### Mock vs. build
+
+`mockups/tester-dev-portal.html` is the reviewed **design reference** — sample data,
+no backend, its own duplicate implementations. `public/` is the real thing. Keep the
+mock for design discussion, but treat `public/` as the source of truth; if they
+disagree, the mock is out of date.
+
+## Mock UI (design reference)
 
 `mockups/tester-dev-portal.html` — single self-contained file, no build, no network.
 Open it in a browser.

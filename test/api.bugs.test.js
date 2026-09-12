@@ -281,6 +281,16 @@ describe('bugs: translation', () => {
       'the note must be readable to a Chinese-speaking developer (RGM2-005)');
   });
 
+  test('the handoff prompt renders timestamps in the project timezone, not raw UTC', async () => {
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    const prompt = await w.devClient.get(`/api/bugs/${bug.id}/prompt`);
+    const payload = (await w.devClient.get(`/api/bugs/${bug.id}`)).json;
+
+    assert.match(prompt.text, /Asia\/Ho_Chi_Minh/, 'the zone must be named in the prompt');
+    assert.ok(!prompt.text.includes(payload.createdAt),
+      'the raw UTC instant must not be what the agent is handed — the UI shows local time');
+  });
+
   test('the handoff prompt carries the timeline note inside an untrusted fence', async () => {
     const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
     await w.devClient.post(`/api/bugs/${bug.id}/comments`, { note: 'Đã kiểm tra lại máy' });
