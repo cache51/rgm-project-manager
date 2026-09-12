@@ -92,8 +92,12 @@ export function resolveTransition(kind, action, from, role, ctx = {}) {
     );
   }
 
-  const allowed = ctx.isSiteAdmin ? [...rule.roles, 'admin'] : rule.roles;
-  if (!allowed.includes(role)) {
+  // A site admin acts with admin authority in any project (but still needs an
+  // active membership, which the repository layer enforces separately). The first
+  // revision merely appended 'admin' to the allowed list, so a site admin whose
+  // project role was 'developer' could not perform admin-only transitions.
+  const effectiveRole = ctx.isSiteAdmin ? 'admin' : role;
+  if (!rule.roles.includes(effectiveRole)) {
     throw new TransitionError(
       `role '${role}' may not ${action} (requires: ${rule.roles.join(' or ')})`,
       'FORBIDDEN_ROLE'
@@ -141,12 +145,10 @@ export function availableTransitions(kind, from, role, ctx = {}) {
   const table = TABLES[kind];
   if (!table || !table.states.includes(from)) return [];
   const isSiteAdmin = !!ctx.isSiteAdmin;
+  const effectiveRole = isSiteAdmin ? 'admin' : role;
   return table.transitions
     .filter(r => r.from.includes(from))
-    .filter(r => {
-      const allowed = isSiteAdmin ? [...r.roles, 'admin'] : r.roles;
-      return allowed.includes(role);
-    })
+    .filter(r => r.roles.includes(effectiveRole))
     .map(r => ({ action: r.action, to: r.to, requiresReason: !!r.requiresReason }));
 }
 

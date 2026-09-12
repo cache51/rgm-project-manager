@@ -4,7 +4,10 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
-import { claimTranslation, ClaimPolicy } from '../src/claim.js';
+import {
+  claimTranslation, claimOutbox, ClaimPolicy,
+  parkExhaustedTranslations, parkExhaustedOutbox
+} from '../src/claim.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MIGRATION = readFileSync(join(here, '..', 'db', 'migrations', '001_init.sql'), 'utf8');
@@ -281,4 +284,93 @@ test('a completed translation must carry text; a failed one must carry an error'
     `UPDATE bug_translations SET status='done', text='當我為…' WHERE bug_id=$1`, [ids.bugA]);
   const t = await db.query(`SELECT status, text FROM bug_translations WHERE bug_id=$1`, [ids.bugA]);
   assert.equal(t.rows[0].status, 'done');
+});
+
+// ═══════════════ RGM-S1-001: event translation integrity ═══════════════
+
+test('an event translation shares the event id type and can be created in one transaction', async () => {
+  const { db, ids } = await fresh();
+  // The first revision typed event_id as uuid while events.id is bigserial, with no
+  // FK at all — the intended single-transaction insert was impossible and an
+  // orphan translation was representable.
+  await db.exec('BEGIN');
+  const ev = await db.query(
+    `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
+     VALUES ($1,$2,$3,'bug.retest_fail','{"note":"Đã test lại, vẫn lỗi"}'::jsonb)
+     RETURNING id`, [ids.projA, ids.bugA, ids.dev]);
+  const eventId = ev.rows[0].id;
+
+  await db.query(
+    `INSERT INTO event_translations (event_id, field, lang, status)
+     VALUES ($1,'note','zh','pending')`, [eventId]);
+  await db.exec('COMMIT');
+
+  const n = await db.query(
+    `SELECT count(*)::int AS c FROM event_translations WHERE event_id=$1`, [eventId]);
+  assert.equal(n.rows[0].c, 1, 'the retest note is queueable in the same transaction');
+});
+
+test('an orphan event translation is rejected, not silently stored', async () => {
+  const { db } = await fresh();
+  await assert.rejects(
+    db.query(`INSERT INTO event_translations (event_id, field, lang, status)
+              VALUES (999999,'note','zh','pending')`),
+    /violates foreign key constraint/);
+  // a uuid-shaped value cannot masquerade as an event id either
+  await assert.rejects(
+    db.query(`INSERT INTO event_translations (event_id, field, lang, status)
+              VALUES ($1,'note','zh','pending')`,
+      ['00000000-0000-0000-0000-000000000000']),
+    /invalid input syntax for type bigint|violates foreign key constraint/);
+});
+
+// ═══════════════ RGM-S1-002 / RGM-S1-003: parking ═══════════════
+
+test('the parking sweep leaves an actively-leased translation alone', async () => {
+  const { db, ids } = await fresh();
+  await db.query(
+    `INSERT INTO bug_translations (bug_id, field, lang, status, attempts, lease_until)
+     VALUES ($1,'body','zh','running',$2, now() + interval '2 minutes')`,
+    [ids.bugA, ClaimPolicy.maxAttempts]);
+
+  // a job on its final permitted attempt is legitimately running
+  assert.equal((await parkExhaustedTranslations(db)).length, 0,
+    'a job inside its lease must not be parked');
+  const live = await db.query(`SELECT status FROM bug_translations WHERE bug_id=$1`, [ids.bugA]);
+  assert.equal(live.rows[0].status, 'running');
+
+  // once the lease expires it is retired
+  await db.query(`UPDATE bug_translations SET lease_until = now() - interval '1 minute'`);
+  assert.equal((await parkExhaustedTranslations(db)).length, 1);
+  const after = await db.query(`SELECT status, error FROM bug_translations WHERE bug_id=$1`,
+    [ids.bugA]);
+  assert.equal(after.rows[0].status, 'failed');
+  assert.match(after.rows[0].error, /exhausted/);
+});
+
+test('an outbox row stranded at sending is retirable after its lease expires', async () => {
+  const { db, ids } = await fresh();
+  await db.query(
+    `INSERT INTO notifications_outbox
+       (kind, project_id, subject_id, recipient_id, dedupe_key, status, attempts, lease_until)
+     VALUES ('milestone.ready',$1,$2,$3,'k-9','sending',$4, now() - interval '1 minute')`,
+    [ids.projA, ids.mileA, ids.tester, ClaimPolicy.maxAttempts]);
+
+  // exhausted: it can no longer be claimed...
+  assert.equal(await claimOutbox(db, ids.admin), null);
+  // ...but the sweep can retire it rather than leaving it `sending` forever
+  assert.equal((await parkExhaustedOutbox(db)).length, 1);
+  const row = await db.query(`SELECT status, error FROM notifications_outbox`);
+  assert.equal(row.rows[0].status, 'failed');
+  assert.match(row.rows[0].error, /exhausted/);
+});
+
+test('the outbox sweep also spares a job inside its lease', async () => {
+  const { db, ids } = await fresh();
+  await db.query(
+    `INSERT INTO notifications_outbox
+       (kind, project_id, subject_id, recipient_id, dedupe_key, status, attempts, lease_until)
+     VALUES ('milestone.ready',$1,$2,$3,'k-10','sending',$4, now() + interval '2 minutes')`,
+    [ids.projA, ids.mileA, ids.tester, ClaimPolicy.maxAttempts]);
+  assert.equal((await parkExhaustedOutbox(db)).length, 0);
 });

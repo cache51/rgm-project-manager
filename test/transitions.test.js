@@ -104,3 +104,33 @@ test('state lists are frozen so a caller cannot mutate the table', () => {
   assert.throws(() => { BUG_STATES.push('nope'); }, TypeError);
   assert.throws(() => { MILESTONE_STATES.push('nope'); }, TypeError);
 });
+
+// ── RGM-S1-004: site-admin authority ───────────────────────────────────────
+test('a site admin resolves to admin authority regardless of project role', () => {
+  // The first revision only appended 'admin' to the allowed list, so a site admin
+  // whose project role was 'developer' could not perform admin-only transitions.
+  assert.equal(
+    resolveTransition('milestone', 'reset', 'ready', 'developer',
+      { isSiteAdmin: true, reason: 'rework' }).to,
+    'planned');
+
+  // without the flag the same caller is still forbidden
+  assert.throws(
+    () => resolveTransition('milestone', 'reset', 'ready', 'developer', { reason: 'rework' }),
+    (e) => e.code === 'FORBIDDEN_ROLE');
+
+  // site authority is installation-wide, so it also lifts a tester membership
+  assert.equal(
+    resolveTransition('milestone', 'reset', 'ready', 'tester',
+      { isSiteAdmin: true, reason: 'rework' }).to,
+    'planned');
+});
+
+test('availableTransitions offers admin actions only to a site admin', () => {
+  const plain = availableTransitions('milestone', 'ready', 'developer');
+  assert.ok(!plain.some(t => t.action === 'reset'), 'a plain developer may not reset');
+
+  const site = availableTransitions('milestone', 'ready', 'developer', { isSiteAdmin: true });
+  assert.ok(site.some(t => t.action === 'reset'), 'a site admin must be offered reset');
+  assert.ok(site.find(t => t.action === 'reset').requiresReason, 'and told a reason is needed');
+});

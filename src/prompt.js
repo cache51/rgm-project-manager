@@ -79,23 +79,31 @@ export function buildPrompt({
 }) {
   const out = [];
 
-  // ── authoritative region ────────────────────────────────────────────────
+  // ── authoritative region: only our fixed text and a server-assigned id ──
   out.push(PREAMBLE);
   out.push('');
-  out.push(`Bug ${sanitizeInline(bug.id)}`);
-  out.push(`Project: ${sanitizeInline(project.name)} (client: ${sanitizeInline(project.client)})`);
-  if (milestone) {
-    out.push(`Milestone: ${sanitizeInline(milestone.code)} — ${sanitizeInline(milestone.title)}`);
-  }
-  out.push(`Severity: ${sanitizeInline(bug.severity)}  |  Status: ${sanitizeInline(bug.status)}`);
-  if (reporter) out.push(`Tester: ${sanitizeInline(reporter)}`);
-  out.push(`Reported: ${sanitizeInline(bug.createdAt)}`);
-  out.push(`Last updated: ${sanitizeInline(bug.updatedAt)}`);
-  out.push(`Environment: ${sanitizeInline(project.env)}`);
+  // The display code is assigned by us, but validate its shape rather than trust it.
+  const displayId = /^BUG-\d+$/.test(String(bug.id)) ? String(bug.id) : sanitizeInline(bug.id);
+  out.push(`Bug ${displayId}`);
 
-  // ── untrusted region: the report itself ─────────────────────────────────
+  // ── untrusted region: everything externally authored ────────────────────
   out.push('');
   out.push(REGION_BEGIN);
+  // Project names, milestone titles, tester names and even status strings are
+  // authored by people, so a hostile project name is as much an injection vector
+  // as a bug body. Every externally-authored value lives inside a fence; only the
+  // labels below are ours (RGM-S1-005).
+  out.push(fencedBlock('METADATA', [
+    `severity: ${sanitizeInline(bug.severity)}`,
+    `status: ${sanitizeInline(bug.status)}`,
+    `project: ${sanitizeInline(project.name)}`,
+    `client: ${sanitizeInline(project.client)}`,
+    `environment: ${sanitizeInline(project.env)}`,
+    milestone ? `milestone: ${sanitizeInline(milestone.code)} — ${sanitizeInline(milestone.title)}` : null,
+    reporter ? `reporter: ${sanitizeInline(reporter)}` : null,
+    `reported: ${sanitizeInline(bug.createdAt)}`,
+    `updated: ${sanitizeInline(bug.updatedAt)}`
+  ].filter(Boolean).join('\n')));
   out.push(fencedBlock('BUG_TITLE', bug.titleVi));
   out.push(fencedBlock('BUG_BODY', bug.bodyVi));
 

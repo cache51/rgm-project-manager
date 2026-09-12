@@ -213,23 +213,6 @@ CREATE TABLE bug_translations (
   CHECK (status <> 'failed' OR error IS NOT NULL)
 );
 
-CREATE TABLE event_translations (
-  event_id   uuid NOT NULL,
-  field      text NOT NULL CHECK (field = 'note'),
-  lang       text NOT NULL CHECK (lang IN ('vi','zh','en')),
-  status     text NOT NULL DEFAULT 'pending'
-               CHECK (status IN ('pending','running','done','failed')),
-  provider   text,
-  model      text,
-  text       text,
-  error      text,
-  attempts   integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
-  lease_until timestamptz,
-  claimed_by  uuid,
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (event_id, field, lang)
-);
-
 -- ───────────────────────── events (§6) ─────────────────────────
 -- Typed nullable subject columns. `num_nonnulls(...) <= 1` rather than `= 1`, so
 -- project-level events (invitation redeemed, member removed) are representable —
@@ -256,6 +239,33 @@ CREATE TABLE events (
 CREATE INDEX events_project_seq  ON events (project_id, id);
 CREATE INDEX events_bug          ON events (bug_id, id)         WHERE bug_id IS NOT NULL;
 CREATE INDEX events_milestone    ON events (milestone_id, id)   WHERE milestone_id IS NOT NULL;
+
+-- ─────────────── event translations (retest notes) ───────────────
+-- Declared AFTER events so `event_id` can match `events.id` (bigserial → bigint)
+-- and carry a real foreign key. The first revision typed it `uuid`, which neither
+-- matched the referenced column nor permitted any constraint: orphan translations
+-- were representable and the intended one-transaction insert was impossible.
+CREATE TABLE event_translations (
+  event_id    bigint NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  field       text NOT NULL CHECK (field = 'note'),
+  lang        text NOT NULL CHECK (lang IN ('vi','zh','en')),
+  status      text NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','running','done','failed')),
+  provider    text,
+  model       text,
+  text        text,
+  error       text,
+  attempts    integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  lease_until timestamptz,
+  claimed_by  uuid,
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (event_id, field, lang),
+  CHECK (status <> 'done'   OR text  IS NOT NULL),
+  CHECK (status <> 'failed' OR error IS NOT NULL)
+);
+
+CREATE INDEX event_translations_claimable
+  ON event_translations (status, lease_until);
 
 -- Append-only enforced in the database, so it holds regardless of which role the
 -- application connects as (RGM-005). The app role is additionally granted only

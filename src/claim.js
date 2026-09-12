@@ -57,7 +57,14 @@ UPDATE notifications_outbox AS o
 RETURNING id, status, attempts, lease_until;
 `;
 
-/** Park exhausted jobs so they stop being reclaimed (visible, not silently lost). */
+/**
+ * Park exhausted jobs so they stop being reclaimed (visible, not silently lost).
+ *
+ * The lease check is load-bearing: the claim increments `attempts` as it grants a
+ * fresh lease, so a job on its final permitted attempt is legitimately running.
+ * Without `lease_until < now()` a concurrent sweep would mark that live job
+ * `failed` and discard its valid result (RGM-S1-002).
+ */
 export const PARK_EXHAUSTED_TRANSLATIONS_SQL = `
 UPDATE bug_translations
    SET status = 'failed',
@@ -65,7 +72,24 @@ UPDATE bug_translations
        updated_at = now()
  WHERE status IN ('pending','running')
    AND attempts >= $1::int
+   AND (lease_until IS NULL OR lease_until < now())
 RETURNING bug_id, field, lang, attempts;
+`;
+
+/**
+ * The outbox needs the same terminal transition. The first revision only parked
+ * translations, so a notification whose final attempt committed `sending` and
+ * then crashed stayed `sending` forever — unreclaimable and un-parkable
+ * (RGM-S1-003).
+ */
+export const PARK_EXHAUSTED_OUTBOX_SQL = `
+UPDATE notifications_outbox
+   SET status = 'failed',
+       error  = coalesce(error, 'exhausted ' || attempts || ' attempts')
+ WHERE status IN ('pending','running','sending')
+   AND attempts >= $1::int
+   AND (lease_until IS NULL OR lease_until < now())
+RETURNING id, attempts;
 `;
 
 /**
@@ -91,5 +115,10 @@ export async function claimOutbox(db, workerId, policy = ClaimPolicy) {
 
 export async function parkExhaustedTranslations(db, policy = ClaimPolicy) {
   const res = await db.query(PARK_EXHAUSTED_TRANSLATIONS_SQL, [policy.maxAttempts]);
+  return res.rows;
+}
+
+export async function parkExhaustedOutbox(db, policy = ClaimPolicy) {
+  const res = await db.query(PARK_EXHAUSTED_OUTBOX_SQL, [policy.maxAttempts]);
   return res.rows;
 }

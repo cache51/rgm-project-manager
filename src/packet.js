@@ -10,19 +10,42 @@
  * Pure module: no fs, no zip library.
  */
 
-/** Screen-reader/Alphabetical-friendly, fixed-width, zero-padded, always .png */
-export function packetEntryName(index) {
+/**
+ * The extension is chosen by the SERVER from the validated content type, never
+ * taken from the tester's filename. Only these types may reach a packet — the
+ * first revision hard-coded `.png` while `buildPacketMeta` preserved arbitrary
+ * content types, so a JPEG was written as `screenshot_01.png` with
+ * `image/jpeg` metadata and no conversion existed.
+ */
+export const PACKET_IMAGE_EXTENSIONS = Object.freeze({
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'image/heic': 'heic'
+});
+
+export function extensionFor(contentType) {
+  const base = String(contentType ?? '').toLowerCase().split(';')[0].trim();
+  const ext = PACKET_IMAGE_EXTENSIONS[base];
+  if (!ext) throw new RangeError(`unsupported packet image type: ${contentType}`);
+  return ext;
+}
+
+/** Fixed-width, zero-padded, extension derived from the validated type. */
+export function packetEntryName(index, contentType = 'image/png') {
   if (!Number.isInteger(index) || index < 1) {
     throw new RangeError(`packet entry index must be a positive integer, got ${index}`);
   }
-  return `screenshot_${String(index).padStart(2, '0')}.png`;
+  return `screenshot_${String(index).padStart(2, '0')}.${extensionFor(contentType)}`;
 }
 
-export function packetEntryNames(count) {
+export function packetEntryNames(count, contentTypes = []) {
   if (!Number.isInteger(count) || count < 0) {
     throw new RangeError(`count must be a non-negative integer, got ${count}`);
   }
-  return Array.from({ length: count }, (_, i) => packetEntryName(i + 1));
+  return Array.from({ length: count }, (_, i) =>
+    packetEntryName(i + 1, contentTypes[i] ?? 'image/png'));
 }
 
 /**
@@ -92,10 +115,15 @@ export function buildPacketMeta({ bug, project, milestone, attachments = [] }) {
     tester: bug.tester,
     reported_at: bug.createdAt,
     updated_at: bug.updatedAt,
-    attachments: packetEntryNames(attachments.length).map((name, i) => ({
-      name,                                             // server-assigned
-      original_filename: attachments[i].filename,        // tester-supplied, data only
-      content_type: attachments[i].contentType
+    attachments: packetEntryNames(
+      attachments.length, attachments.map(a => a.contentType)
+    ).map((name, i) => ({
+      name,                                               // server-assigned
+      id: attachments[i].id ?? null,                      // stable DB identity
+      original_filename: attachments[i].filename,          // tester-supplied, data only
+      content_type: attachments[i].contentType,
+      uploaded_at: attachments[i].uploadedAt ?? null,
+      attached_to_event: attachments[i].eventId ?? null    // ties a shot to a timeline moment
     }))
   };
 }

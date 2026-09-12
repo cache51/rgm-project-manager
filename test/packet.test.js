@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  packetEntryName, packetEntryNames, packetSlug, packetArchiveName,
+  packetEntryName, packetEntryNames, packetSlug, packetArchiveName, extensionFor,
   isSafeRelativePath, assertSafeRelativePath, packetPathFor, buildPacketMeta
 } from '../src/packet.js';
 
@@ -91,4 +91,46 @@ test('meta keeps the original filename as data, entry name as the path', () => {
   const json = JSON.stringify(meta);
   assert.ok(json.includes('../../evil.png'));
   assert.equal(meta.milestone, 'M2');
+});
+
+// ── RGM-S1-008: the extension follows the validated type, not a hard-coded .png ──
+test('packet entry extension is derived from the content type', () => {
+  assert.equal(packetEntryName(1, 'image/png'), 'screenshot_01.png');
+  assert.equal(packetEntryName(1, 'image/jpeg'), 'screenshot_01.jpg');
+  assert.equal(packetEntryName(1, 'image/webp'), 'screenshot_01.webp');
+  // parameters and casing are tolerated
+  assert.equal(packetEntryName(1, 'IMAGE/JPEG; charset=binary'), 'screenshot_01.jpg');
+  // an unsupported type is refused rather than silently mislabelled
+  assert.throws(() => packetEntryName(1, 'image/tiff'), /unsupported packet image type/);
+  assert.throws(() => packetEntryName(1, 'application/pdf'), /unsupported packet image type/);
+  assert.throws(() => packetEntryName(1, ''), /unsupported packet image type/);
+  assert.equal(extensionFor('image/png'), 'png');
+});
+
+test('a mixed set of attachments gets matching extensions', () => {
+  const names = packetEntryNames(3, ['image/png', 'image/jpeg', 'image/webp']);
+  assert.deepEqual(names, ['screenshot_01.png', 'screenshot_02.jpg', 'screenshot_03.webp']);
+});
+
+test('RGM-S1-007: packet meta carries stable ids and the timeline association', () => {
+  const meta = buildPacketMeta({
+    bug: {
+      id: 'BUG-142', severity: 'high', status: 'retest', tester: 'Hoa',
+      createdAt: '2026-09-12T09:41:00Z', updatedAt: '2026-09-12T10:40:00Z'
+    },
+    project: { id: 'p1', name: 'Packing', client: 'Lucky Brand', env: 'staging' },
+    attachments: [
+      { id: 'att-1', filename: 'a.png', contentType: 'image/png',
+        uploadedAt: '2026-09-12T09:41:10Z', eventId: 7 },
+      { id: 'att-2', filename: 'b.jpeg', contentType: 'image/jpeg',
+        uploadedAt: '2026-09-13T11:00:00Z', eventId: 12 }
+    ]
+  });
+  assert.equal(meta.attachments[0].id, 'att-1');
+  assert.equal(meta.attachments[0].attached_to_event, 7);
+  assert.equal(meta.attachments[0].uploaded_at, '2026-09-12T09:41:10Z');
+  assert.equal(meta.attachments[1].name, 'screenshot_02.jpg');
+  // two screenshots from different retest cycles are distinguishable
+  assert.notEqual(meta.attachments[0].attached_to_event,
+                  meta.attachments[1].attached_to_event);
 });
