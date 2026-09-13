@@ -250,14 +250,33 @@ export async function makeWorld({ limits = null, storage = null } = {}) {
     /** Create an invitation and redeem it, returning the invited user's id. */
     async invite({ projectId, email, role, createdBy }) {
       const before = mails.length;
-      await createInvite(db, { projectId, email, role, createdBy, deliver });
+      // `createInvite` re-authorizes the actor inside its transaction (RGM4-001),
+      // so it needs an identity rather than just an audit trail.
+      await createInvite(db, { projectId, email, role, actor: { userId: createdBy }, deliver });
       const mail = mails.slice(before).find(m => m.kind === 'invite');
       if (!mail) throw new Error(`no invite issued for ${email}`);
       return mail.token;
     },
 
-    async redeem(token) { return redeemInvite(db, token); },
+    /**
+     * Insert a project the way `createProject` does: with a counter, and with its
+     * creator as an admin member.
+     *
+     * Tests used to insert a bare project row and then invite into it, which only
+     * worked because `createInvite` performed no authorization at all (RGM4-001).
+     */
+    async addProject({ name, client = 'ACME', createdBy }) {
+      const id = (await db.query(
+        `INSERT INTO projects (name, client) VALUES ($1,$2) RETURNING id`,
+        [name, client])).rows[0].id;
+      await db.query('INSERT INTO project_counters (project_id) VALUES ($1)', [id]);
+      await db.query(
+        `INSERT INTO memberships (project_id, user_id, role) VALUES ($1,$2,'admin')`,
+        [id, createdBy]);
+      return id;
+    },
 
+    async redeem(token) { return redeemInvite(db, token); },
     async close() {
       await new Promise(r => app.server.close(r));
       if (db.close) await db.close();

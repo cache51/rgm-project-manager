@@ -70,7 +70,14 @@ export function chooseMailer(env = process.env) {
       user: env.SMTP_USER,
       pass: env.SMTP_PASS,
       from: env.MAIL_FROM ?? 'no-reply@rgm.local',
-      requireTls: bool(env.SMTP_REQUIRE_TLS, false)
+      // Authenticated SMTP must not silently fall back to plaintext, so the
+      // default is on as soon as a username is configured; an explicit setting
+      // wins either way.
+      //
+      // Both spellings are read because README documented `REQUIRE_TLS` while this
+      // loader read `SMTP_REQUIRE_TLS`, so following the docs left TLS unrequired
+      // and let credentials and sign-in mail go over plaintext (RGM4-005).
+      requireTls: bool(env.SMTP_REQUIRE_TLS ?? env.REQUIRE_TLS, Boolean(env.SMTP_USER))
     });
   }
   return ConsoleMailer();

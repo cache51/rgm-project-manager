@@ -14,7 +14,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeZip, crc32 } from '../src/zip.js';
 import { readZip } from '../src/unzip.js';
-import { extractPacket, ensureIgnored, assertPacketBelongsToProject } from '../src/cli.js';
+import { extractPacket, ensureIgnored, assertPacketBelongsToProject,
+         bindProject } from '../src/cli.js';
 import { makeProjectWorld, makeMilestone, fileBug, PNG_BYTES } from './helpers.js';
 
 const run = promisify(execFile);
@@ -42,6 +43,32 @@ describe('packet extraction does not follow symlinks (IR-010)', () => {
     assert.equal(await readFile(join(target, 'bug.md'), 'utf8'), 'from the packet');
   });
 
+  test('a symlinked packet directory is refused before anything is written', async () => {
+    // RGM4-002: the first fix only walked components *below* the packet directory,
+    // so making that directory itself a link still sent every write outside the
+    // packet tree.
+    const outside = join(dir, 'outside');
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(outside, 'bug.md'), 'ORIGINAL');
+    await symlink(outside, join(dir, 'linked-packet'));      // .rgm/BUG-1 → elsewhere
+
+    const zip = Buffer.from(makeZip([{ name: 'bug.md', data: Buffer.from('from the packet') }]));
+    await assert.rejects(
+      () => extractPacket(zip, join(dir, 'linked-packet')),
+      /symbolic link/);
+    assert.equal(await readFile(join(outside, 'bug.md'), 'utf8'), 'ORIGINAL',
+      'nothing outside the packet directory may be touched');
+  });
+
+  test('a symlinked output root is refused by ensureIgnored', async () => {
+    const realRoot = join(dir, 'real-root');
+    await mkdir(realRoot, { recursive: true });
+    await symlink(realRoot, join(dir, 'linked-root'));
+
+    await assert.rejects(() => ensureIgnored(join(dir, 'linked-root')), /symbolic link/);
+    assert.equal(await readdir(realRoot).then((r) => r.length), 0,
+      'no ignore file may be created through the link');
+  });
   test('a symlinked ancestor directory is refused outright', async () => {
     const elsewhere = join(dir, 'elsewhere');
     await mkdir(elsewhere, { recursive: true });
@@ -131,6 +158,42 @@ describe('a packet is not written into the wrong project (IR-009)', () => {
   test('a packet that names no project is refused', () => {
     const zip = packetFor({ id: 'b', project: {} });
     assert.throws(() => assertPacketBelongsToProject(zip, projectId), /does not name its project/);
+  });
+});
+
+describe('a repository remembers its project (RGM4-003)', () => {
+  const projA = '11111111-1111-1111-1111-111111111111';
+  const projB = '99999999-9999-9999-9999-999999999999';
+  let root;
+
+  before(async () => { root = await mkdtemp(join(tmpdir(), 'rgm-bind-')); });
+  after(async () => { await rm(root, { recursive: true, force: true }); });
+
+  test('the first pull binds, and the same project keeps working', async () => {
+    const dir = join(root, 'repo-a');
+    const bound = await bindProject(dir, { id: projA, name: 'Packing Line' });
+    assert.equal(bound.id, projA);
+
+    const again = await bindProject(dir, { id: projA, name: 'Packing Line' });
+    assert.equal(again.id, projA, 'the same project is not an error');
+
+    const onDisk = JSON.parse(await readFile(join(dir, 'project.json'), 'utf8'));
+    assert.equal(onDisk.id, projA);
+    assert.equal(onDisk.name, 'Packing Line');
+  });
+
+  test('a project switch elsewhere does not redirect this repository', async () => {
+    // The global `rgm use B`, applied while working in another repo, must not turn a
+    // pull in repo A into project B's BUG-1 over A's .rgm/BUG-1.
+    const dir = join(root, 'repo-b');
+    await bindProject(dir, { id: projA, name: 'Packing Line' });
+
+    await assert.rejects(
+      () => bindProject(dir, { id: projB, name: 'Garment Line' }),
+      /bound to project 'Packing Line'/);
+
+    const onDisk = JSON.parse(await readFile(join(dir, 'project.json'), 'utf8'));
+    assert.equal(onDisk.id, projA, 'the binding must not be rewritten by a mismatch');
   });
 });
 

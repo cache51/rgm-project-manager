@@ -58,6 +58,31 @@ export async function authorize(db, actor, projectId, allowed = ROLES) {
   return effective;
 }
 
+/**
+ * Re-assert the actor's authority from inside the mutation's transaction.
+ *
+ * `authorize()` runs before the request body is read, so authority can be revoked
+ * in between: an admin can open a PATCH, be demoted while the body is still in
+ * flight, and then have the request complete with the rights they no longer hold —
+ * including restoring their own role (RGM4-001). This mirrors `authorize` exactly,
+ * including the site-admin bypass, but reads through the transaction that holds the
+ * project lock.
+ */
+export async function requireActorAuthority(tx, actor, projectId, allowed = ROLES) {
+  if (!actor) throw new HttpError(401, 'unauthenticated', 'sign in required');
+  const r = await tx.query(
+    `SELECT role FROM active_memberships WHERE project_id = $1 AND user_id = $2`,
+    [projectId, actor.userId]);
+  const role = r.rows[0]?.role;
+  if (!role) throw new HttpError(403, 'not_a_member', 'not a member of this project');
+  const effective = actor.isSiteAdmin ? 'admin' : role;
+  if (!allowed.includes(effective)) {
+    throw new HttpError(403, 'forbidden',
+      `requires ${allowed.join(' or ')} — your role changed while this request was in flight`);
+  }
+  return effective;
+}
+
 /** Resolve the project a bug belongs to, then authorize against it. */
 export async function authorizeBug(db, actor, bugId, allowed = ROLES) {
   const r = await db.query('SELECT id, project_id FROM bugs WHERE id = $1', [bugId]);
@@ -211,7 +236,7 @@ export async function revokeApiToken(db, userId, tokenId) {
 
 // ─────────────────── invitations (§5) ───────────────────
 
-export async function createInvite(db, { projectId, email, role, createdBy, deliver,
+export async function createInvite(db, { projectId, email, role, actor, deliver,
                                         ttlHours = 72 }) {
   if (!ROLES.includes(role)) throw new HttpError(400, 'bad_role', `unknown role ${role}`);
   const normalized = normalizeEmail(email);
@@ -223,6 +248,10 @@ export async function createInvite(db, { projectId, email, role, createdBy, deli
     // revoked. Redemption and removal had it; creation did not (RGM3-003).
     await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))',
       [`invite:${projectId}:${normalized}`]);
+
+    // And the actor is re-checked under that lock, because `authorize()` ran before
+    // the body was read (RGM4-001).
+    await requireActorAuthority(tx, actor, projectId, ['admin']);
 
     // Retire anything expired first. The live-invitation index excludes consumed
     // and revoked rows but cannot exclude by expiry — `now()` is not immutable, so
@@ -237,7 +266,7 @@ export async function createInvite(db, { projectId, email, role, createdBy, deli
     await tx.query(
       `INSERT INTO invitations (project_id, email, role, token_hash, expires_at, created_by)
        VALUES ($1, $2, $3, $4, now() + make_interval(hours => $5::int), $6)`,
-      [projectId, normalized, role, hashToken(token), ttlHours, createdBy]);
+      [projectId, normalized, role, hashToken(token), ttlHours, actor.userId]);
   });
 
   if (deliver) await deliver({ to: normalized, token, kind: 'invite' });
@@ -355,7 +384,7 @@ export async function removeMember(db, { projectId, userId, actorId }) {
  *     and get the role back (IR-005).
  *   - The audit event, so a role change is attributable.
  */
-export async function setMemberRole(db, { projectId, userId, role, actorId }) {
+export async function setMemberRole(db, { projectId, userId, role, actor }) {
   if (!ROLES.includes(role)) {
     throw new HttpError(400, 'bad_role', `role must be one of ${ROLES.join(', ')}`);
   }
@@ -372,6 +401,11 @@ export async function setMemberRole(db, { projectId, userId, role, actorId }) {
     await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`members:${projectId}`]);
     await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))',
       [`invite:${projectId}:${email}`]);
+
+    // Under the lock, so a demotion that lands while this body was in flight is
+    // seen and refused rather than applied with the rights the caller had when the
+    // request began (RGM4-001).
+    await requireActorAuthority(tx, actor, projectId, ['admin']);
 
     if (role !== 'admin' && currentRole === 'admin') {
       const admins = await tx.query(
@@ -397,7 +431,7 @@ export async function setMemberRole(db, { projectId, userId, role, actorId }) {
     await tx.query(
       `INSERT INTO events (project_id, membership_user_id, actor_id, kind, payload)
        VALUES ($1, $2, $3, 'membership.role_changed', $4)`,
-      [projectId, userId, actorId,
+      [projectId, userId, actor.userId,
         JSON.stringify({ from: currentRole, to: role, revokedInvites: revoked.rows.length })]);
 
     return { ...updated.rows[0], from: currentRole,

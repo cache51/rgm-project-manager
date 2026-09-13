@@ -26,9 +26,7 @@ describe('bugs: filing and numbering', () => {
   });
 
   test('numbers are independent between projects', async () => {
-    const otherId = (await w.db.query(
-      `INSERT INTO projects (name, client) VALUES ('Second','ACME') RETURNING id`)).rows[0].id;
-    await w.db.query('INSERT INTO project_counters (project_id) VALUES ($1)', [otherId]);
+    const otherId = await w.addProject({ name: 'Second', createdBy: w.admin.userId });
     const token = await w.invite({ projectId: otherId, email: 'p2@rgm.example', role: 'developer',
                                    createdBy: w.admin.userId });
     await w.redeem(token);
@@ -42,9 +40,7 @@ describe('bugs: filing and numbering', () => {
   test('a milestone from another project is refused', async () => {
     // This tester IS a member of the other project, so a 400 below can only come
     // from the milestone check — not from an authorization failure.
-    const otherId = (await w.db.query(
-      `INSERT INTO projects (name, client) VALUES ('Third','ACME') RETURNING id`)).rows[0].id;
-    await w.db.query('INSERT INTO project_counters (project_id) VALUES ($1)', [otherId]);
+    const otherId = await w.addProject({ name: 'Third', createdBy: w.admin.userId });
     const token = await w.invite({ projectId: otherId, email: 'p3@rgm.example',
                                    role: 'developer', createdBy: w.admin.userId });
     await w.redeem(token);

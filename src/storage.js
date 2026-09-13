@@ -83,7 +83,22 @@ export class FsStorage {
   async put(key, bytes) {
     const p = this.#path(key);
     await mkdir(dirname(p), { recursive: true });
-    await writeFile(p, bytes);
+
+    // Write to a unique temporary file, then publish it with a single rename.
+    //
+    // Writing straight to `p` let a slow PUT keep an open descriptor to the same
+    // inode that `promote` later renames, so it went on modifying the object *after*
+    // the final-key check and the database commit — moving the filename is not the
+    // same as freezing the bytes (RGM4-006). Each writer now owns its own inode, and
+    // only a fully written file is ever visible at the key.
+    const temp = `${p}.${randomUUID()}.part`;
+    try {
+      await writeFile(temp, bytes);
+      await rename(temp, p);
+    } catch (err) {
+      await rm(temp, { force: true }).catch(() => {});
+      throw err;
+    }
     return { key, byteSize: bytes.length };
   }
 

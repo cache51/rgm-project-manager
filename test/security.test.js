@@ -387,15 +387,21 @@ describe('migrations', () => {
         WHERE grantee = 'rgm_auditor' AND table_name = 'events'`);
     assert.deepEqual(auditor.rows.map((r) => r.privilege_type), ['SELECT']);
 
-    // The old misleading name must no longer name anything the application uses.
-    // It may still exist on a shared cluster, where another database's objects
-    // depend on it and nothing here can drop it — in that case it must at least
-    // hold no access to this database.
-    const stale = await db.query(
-      `SELECT count(*)::int AS c FROM information_schema.role_table_grants
-        WHERE grantee = 'rgm_app'`);
-    assert.equal(stale.rows[0].c, 0,
-      'if rgm_app survives, it must not still be able to reach this database');
+    // A pre-existing `rgm_app` must keep its identity — role names are cluster-wide,
+    // so renaming it (as this fix first did) followed for every other database on the
+    // server and broke any login created under that name (RGM4-004). It should
+    // instead inherit the runtime group, which is the access the old migration denied
+    // it, without its name changing.
+    const stale = await db.query(`SELECT 1 FROM pg_roles WHERE rolname = 'rgm_app'`);
+    if (stale.rows.length) {
+      const inherits = await db.query(
+        `SELECT 1 FROM pg_auth_members m
+           JOIN pg_roles r ON r.oid = m.member
+           JOIN pg_roles g ON g.oid = m.roleid
+          WHERE r.rolname = 'rgm_app' AND g.rolname = 'rgm_runtime'`);
+      assert.equal(inherits.rows.length, 1,
+        'a pre-existing rgm_app must inherit rgm_runtime, not be renamed');
+    }
 
     await db.close();
   });

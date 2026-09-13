@@ -370,7 +370,7 @@ export function buildRoutes() {
     if (!email || !role) throw new HttpError(400, 'missing_fields', 'email and role required');
     await createInvite(ctx.db, {
       projectId: ctx.params.id, email, role, ttlHours,
-      createdBy: ctx.actor.userId, deliver: ctx.deliver
+      actor: ctx.actor, deliver: ctx.deliver
     });
     sendJson(res, 201, { ok: true });
   }));
@@ -403,7 +403,7 @@ export function buildRoutes() {
       projectId: ctx.params.id,
       userId: ctx.params.userId,
       role,
-      actorId: ctx.actor.userId
+      actor: ctx.actor
     });
 
     sendJson(res, 200, updated);

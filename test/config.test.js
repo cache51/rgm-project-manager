@@ -56,9 +56,22 @@ describe('config: mailer', () => {
                                 EMAIL_API_KEY: 'k', SMTP_HOST: 'smtp.example' }).name, 'http');
   });
 
-  test('requireTls can be demanded explicitly', () => {
-    const mailer = chooseMailer({ SMTP_HOST: 'x', SMTP_REQUIRE_TLS: 'true' });
-    assert.equal(mailer.name, 'smtp');
+  test('requireTls resolves, and an authenticated mailer demands it by default', () => {
+    // RGM4-005: the README documented `REQUIRE_TLS` while the loader read
+    // `SMTP_REQUIRE_TLS`, and the default was false — so an operator following the
+    // docs got no STARTTLS requirement and credentials could go out in plaintext.
+    // The old test only asserted the provider name, which is why it missed this.
+    const explicitOff = chooseMailer({ SMTP_HOST: 'x', SMTP_USER: 'u',
+                                       SMTP_REQUIRE_TLS: 'false' });
+    assert.equal(explicitOff.requireTls, false, 'an explicit false is honoured');
+
+    assert.equal(chooseMailer({ SMTP_HOST: 'x', SMTP_REQUIRE_TLS: 'true' }).requireTls, true);
+    assert.equal(chooseMailer({ SMTP_HOST: 'x', REQUIRE_TLS: 'true' }).requireTls, true,
+      'the documented spelling must work too');
+    assert.equal(chooseMailer({ SMTP_HOST: 'x', SMTP_USER: 'u' }).requireTls, true,
+      'authenticated SMTP requires TLS unless told otherwise');
+    assert.equal(chooseMailer({ SMTP_HOST: 'x' }).requireTls, false,
+      'a credential-less dev relay is left alone');
   });
 });
 

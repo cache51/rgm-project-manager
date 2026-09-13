@@ -10,7 +10,7 @@ import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createHash, createHmac } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FsStorage } from '../src/storage.js';
@@ -211,6 +211,41 @@ describe('fs storage', () => {
       contentType: 'image/png', expiresInSeconds: -1
     });
     assert.throws(() => storage.verifyUpload(expired.token), /expired/);
+  });
+
+  test('concurrent writes to one key each publish a complete object', async () => {
+    // RGM4-006: `put` wrote straight into the key, so two writers shared one inode —
+    // and a writer that was slow to finish went on modifying the object *after* its
+    // size had been checked and recorded, i.e. after `promote` renamed that inode to
+    // the final key. Writing to a private temporary file and renaming it into place
+    // means each writer owns its inode, and only whole files are ever published.
+    const key = storage.keyFor('11111111-1111-1111-1111-111111111111',
+      '22222222-2222-2222-2222-222222222222');
+    const big = Buffer.alloc(4_000_000, 1);
+    const other = Buffer.alloc(2_000_000, 2);
+
+    await Promise.all([storage.put(key, big), storage.put(key, other)]);
+
+    const got = await storage.get(key);
+    const whole = (buf, fill) => buf[0] === fill && buf[buf.length - 1] === fill;
+    assert.ok(
+      (got.length === big.length && whole(got, 1)) ||
+      (got.length === other.length && whole(got, 2)),
+      `the object must be exactly one complete write, got ${got.length} bytes`);
+  });
+
+  test('a published object is complete the moment its key exists', async () => {
+    const key = storage.keyFor('33333333-3333-3333-3333-333333333333',
+      '44444444-4444-4444-4444-444444444444');
+    const bytes = Buffer.alloc(1_000_000, 9);
+
+    await storage.put(key, bytes);
+    assert.equal((await storage.head(key)).byteSize, bytes.length,
+      'never a growing file at the key');
+
+    const entries = await readdir(dir, { recursive: true });
+    assert.ok(!entries.some((e) => String(e).endsWith('.part')),
+      'the temporary file must be renamed into place, not left behind');
   });
 
   test('the key shape is enforced before any filesystem access', async () => {

@@ -198,6 +198,10 @@ export function SmtpMailer({
 
   return {
     name: 'smtp',
+    // Exposed so the configuration contract can be asserted: a `requireTls` that
+    // resolved to false while the docs promised otherwise is exactly how
+    // credentials came to be sendable in plaintext (RGM4-005).
+    requireTls,
 
     async send({ to, subject, body, idempotencyKey = null }) {
       const messageId = idempotencyKey ? smtpId(idempotencyKey) : `<${randomUUID()}@rgm.local>`;

@@ -228,9 +228,7 @@ describe('attachments: two-phase upload', () => {
     assert.equal(Buffer.compare(res.buf, PNG_BYTES), 0, 'exact bytes round-trip');
 
     // An outsider cannot fetch it.
-    const otherId = (await w.db.query(
-      `INSERT INTO projects (name, client) VALUES ('Elsewhere','ACME') RETURNING id`)).rows[0].id;
-    await w.db.query('INSERT INTO project_counters (project_id) VALUES ($1)', [otherId]);
+    const otherId = await w.addProject({ name: 'Elsewhere', createdBy: w.admin.userId });
     const token = await w.invite({ projectId: otherId, email: 'nosy@rgm.example', role: 'tester',
                                    createdBy: w.admin.userId });
     await w.redeem(token);
@@ -396,9 +394,7 @@ describe('packet: agent handoff', () => {
   });
 
   test('an outsider cannot fetch the packet', async () => {
-    const otherId = (await w.db.query(
-      `INSERT INTO projects (name, client) VALUES ('Far','ACME') RETURNING id`)).rows[0].id;
-    await w.db.query('INSERT INTO project_counters (project_id) VALUES ($1)', [otherId]);
+    const otherId = await w.addProject({ name: 'Far', createdBy: w.admin.userId });
     const token = await w.invite({ projectId: otherId, email: 'far@rgm.example', role: 'developer',
                                    createdBy: w.admin.userId });
     await w.redeem(token);

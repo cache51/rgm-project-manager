@@ -16,7 +16,46 @@ plan so they are not lost.
 | Partly fixed | — | 1 | 1 |
 | Open | 0 | 9 | 9 |
 
-**Every high-severity finding is closed.** The nine still open are all medium, and
+---
+
+## Second inspection — after the fixes (`56509a5..631bebd`)
+
+Re-run on a frozen tree, so it returned a verdict rather than self-rejecting.
+Verdict again **REVISE**: **31 findings** (6 high, 23 medium, 2 low).
+
+Its summary is the important part: *"Material defects remain in privilege revocation,
+CLI isolation, database upgrades, upload integrity, and worker recovery. **Several
+findings marked closed in the repository still have concrete failure paths.**"*
+
+That is correct, and it is the value of running it:
+
+| | high | medium | low | total |
+|---|---|---|---|---|
+| Found | 6 | 23 | 2 | 31 |
+| Fixed | **6** | — | — | **6** |
+| Open | 0 | 23 | 2 | 25 |
+
+Every one of the six high findings is fixed below. **Four of the six were incomplete
+versions of fixes recorded as closed in the first round** (RGM4-002 vs IR-010,
+RGM4-003 vs IR-009, RGM4-005 vs IR-011, RGM4-006 vs IR-013) — the same class of
+mistake as the original review, made again while closing it. The lesson is in the
+pattern, not the individual bugs: fixing the path the review named is not the same as
+fixing the class it belongs to.
+
+| id | sev | finding | fix |
+|---|---|---|---|
+| **RGM4-001** | high | **Authorization read before the body.** `authorize()` runs before `readJson`, and the mutation never re-read the actor — so an admin could open a role-change request, be demoted while the body was still arriving, and have it applied with the rights they had lost, including restoring their own role. Invitation creation had the same gap. | `requireActorAuthority(tx, actor, …)` re-reads the actor's effective role inside the mutation's transaction, under the same project lock as any demotion. Test: a demoted actor is refused, the demotion is not undone, and no invitation appears. |
+| **RGM4-002** | high | **The symlink guard missed the target itself.** IR-010's fix walked components *below* the packet directory, so making that directory a symlink (`ln -s /elsewhere .rgm/BUG-1`) still sent every `rm` and `writeFile` outside the tree. `ensureIgnored` likewise followed a symlinked root. | `assertNotSymlink` checks the packet directory and the output root before anything is written; `ensureIgnored` checks the root too. Tests: a symlinked packet directory and a symlinked root are both refused, and nothing outside is touched. |
+| **RGM4-003** | high | **The IR-009 fix validated against the wrong thing.** It compared the packet's project to `config.projectId` — but the selection is global, so after `rgm use B` in another repository, `pull 1` in repository A fetched B's bug, passed validation, and overwrote A's `.rgm/BUG-1`. | The output root now carries a `project.json` binding, written on first pull and enforced on every later one, so a project switch elsewhere cannot redirect a repository. Test: a mismatched binding is refused and not rewritten. |
+| **RGM4-004** | high | **Renaming a cluster-wide role.** My first 005 did `ALTER ROLE rgm_app RENAME TO rgm_runtime`. Role names are cluster-wide, so that changed the identity for every other database on the server and broke any login created under that name, including a `DATABASE_URL` authenticating as it. | 005 now introduces `rgm_runtime` additively and `GRANT`s it **to** an existing `rgm_app`, so the name keeps its identity and gains the access the old migration denied it. Never renames, never drops. Verified on real PostgreSQL, where that cluster still had the old role. |
+| **RGM4-005** | high | **The documented setting did nothing.** `README.md` told operators to set `REQUIRE_TLS=true`; the loader read only `SMTP_REQUIRE_TLS`, and defaulted to `false` — so following the docs sent credentials and sign-in mail over plaintext. | The loader accepts both spellings and defaults `requireTls` to **true whenever `SMTP_USER` is set**. `SmtpMailer` now exposes `requireTls` so the contract is assertable — the old test checked the provider *name*, which is why it missed this. |
+| **RGM4-006** | high | **Validating an object that was still writable.** IR-013's fix validated the promoted key — but `put` wrote straight into that file, so a slow PUT held an open descriptor to the inode `promote` renamed, and kept modifying the object after the check and the commit. | `put` writes to a unique temporary file and publishes it with one `rename`, so each writer owns its inode and only whole files are ever visible at a key. Tests: concurrent writes yield exactly one complete object, and no `.part` file is left behind. |
+
+The 23 medium and 2 low findings from this run are unaddressed. They are not recorded
+individually here yet; the run's own output is in `/tmp/inspect3.log`.
+
+**Every high-severity finding from this first run is closed.** The nine still open are
+all medium, and
 they cluster into two groups: the worker lifecycle (lease renewal, a request
 deadline, a staging reaper, SMTP idempotency) and text handling (EXIF stripping,
 event-note translations in the prompt, tokens in URLs, and a timing side channel

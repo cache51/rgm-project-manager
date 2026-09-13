@@ -5,7 +5,7 @@
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeProjectWorld, makeMilestone } from './helpers.js';
-import { hashToken } from '../src/auth.js';
+import { hashToken, setMemberRole, createInvite } from '../src/auth.js';
 
 describe('auth: login', () => {
   let w;
@@ -91,9 +91,7 @@ describe('auth: authorization', () => {
   test('a member of one project cannot read another project (cross-project isolation)', async () => {
     // The outsider is a legitimate, signed-in user — but of a DIFFERENT project.
     // This is the RGM-001 concern: a valid account must not reach unrelated data.
-    const otherId = (await w.db.query(
-      `INSERT INTO projects (name, client) VALUES ('Other Site','ACME') RETURNING id`)).rows[0].id;
-    await w.db.query('INSERT INTO project_counters (project_id) VALUES ($1)', [otherId]);
+    const otherId = await w.addProject({ name: 'Other Site', createdBy: w.admin.userId });
 
     const token = await w.invite({ projectId: otherId, email: 'outsider@x.example',
                                    role: 'tester', createdBy: w.admin.userId });
@@ -150,6 +148,52 @@ describe('auth: authorization', () => {
       { email: 'z@y.example', role: 'superuser' });
     assert.equal(res.status, 400);
     assert.equal(res.json.error, 'bad_role');
+  });
+
+  test('a mutation is refused if the actor was demoted while it was in flight', async () => {
+    // RGM4-001: `authorize()` runs before the request body is read, so an admin could
+    // open a request, be demoted while the body was still arriving, and have the
+    // mutation apply with the rights they no longer held — including restoring their
+    // own role. The mutation now re-reads the actor under its own lock.
+    const world = await makeProjectWorld();
+    try {
+      const victim = (await world.db.query(
+        `SELECT user_id FROM active_memberships
+          WHERE project_id = $1 AND role = 'tester'`, [world.project.id])).rows[0].user_id;
+
+      // The actor was authorized as an admin, and lost that standing before the
+      // transaction ran.
+      const demotedActor = { userId: world.admin.userId };
+      await world.db.query(
+        `UPDATE memberships SET role = 'tester'
+          WHERE project_id = $1 AND user_id = $2`,
+        [world.project.id, world.admin.userId]);
+
+      await assert.rejects(
+        () => setMemberRole(world.db, {
+          projectId: world.project.id, userId: victim, role: 'admin', actor: demotedActor
+        }),
+        /requires admin/,
+        'a demoted actor must not be able to change roles');
+
+      await assert.rejects(
+        () => createInvite(world.db, {
+          projectId: world.project.id, email: 'sneak@rgm.example', role: 'admin',
+          actor: demotedActor
+        }),
+        /requires admin/,
+        'nor to hand out an invitation');
+
+      // And the demotion itself was not undone.
+      const after = await world.db.query(
+        `SELECT role FROM active_memberships WHERE project_id = $1 AND user_id = $2`,
+        [world.project.id, world.admin.userId]);
+      assert.equal(after.rows[0].role, 'tester');
+      assert.equal(
+        (await world.db.query(
+          `SELECT 1 FROM invitations WHERE email = 'sneak@rgm.example'`)).rows.length, 0,
+        'no invitation may have been created');
+    } finally { await world.close(); }
   });
 
   test('a demoted admin cannot restore their role with an old invitation', async () => {

@@ -20,6 +20,9 @@ import { assertSafeRelativePath, packetPathFor } from './packet.js';
 
 export const CONFIG_PATH = process.env.RGM_CONFIG ?? join(homedir(), '.rgm', 'config.json');
 
+/** The file that records which project a working directory pulls from. */
+export const BINDING_FILE = 'project.json';
+
 /**
  * Extract a packet archive into `targetDir`.
  *
@@ -42,6 +45,15 @@ export async function extractPacket(zipBuffer, targetDir) {
     assertSafeRelativePath(entry.name);
   }
 
+  // The packet directory and its parent must be real directories, not links.
+  //
+  // `assertNoSymlinkedAncestor` below only walks components *under* the target, so
+  // a packet directory that is itself a symlink — `ln -s /somewhere/else
+  // .rgm/BUG-1` — sent every `rm` and `writeFile` outside the packet tree
+  // (RGM4-002). Checked before anything is written.
+  await assertNotSymlink(targetDir, 'the packet directory');
+  await assertNotSymlink(dirname(targetDir), 'the output root');
+
   await mkdir(targetDir, { recursive: true });
   const written = [];
   for (const entry of files) {
@@ -58,6 +70,28 @@ export async function extractPacket(zipBuffer, targetDir) {
     written.push(entry.name);
   }
   return written;
+}
+
+/**
+ * Refuse to use a path that is a symbolic link.
+ *
+ * A symlinked packet directory or output root places the whole extraction outside
+ * the tree the caller believes it is writing into, and neither `rm` nor `writeFile`
+ * respects that boundary (RGM4-002).
+ */
+async function assertNotSymlink(path, what) {
+  let stat;
+  try {
+    stat = await lstat(path);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;             // nothing there yet: it will be created
+    throw err;
+  }
+  if (stat.isSymbolicLink()) {
+    throw new Error(
+      `refusing to extract: ${what} ${path} is a symbolic link, which would place the `
+      + `packet outside the intended directory — remove it, or pass --out elsewhere`);
+  }
 }
 
 /**
@@ -91,6 +125,10 @@ async function assertNoSymlinkedAncestor(targetDir, relPath) {
  * repository's own ignore file.
  */
 export async function ensureIgnored(rootDir) {
+  // A symlinked output root would carry the ignore file — and the packet with it —
+  // outside the tree the user believes they are using (RGM4-002).
+  await assertNotSymlink(rootDir, 'the output root');
+
   const ignorePath = join(rootDir, '.gitignore');
   try {
     await lstat(ignorePath);
@@ -99,6 +137,44 @@ export async function ensureIgnored(rootDir) {
     await mkdir(rootDir, { recursive: true });
     await writeFile(ignorePath, '# pulled packets are local working data\n*\n');
   }
+}
+
+/**
+ * Bind an output directory to the project its packets come from.
+ *
+ * `rgm use <project>` writes its selection to the global `~/.rgm/config.json`, so it
+ * applies to every repository on the machine. Switching projects while working in one
+ * repository and then running `pull 1` in another fetched the *new* project's BUG-1 and
+ * wrote it over `.rgm/BUG-1` — two clients' reports sharing one path. Checking the
+ * packet against the global setting cannot catch that, because both sides agree; the
+ * repository has to remember which project it belongs to (RGM4-003).
+ *
+ * The first pull in a directory establishes the binding, and later pulls must agree
+ * with it. `--out` gives each project its own root when one repository genuinely needs
+ * to pull from two.
+ */
+export async function bindProject(rootDir, project) {
+  const path = join(rootDir, BINDING_FILE);
+  let existing = null;
+  try {
+    existing = JSON.parse(await readFile(path, 'utf8'));
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;              // an unreadable binding is not a licence to guess
+  }
+
+  if (existing?.id && existing.id !== project.id) {
+    throw new Error(
+      `${rootDir} is bound to project '${existing.name ?? existing.id}' (${existing.id}), but this `
+      + `CLI is set to ${project.id}. Packets from two projects would share one path — run `
+      + `'rgm use <name>' for this repository's project, or pull into a separate --out directory.`);
+  }
+
+  if (!existing) {
+    await mkdir(rootDir, { recursive: true });
+    await writeFile(path, `${JSON.stringify({ id: project.id, name: project.name ?? null }, null, 2)}\n`);
+    return { id: project.id, name: project.name ?? null };
+  }
+  return existing;
 }
 
 /**
@@ -235,7 +311,7 @@ export async function run(argv = process.argv.slice(2)) {
     const { projects } = await res.json();
     const match = projects.find(p => p.id === wanted || p.name === wanted);
     if (!match) throw new Error(`no project matching ${wanted}`);
-    await saveConfig({ ...config, projectId: match.id });
+    await saveConfig({ ...config, projectId: match.id, projectName: match.name });
     return `using ${match.name}`;
   }
 
@@ -270,6 +346,10 @@ export async function run(argv = process.argv.slice(2)) {
     const root = args.out ?? '.rgm';
     const outDir = join(root, code);
     await ensureIgnored(root);
+    // The repository's own project, before anything is written. `rgm use` is global,
+    // so this is what stops a project switch elsewhere from redirecting a pull here
+    // (RGM4-003).
+    await bindProject(root, { id: config.projectId, name: config.projectName });
     const written = await extractPacket(zip, outDir);
     return `${code} -> ${outDir}\n  ${written.join('\n  ')}`;
   }

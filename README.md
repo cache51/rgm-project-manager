@@ -50,7 +50,7 @@ bucket, mailer or translation provider they are using.
 | `PGLITE_DIR` | Where the embedded database keeps its files. Unset → in-memory. |
 | `STORAGE_DIR` / `STORAGE_SECRET` | Local object storage, and the HMAC key for upload capabilities. |
 | `S3_ENDPOINT` `S3_BUCKET` `S3_ACCESS_KEY_ID` `S3_SECRET_ACCESS_KEY` | Store attachments in a bucket instead. `S3_REGION`, `S3_FORCE_PATH_STYLE` (default true — MinIO needs it). |
-| `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `MAIL_FROM` | Send real mail over SMTP. `SMTP_SECURE=true` for implicit TLS, `REQUIRE_TLS=true` to demand STARTTLS. |
+| `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `MAIL_FROM` | Send real mail over SMTP. `SMTP_SECURE=true` for implicit TLS. `SMTP_REQUIRE_TLS` demands STARTTLS and **defaults to true whenever `SMTP_USER` is set**; set it to `false` explicitly to allow plaintext (dev only). The older spelling `REQUIRE_TLS` is still read. |
 | `EMAIL_API_ENDPOINT` `EMAIL_API_KEY` | Send mail through an HTTP provider instead — takes precedence over SMTP. |
 | `TRANSLATE_PROVIDER` | `stub` (default), `openai`, or `deepl`. |
 | `TRANSLATE_BASE_URL` `TRANSLATE_API_KEY` `TRANSLATE_MODEL` | For `openai`-compatible endpoints. `TRANSLATE_API_URL` is accepted as an alias. `DEEPL_API_KEY` for `deepl`. |
