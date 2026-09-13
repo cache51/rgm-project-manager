@@ -230,7 +230,13 @@
   /* ── a bug's state, in the colours the workflow is described in ──
      red    = the problem is still there (reported, being fixed, or sent back)
      light  = a developer says it is fixed and it is waiting to be verified
-     green  = done: verified by a tester, or closed by a developer with a reason */
-  .st.open{background:var(--high-bg);color:var(--high)}
-  .st.fixed{background:#dcfce7;color:#15803d}
-  .st.verified{background:var(--ok-bg);color:var(--ok)}
+     green  = done: verified by a tester, or closed by a developer with a reason
+
+     The three differ by FILL and BORDER, not by hue alone. Two pale greens next to each
+     other were indistinguishable, and red-versus-green is the commonest colour
+     blindness — so the weight of the chip carries the meaning and the colour supports
+     it: pale with a dashed edge means provisional, a solid chip means settled. In
+     greyscale the three still read differently. */
+  .st.open{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca}
+  .st.fixed{background:#bbf7d0;color:#14532d;border:1px dashed #15803d}
+  .st.verified{background:#16a34a;color:#fff;border:1px solid #15803d}
