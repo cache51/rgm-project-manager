@@ -256,6 +256,64 @@ describe('ui (dom): editing and removing', () => {
     assert.match(app.html(), /data-action="report"/, 'but reporting is still theirs');
   });
 
+  test('the bug list colours each bug by its state, in the workflow colours', async () => {
+    // red while the problem is there, light green when a developer says it is fixed and
+    // it is waiting to be checked, green when it is done.
+    const one = payloads.bugs.bugs[0];
+    const four = {
+      bugs: [
+        { ...one, id: 'b-new', status: 'new' },
+        { ...one, id: 'b-fixing', status: 'fixing' },
+        { ...one, id: 'b-retest', status: 'retest' },
+        { ...one, id: 'b-closed', status: 'closed' }
+      ],
+      openCount: 3
+    };
+    const app = loadApp({
+      routes: { ...projectRoutes(payloads.meDev),
+                [`GET /api/projects/${w.project.id}/bugs`]: four }
+    });
+    await settle();
+    await app.click('view', { view: 'bugs' });
+
+    const html = app.html();
+    const count = (cls) => (html.match(new RegExp(`class="st ${cls}"`, 'g')) ?? []).length;
+    assert.equal(count('open'), 2, 'reported and being fixed both read as "not fixed yet"');
+    assert.equal(count('fixed'), 1, 'marked fixed, waiting to be verified');
+    assert.equal(count('verified'), 1, 'done');
+    assert.equal(count('plan'), 0, 'the old grey/indigo/amber scheme is gone');
+  });
+
+  test('the move buttons are worded as work, not as API actions', async () => {
+    const fixing = {
+      ...payloads.bug, status: 'fixing',
+      availableActions: [{ action: 'request_retest', to: 'retest', requiresReason: false }]
+    };
+    const app = loadApp({
+      routes: { ...projectRoutes(payloads.meDev), [`GET /api/bugs/${bug.id}`]: fixing },
+      browserLang: 'en-GB'
+    });
+    await app.click('openbug', { id: bug.id });
+
+    const html = app.html();
+    assert.match(html, /Mark as fixed/, 'a developer reads what they are doing');
+    assert.doesNotMatch(html, /request retest/, 'not the state machine\'s name for it');
+  });
+
+  test('a tester can verify or send back, in those words', async () => {
+    const waiting = { ...payloads.bug, status: 'retest', availableActions: [] };
+    const app = loadApp({
+      routes: { ...projectRoutes(payloads.meTester), [`GET /api/bugs/${bug.id}`]: waiting },
+      browserLang: 'en-GB'
+    });
+    await app.click('openbug', { id: bug.id });
+
+    const html = app.html();
+    assert.match(html, /Fix verified/, 'the verify control');
+    assert.match(html, /Still broken — send back/, 'and the one that turns it red again');
+    assert.match(html, /Fixed — awaiting verification/, 'and the state says what it wants');
+  });
+
   test('an admin sees change-role and remove for each member', async () => {
     const members = { members: [
       { id: 'u1', email: 'a@b.test', display_name: 'Linh', role: 'tester' },

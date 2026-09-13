@@ -226,3 +226,11 @@
   .editform label{font-size:12px;color:#64748b}
   .editform textarea, .editform select{width:100%;font:inherit;padding:9px 11px;border-radius:8px;
         border:1px solid #cbd5e1;background:#fff;color:inherit}
+
+  /* ── a bug's state, in the colours the workflow is described in ──
+     red    = the problem is still there (reported, being fixed, or sent back)
+     light  = a developer says it is fixed and it is waiting to be verified
+     green  = done: verified by a tester, or closed by a developer with a reason */
+  .st.open{background:var(--high-bg);color:var(--high)}
+  .st.fixed{background:#dcfce7;color:#15803d}
+  .st.verified{background:var(--ok-bg);color:var(--ok)}

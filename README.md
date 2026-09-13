@@ -46,6 +46,34 @@ mailer to deliver it with. Ask an admin if your address is not recognised.
 | Team | Who is on the project, and (admins) a form to add someone by name, email and role |
 | Report | Vietnamese title/body + screenshots, uploaded through the real two-phase flow |
 
+## The fix-and-verify loop
+
+```
+tester reports          dev claims it        dev marks it fixed      tester checks it
+   bug is OPEN   ──►   still OPEN    ──►   FIXED, awaiting   ──►   ── pass ──►  CLOSED
+   ● red               ● red               verification             ● green
+                                            ● light green       └─ fail ──►  OPEN (red again)
+```
+
+| State | Reads as | Colour | Who moves it on |
+|---|---|---|---|
+| `new` | Open | ● red | the tester reports it; a developer can also close it with a reason |
+| `fixing` | Being fixed | ● red | developer: **Start fixing**; a failed verification lands here too, so a reopened bug is red again |
+| `retest` | Fixed — awaiting verification | ● light green | developer: **Mark as fixed** |
+| `closed` | Closed | ● green | tester: **Fix verified**, or the developer reopens it with a reason |
+
+Red means the problem is still there — whether nobody has looked at it, someone is
+fixing it, or a tester just sent it back. That is deliberate: to a tester scanning the
+list those all mean the same thing, and the state name says which it is. The buttons
+carry the words the work is described in ("Mark as fixed"), not the state machine's
+names for them (`request_retest`).
+
+Every move is a state machine on the server, so the API refuses an illegal one — a
+tester cannot verify a fix that was never claimed, and cannot claim one at all. The
+browser is never the thing enforcing that; it is told which moves are legal
+(`availableActions`) and offers exactly those.
+
+
 ## Managing the data: add, change, remove
 
 | What | In the UI | Who |

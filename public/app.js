@@ -24,7 +24,9 @@ const T = {
     shots: 'Ảnh chụp màn hình', info: 'Thông tin', testerL: 'Tester', whenL: 'Báo cáo lúc',
     msL: 'Cột mốc', statusL: 'Trạng thái', client: 'Khách hàng', updatedL: 'Cập nhật lúc',
     createdL: 'Tạo lúc', timeline: 'Lịch sử hoạt động', openL: 'Đang mở',
-    stNew: 'Mới', stFixing: 'Đang sửa', stRetest: 'Chờ test lại', stClosed: 'Đã đóng',
+    stNew: 'Mới báo', stFixing: 'Đang sửa', stRetest: 'Đã sửa — chờ xác nhận', stClosed: 'Đã đóng',
+    actStartFixing: 'Bắt đầu sửa', actMarkFixed: 'Đã sửa xong', actVerified: 'Xác nhận đã sửa',
+    actStillBroken: 'Vẫn còn lỗi — trả lại', actClose: 'Đóng', actReopen: 'Mở lại',
     noBugs: 'Chưa có lỗi nào cho dự án này 🎉', loading: 'Đang tải…',
     copyT: 'Bản prompt cho AI agent', copyP: 'Nội dung này do máy chủ tạo (GET /api/bugs/:id/prompt) — không phải bản sao trong trình duyệt.',
     copyBtn: '📋 Sao chép', copied: 'Đã sao chép — dán vào AI agent', copyFail: 'Không sao chép được — hãy chọn và copy thủ công',
@@ -67,7 +69,9 @@ const T = {
     shots: '螢幕截圖', info: '基本資訊', testerL: '測試人員', whenL: '回報時間',
     msL: '所屬里程碑', statusL: '狀態', client: '客戶', updatedL: '最後更新',
     createdL: '建立時間', timeline: '活動時間軸', openL: '未關閉',
-    stNew: '新回報', stFixing: '修復中', stRetest: '待回歸測試', stClosed: '已關閉',
+    stNew: '新回報', stFixing: '修復中', stRetest: '已修復——待確認', stClosed: '已關閉',
+    actStartFixing: '開始修復', actMarkFixed: '已修好', actVerified: '確認修復',
+    actStillBroken: '仍有問題——退回', actClose: '關閉', actReopen: '重新開啟',
     noBugs: '這個專案目前沒有 bug 🎉', loading: '載入中…',
     copyT: '給 AI agent 的 prompt', copyP: '這段內容由伺服器產生(GET /api/bugs/:id/prompt),不是瀏覽器端的複製品。',
     copyBtn: '📋 複製', copied: '已複製 — 貼進 AI agent 即可', copyFail: '複製失敗 — 請手動選取複製',
@@ -110,7 +114,9 @@ const T = {
     shots: 'Screenshots', info: 'Details', testerL: 'Tester', whenL: 'Reported',
     msL: 'Milestone', statusL: 'Status', client: 'Client', updatedL: 'Last updated',
     createdL: 'Created', timeline: 'Activity timeline', openL: 'open',
-    stNew: 'New', stFixing: 'Fixing', stRetest: 'Awaiting retest', stClosed: 'Closed',
+    stNew: 'Open', stFixing: 'Being fixed', stRetest: 'Fixed — awaiting verification', stClosed: 'Closed',
+    actStartFixing: 'Start fixing', actMarkFixed: 'Mark as fixed', actVerified: 'Fix verified',
+    actStillBroken: 'Still broken — send back', actClose: 'Close', actReopen: 'Reopen',
     noBugs: 'No bugs in this project yet 🎉', loading: 'Loading…',
     copyT: 'Prompt for the AI agent', copyP: 'This text is produced by the server (GET /api/bugs/:id/prompt) — not a browser-side copy.',
     copyBtn: '📋 Copy', copied: 'Copied — paste into your AI agent', copyFail: 'Copy failed — select and copy manually',
@@ -149,7 +155,27 @@ const SEV = { high: { vi: 'Cao', zh: '高', en: 'High' }, medium: { vi: 'Trung b
 const ROLES = ['admin', 'developer', 'tester'];
 const SEV_CLASS = { high: 'high', medium: 'med', low: 'low' };
 const MS_CLASS = { planned: 'plan', in_progress: 'wip', ready: 'ready', done: 'done' };
-const BUG_CLASS = { new: 'plan', fixing: 'wip', retest: 'ready', closed: 'done' };
+// A bug's state, in the colours the workflow is described in: red while the problem is
+// still there (reported, being fixed, or sent back after a failed retest), light green
+// once a developer says it is fixed and it is waiting to be checked, green when it is
+// done. `new` and `fixing` share a colour on purpose — to a tester looking at the list
+// they mean the same thing: not fixed yet.
+const BUG_CLASS = { new: 'open', fixing: 'open', retest: 'fixed', closed: 'verified' };
+
+/**
+ * What each move is called, in the words the workflow is described in.
+ *
+ * The state machine's action names are for the API (`request_retest`); a developer
+ * reading a button should see "Mark as fixed".
+ */
+const BUG_ACTION_LABEL = {
+  start_fixing: 'actStartFixing',
+  request_retest: 'actMarkFixed',
+  retest_pass: 'actVerified',
+  retest_fail: 'actStillBroken',
+  close: 'actClose',
+  reopen: 'actReopen'
+};
 
 const LANGS = ['vi', 'zh', 'en'];
 
@@ -618,12 +644,15 @@ function bugRows() {
       <div class="body">
         <div class="id">${esc(b.code)} · ${esc(b.milestone_code)}</div>
         <div class="ttl">${esc(b.title_vi)}</div>
-        <div class="sub">${statusLabel('bug', b.status)} · ${esc(b.reporter)} · ${esc(b.attachments)} 📷</div>
+        <div class="sub">${esc(b.reporter)} · ${esc(b.attachments)} 📷</div>
         <div class="tags">
           <span class="tag">${t('whenL')} ${fmt(b.updated_at)}</span>
           <span class="tag">${rel(b.updated_at)}</span>
         </div>
       </div>
+      <!-- The state, in its colour, so a tester scanning the list can see at a glance
+           which ones are waiting to be verified. -->
+      <span class="st ${BUG_CLASS[b.status]}">${statusLabel('bug', b.status)}</span>
     </div>`).join('');
   return rows + removedBugs();
 }
@@ -738,15 +767,15 @@ function bugDetail() {
       ${(b.availableActions ?? []).length ? b.availableActions.map((a) => `
         <button class="btn" data-action="transition" data-id="${esc(b.id)}"
                 data-move="${esc(a.action)}" data-reason="${a.requiresReason ? '1' : ''}">
-          ${esc(a.action.replace(/_/g, ' '))} → ${statusLabel('bug', a.to)}
+          ${esc(t(BUG_ACTION_LABEL[a.action] ?? a.action))} → ${statusLabel('bug', a.to)}
         </button>`).join(' ') : `<div class="tag">—</div>`}
 
       ${['retest'].includes(b.status) ? `
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <input id="retestnote" placeholder="${t('noteL')} (${S.lang === 'vi' ? 'Tiếng Việt' : '…'})"
                  style="flex:1;min-width:220px">
-          <button class="btn pri" data-action="retest" data-id="${esc(b.id)}" data-result="pass">✅ ${t('pass')}</button>
-          <button class="btn" data-action="retest" data-id="${esc(b.id)}" data-result="fail">❌ ${t('fail')}</button>
+          <button class="btn pri" data-action="retest" data-id="${esc(b.id)}" data-result="pass">✅ ${t('actVerified')}</button>
+          <button class="btn" data-action="retest" data-id="${esc(b.id)}" data-result="fail">❌ ${t('actStillBroken')}</button>
         </div>` : ''}
 
       <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
