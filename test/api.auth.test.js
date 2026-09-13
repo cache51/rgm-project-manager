@@ -4,7 +4,7 @@
  */
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeProjectWorld, makeMilestone } from './helpers.js';
+import { makeProjectWorld, makeMilestone, fileBug } from './helpers.js';
 import { hashToken, setMemberRole, createInvite } from '../src/auth.js';
 
 describe('auth: login', () => {
@@ -193,6 +193,76 @@ describe('auth: authorization', () => {
         (await world.db.query(
           `SELECT 1 FROM invitations WHERE email = 'sneak@rgm.example'`)).rows.length, 0,
         'no invitation may have been created');
+    } finally { await world.close(); }
+  });
+
+  test('the name given at invitation time is the name on their reports', async () => {
+    // Without this every user is named after their email local part, so a project with
+    // several testers from one company shows "test01", "qa.linh", "warehouse2" — and
+    // an admin reading a report cannot tell who reported it.
+    const world = await makeProjectWorld();
+    try {
+      const token = await world.invite({
+        projectId: world.project.id, email: 'nguyen.van.a@rgm.example',
+        role: 'tester', createdBy: world.admin.userId, name: '  Nguyễn Văn A  '
+      });
+      const { userId } = await world.redeem(token);
+
+      const u = await world.db.query('SELECT display_name FROM users WHERE id = $1', [userId]);
+      assert.equal(u.rows[0].display_name, 'Nguyễn Văn A', 'trimmed, and used as given');
+
+      // And it is the name the report shows.
+      const ms = await makeMilestone(world.adminClient, world.project.id, 'M-N', 'Names');
+      await world.adminClient.post(`/api/milestones/${ms}/status`, { action: 'start' });
+      await world.adminClient.post(`/api/milestones/${ms}/status`, { action: 'ready' });
+      const client = await world.loginAs('nguyen.van.a@rgm.example');
+      const bug = await fileBug(client, world.project.id, { milestoneId: ms });
+
+      const list = (await world.adminClient.get(`/api/projects/${world.project.id}/bugs`)).json;
+      const row = list.bugs.find((b) => b.code === bug.code);
+      assert.equal(row.reporter, 'Nguyễn Văn A',
+        'so the bug list answers "who found this?"');
+    } finally { await world.close(); }
+  });
+
+  test('an invitation with no name falls back to the email local part', async () => {
+    const world = await makeProjectWorld();
+    try {
+      const token = await world.invite({
+        projectId: world.project.id, email: 'plain.tester@rgm.example',
+        role: 'tester', createdBy: world.admin.userId
+      });
+      const { userId } = await world.redeem(token);
+
+      const u = await world.db.query('SELECT display_name FROM users WHERE id = $1', [userId]);
+      assert.equal(u.rows[0].display_name, 'plain.tester',
+        'the old behaviour, so an invitation without a name still works');
+    } finally { await world.close(); }
+  });
+
+  test('re-inviting an existing user does not rename them', async () => {
+    // Otherwise a second invitation, or one issued by someone who does not know them,
+    // would quietly overwrite a name already in use.
+    const world = await makeProjectWorld();
+    try {
+      const first = await world.invite({
+        projectId: world.project.id, email: 'keep.me@rgm.example',
+        role: 'tester', createdBy: world.admin.userId, name: 'Linh'
+      });
+      const { userId } = await world.redeem(first);
+
+      const second = await world.invite({
+        projectId: world.project.id, email: 'keep.me@rgm.example',
+        role: 'developer', createdBy: world.admin.userId, name: 'Something Else'
+      });
+      await world.redeem(second);
+
+      const u = await world.db.query(
+        `SELECT u.display_name, m.role FROM active_memberships m
+           JOIN users u ON u.id = m.user_id
+          WHERE m.user_id = $1`, [userId]);
+      assert.equal(u.rows[0].display_name, 'Linh', 'the name they already had');
+      assert.equal(u.rows[0].role, 'developer', 'but the new role does apply');
     } finally { await world.close(); }
   });
 

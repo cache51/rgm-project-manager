@@ -38,7 +38,13 @@ const T = {
     noReady: 'Không có cột mốc nào ở trạng thái "Sẵn sàng kiểm thử".',
     trPending: 'Đang dịch…', trFailed: 'Dịch lỗi', trMissing: 'Chưa có bản dịch',
     noProjects: 'Chưa có dự án nào — hãy tạo dự án đầu tiên.', create: 'Tạo dự án',
-    nameL: 'Tên dự án', envL: 'Môi trường'
+    nameL: 'Tên dự án', envL: 'Môi trường',
+    team: 'Nhóm', personL: 'Tên người', emailL: 'Email', roleL: 'Vai trò',
+    invite: 'Mời vào dự án', invited: 'Đã gửi lời mời', needNameEmail: 'Cần tên và email',
+    members: 'Thành viên', you: 'bạn', needName: 'Cần tên dự án',
+    noMilestones: 'Chưa có cột mốc nào — hãy tạo cột mốc đầu tiên.',
+    msCodeL: 'Mã cột mốc', msTitleL: 'Tên cột mốc', addMs: 'Tạo cột mốc',
+    needMs: 'Cần mã và tên cột mốc'
   },
   zh: {
     projects: '專案', ms: '里程碑', bugs: 'Bug 列表', nav: '導覽', lang: '語言',
@@ -64,7 +70,13 @@ const T = {
     noReady: '目前沒有「待測試」的里程碑。',
     trPending: '翻譯中…', trFailed: '翻譯失敗', trMissing: '尚無譯文',
     noProjects: '尚無專案——先建立第一個專案。', create: '建立專案',
-    nameL: '專案名稱', envL: '環境'
+    nameL: '專案名稱', envL: '環境',
+    team: '團隊', personL: '姓名', emailL: '電子郵件', roleL: '角色',
+    invite: '邀請加入專案', invited: '邀請已寄出', needNameEmail: '需要姓名和電子郵件',
+    members: '成員', you: '你', needName: '需要專案名稱',
+    noMilestones: '尚無里程碑——先建立第一個。',
+    msCodeL: '里程碑代碼', msTitleL: '里程碑名稱', addMs: '建立里程碑',
+    needMs: '需要代碼和名稱'
   },
   en: {
     projects: 'Projects', ms: 'Milestones', bugs: 'Bug reports', nav: 'Navigation',
@@ -90,7 +102,13 @@ const T = {
     noReady: 'No milestone is currently ready for testing.',
     trPending: 'Translating…', trFailed: 'Translation failed', trMissing: 'No translation yet',
     noProjects: 'No projects yet — create the first one.', create: 'Create project',
-    nameL: 'Project name', envL: 'Environment'
+    nameL: 'Project name', envL: 'Environment',
+    team: 'Team', personL: 'Name', emailL: 'Email', roleL: 'Role',
+    invite: 'Invite to project', invited: 'Invitation sent', needNameEmail: 'A name and an email are required',
+    members: 'Members', you: 'you', needName: 'A project name is required',
+    noMilestones: 'No milestones yet — create the first one.',
+    msCodeL: 'Milestone code', msTitleL: 'Milestone name', addMs: 'Add milestone',
+    needMs: 'A code and a name are required'
   }
 };
 
@@ -127,7 +145,8 @@ const S = {
   // Declared above this object on purpose: `initialLang` reads LANGS, and using it
   // here from further down the file throws a temporal-dead-zone error.
   view: 'milestones', lang: initialLang(), bug: null, prompt: null,
-  milestones: [], bugs: [], busy: false, notice: null
+  milestones: null, bugs: null, busy: false, notice: null,
+  members: []
 };
 
 // ───────────────────────── helpers ─────────────────────────
@@ -249,9 +268,15 @@ async function openBug(id) {
   if (S.bug?.id === id) render();
 }
 
+async function loadMembers() {
+  const { members } = await api('GET', `/api/projects/${S.projectId}/members`);
+  S.members = members;
+}
+
 async function refresh() {
   try {
     if (S.view === 'milestones') await loadMilestones();
+    else if (S.view === 'team') await loadMembers();
     else await loadBugs();
     await loadProjects();
     if (S.bug) S.bug = await api('GET', `/api/bugs/${S.bug.id}`);
@@ -290,6 +315,9 @@ function sidebar() {
           <span>🐞</span> ${t('bugs')}
           <span class="badge">${S.counts[S.projectId] ?? 0}</span>
         </div>
+        <div class="nav ${S.view === 'team' && !S.bug ? 'on' : ''}" data-action="view" data-view="team">
+          <span>👤</span> ${t('team')}
+        </div>
       </nav>
     </div>
 
@@ -314,7 +342,7 @@ function topbar() {
   return `
   <div class="top">
     <div>
-      <div class="project">${esc(project?.name ?? '')} · ${esc(project?.client ?? '')}</div>
+      <div class="project">${esc(project?.name ?? '')} · ${esc(project?.env ?? '')}</div>
       <h2>${heading}</h2>
     </div>
     <div class="right">
@@ -326,9 +354,29 @@ function topbar() {
 }
 
 function milestoneCards() {
-  if (!S.milestones.length) {
+  // `null` means not fetched yet; `[]` means fetched and genuinely empty. Showing
+  // "Loading…" for the second case made a new project look permanently stuck.
+  if (S.milestones === null) {
     return `<div class="empty">${t('loading')}</div>`;
   }
+
+  if (!S.milestones.length) {
+    return `
+    <div class="card" style="max-width:560px">
+      <h2 style="margin:0 0 12px;font-size:15px">🗂 ${t('addMs')}</h2>
+      <p class="rel">${t('noMilestones')}</p>
+      ${canDevelop() ? `
+        <label>${t('msCodeL')}</label>
+        <input id="f-mscode" placeholder="M1">
+        <label>${t('msTitleL')}</label>
+        <input id="f-mstitle" placeholder="Packing list import">
+        <div style="margin-top:14px">
+          <button class="btn" data-action="addmilestone">${t('addMs')}</button>
+        </div>
+      ` : `<p class="rel">${t('noReady')}</p>`}
+    </div>`;
+  }
+
   const ready = S.milestones.filter((m) => m.status === 'ready');
   const hint = myRole() === 'tester'
     ? `<div class="hint">${ready.length
@@ -353,7 +401,52 @@ function milestoneCards() {
     </div>`).join('')}</div>`;
 }
 
+/**
+ * The team: who is on this project, and a way to add someone with a name.
+ *
+ * The name is given at invitation time, which is when the inviter knows who the
+ * person is — otherwise every user is named after their email local part, and a
+ * project with several testers from one company shows "test01", "qa.linh" and so on.
+ * That is what made "who reported this?" unanswerable without opening every report.
+ */
+function teamPanel() {
+  const isAdmin = myRole() === 'admin';
+  const ROLE_KEY = { tester: 'tester', developer: 'dev', admin: 'admin' };
+
+  return `
+  <div class="wrap">
+    ${isAdmin ? `
+    <div class="card" style="margin-bottom:16px">
+      <h2 style="margin:0 0 12px;font-size:15px">👤 ${t('invite')}</h2>
+      <label>${t('personL')}</label>
+      <input id="f-mname" placeholder="Nguyễn Văn A">
+      <label>${t('emailL')}</label>
+      <input id="f-memail" placeholder="a@rgm.example">
+      <label>${t('roleL')}</label>
+      <select id="f-mrole">
+        <option value="tester" selected>${t('tester')}</option>
+        <option value="developer">${t('dev')}</option>
+        <option value="admin">${t('admin')}</option>
+      </select>
+      <div style="margin-top:14px">
+        <button class="btn" data-action="invite">${t('invite')}</button>
+      </div>
+    </div>` : ''}
+
+    <h2 style="font-size:15px;margin:0 0 10px">${t('members')} (${S.members.length})</h2>
+    ${S.members.map((m) => `
+      <div class="row" style="cursor:default">
+        <span class="sev low">${esc(t(ROLE_KEY[m.role] ?? m.role))}</span>
+        <div class="body">
+          <div class="id">${esc(m.display_name)}${m.id === S.me?.userId ? ` · ${t('you')}` : ''}</div>
+          <div class="sub rel">${esc(m.email)}</div>
+        </div>
+      </div>`).join('')}
+  </div>`;
+}
+
 function bugRows() {
+  if (S.bugs === null) return `<div class="empty">${t('loading')}</div>`;
   if (!S.bugs.length) return `<div class="empty">${t('noBugs')}</div>`;
   return S.bugs.map((b) => {
     const tr = b.id === S.bug?.id ? null : null; // row shows the Vietnamese title; detail shows translations
@@ -363,7 +456,7 @@ function bugRows() {
       <div class="body">
         <div class="id">${esc(b.code)} · ${esc(b.milestone_code)}</div>
         <div class="ttl">${esc(b.title_vi)}</div>
-        <div class="sub">${statusLabel('bug', b.status)} · ${esc(b.attachments)} 📷</div>
+        <div class="sub">${statusLabel('bug', b.status)} · ${esc(b.reporter)} · ${esc(b.attachments)} 📷</div>
         <div class="tags">
           <span class="tag">${t('whenL')} ${fmt(b.updated_at)}</span>
           <span class="tag">${rel(b.updated_at)}</span>
@@ -481,7 +574,7 @@ function bugDetail() {
 }
 
 function reportForm() {
-  const ready = S.milestones.filter((m) => m.status === 'ready');
+  const ready = (S.milestones ?? []).filter((m) => m.status === 'ready');
   return `
   <div class="wrap">
     <a href="#" class="btn sm" data-action="cancelreport">${t('cancel')}</a>
@@ -528,8 +621,6 @@ function firstRun() {
             <p class="rel">${t('noProjects')}</p>
             <label>${t('nameL')}</label>
             <input id="f-pname" placeholder="Packing List Automation">
-            <label>${t('client')}</label>
-            <input id="f-pclient" placeholder="Lucky Brand">
             <label>${t('envL')}</label>
             <select id="f-penv">
               <option value="staging" selected>staging</option>
@@ -571,6 +662,7 @@ function render() {
   const body = S.bug ? bugDetail()
     : S.reporting ? reportForm()
     : S.view === 'milestones' ? milestoneCards()
+    : S.view === 'team' ? teamPanel()
     : bugRows();
 
   app.innerHTML = sidebar() + `
@@ -613,20 +705,48 @@ document.getElementById('app').addEventListener('click', async (event) => {
         // The first thing a new install needs. Failures are surfaced rather than
         // swallowed, because there is nothing else on this screen to try.
         const name = document.getElementById('f-pname').value.trim();
-        const client = document.getElementById('f-pclient').value.trim();
         const env = document.getElementById('f-penv').value;
-        if (!name || !client) {
-          notice('Enter a project name and a client.', 'bad');
+        if (!name) {
+          notice(t('needName'), 'bad');
           break;
         }
         try {
-          await api('POST', '/api/projects', { name, client, env });
+          await api('POST', '/api/projects', { name, env });
           S.notice = null;
           await boot();
         } catch (err) {
           console.error(err);
           notice(String(err.message || 'Could not create the project.'), 'bad');
         }
+        break;
+      }
+      case 'addmilestone': {
+        const code = document.getElementById('f-mscode').value.trim();
+        const titleEn = document.getElementById('f-mstitle').value.trim();
+        if (!code || !titleEn) {
+          notice(t('needMs'), 'bad');
+          break;
+        }
+        try {
+          await api('POST', `/api/projects/${S.projectId}/milestones`, { code, titleEn });
+          notice(t('saved'));
+          await refresh();
+        } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
+        break;
+      }
+      case 'invite': {
+        const name = document.getElementById('f-mname').value.trim();
+        const email = document.getElementById('f-memail').value.trim();
+        const role = document.getElementById('f-mrole').value;
+        if (!name || !email) {
+          notice(t('needNameEmail'), 'bad');
+          break;
+        }
+        try {
+          await api('POST', `/api/projects/${S.projectId}/invites`, { name, email, role });
+          notice(t('invited'));
+          await refresh();
+        } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
         break;
       }
       case 'openbug':

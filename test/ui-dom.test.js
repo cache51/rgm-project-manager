@@ -150,8 +150,8 @@ describe('ui (dom): a fresh install', () => {
     const html = app.html();
     assert.match(html, /data-action="createproject"/, 'there must be something to click');
     assert.match(html, /id="f-pname"/, 'a project name field');
-    assert.match(html, /id="f-pclient"/, 'a client field');
     assert.match(html, /id="f-penv"/, 'an environment choice');
+    assert.doesNotMatch(html, /id="f-pclient"/, 'and no client field: every project is RGM');
     assert.match(html, /data-action="signout"/, 'sign-out is still available');
   });
 
@@ -172,23 +172,22 @@ describe('ui (dom): a fresh install', () => {
     const app = loadApp({
       routes: {
         'GET /api/me': { userId: 'u1', email: 'a@b.test', isSiteAdmin: true, projects: [] },
-        'POST /api/projects': () => ({ body: { id: 'p1', name: 'Line 7', client: 'LB', env: 'staging' }, status: 201 })
+        'POST /api/projects': () => ({ body: { id: 'p1', name: 'Line 7', env: 'staging' }, status: 201 })
       }
     });
     await settle();
 
     app.field('f-pname').value = '  Line 7  ';
-    app.field('f-pclient').value = 'LB';
     app.field('f-penv').value = 'staging';
     await app.click('createproject');
 
     const post = app.apiCalls().find((c) => c.method === 'POST' && c.path === '/api/projects');
     assert.ok(post, 'it must actually POST');
-    assert.deepEqual(post.body, { name: 'Line 7', client: 'LB', env: 'staging' },
-      'the values are trimmed and sent as the API expects');
+    assert.deepEqual(post.body, { name: 'Line 7', env: 'staging' },
+      'the name is trimmed, and no client is sent — every project is an RGM project');
   });
 
-  test('empty fields are refused locally, with a message, and nothing is sent', async () => {
+  test('an empty project name is refused locally, with a message, and nothing is sent', async () => {
     const app = loadApp({
       routes: {
         'GET /api/me': { userId: 'u1', email: 'a@b.test', isSiteAdmin: true, projects: [] },
@@ -197,8 +196,7 @@ describe('ui (dom): a fresh install', () => {
     });
     await settle();
 
-    app.field('f-pname').value = '';
-    app.field('f-pclient').value = 'LB';
+    app.field('f-pname').value = '   ';
     await app.click('createproject');
 
     assert.equal(app.apiCalls().filter((c) => c.method === 'POST').length, 0,
@@ -210,17 +208,16 @@ describe('ui (dom): a fresh install', () => {
     const app = loadApp({
       routes: {
         'GET /api/me': { userId: 'u1', email: 'a@b.test', isSiteAdmin: true, projects: [] },
-        'POST /api/projects': () => ({ body: { message: 'name and client required' }, status: 400 })
+        'POST /api/projects': () => ({ body: { message: 'name required' }, status: 400 })
       }
     });
     await settle();
 
     app.field('f-pname').value = 'X';
-    app.field('f-pclient').value = 'Y';
     await app.click('createproject');
 
     assert.match(app.html(), /toast/);
-    assert.match(app.html(), /name and client required/);
+    assert.match(app.html(), /name required/);
   });
 });
 
@@ -245,6 +242,7 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
       milestones: (await w.devClient.get(`/api/projects/${w.project.id}/milestones`)).json,
       bugs: (await w.devClient.get(`/api/projects/${w.project.id}/bugs`)).json,
       bug: (await w.devClient.get(`/api/bugs/${bug.id}`)).json,
+      members: (await w.adminClient.get(`/api/projects/${w.project.id}/members`)).json,
       prompt: (await w.devClient.get(`/api/bugs/${bug.id}/prompt`)).text
     };
   });
@@ -255,6 +253,7 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
     'GET /api/projects': payloads.projects,
     [`GET /api/projects/${w.project.id}/milestones`]: payloads.milestones,
     [`GET /api/projects/${w.project.id}/bugs`]: payloads.bugs,
+    [`GET /api/projects/${w.project.id}/members`]: payloads.members,
     [`GET /api/bugs/${bug.id}`]: payloads.bug,
     // Functions where the status or headers matter (see the note in the harness).
     [`GET /api/bugs/${bug.id}/prompt`]: () => ({ body: payloads.prompt, headers: { 'content-type': 'text/plain' } })
@@ -333,6 +332,97 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
     assert.match(app.html(), /data-action="copy"/);
   });
 
+  test('the bug list says who reported each bug', async () => {
+    const app = loadApp({ routes: routes() });
+    await settle();
+    await app.click('view', { view: 'bugs' });
+
+    const reporter = payloads.bugs.bugs[0].reporter;
+    assert.ok(reporter, 'the list payload carries the reporter');
+    assert.ok(app.html().includes(reporter),
+      'so a row answers "who found this?" without opening every report');
+  });
+
+  test('an admin sees the team, with a way to add someone by name', async () => {
+    const app = loadApp({ routes: routes(({
+      userId: payloads.meDev.userId, email: payloads.meDev.email,
+      isSiteAdmin: false,
+      projects: payloads.meDev.projects.map((p) => ({ ...p, role: 'admin' }))
+    })) });
+    await settle();
+    await app.click('view', { view: 'team' });
+
+    const html = app.html();
+    assert.match(html, /data-action="invite"/, 'an invite control');
+    assert.match(html, /id="f-mname"/, 'with a field for the person’s name');
+    assert.match(html, /id="f-memail"/, 'and their email');
+    assert.match(html, /id="f-mrole"/, 'and their role');
+
+    for (const m of payloads.members.members) {
+      assert.ok(html.includes(m.display_name), `the list names ${m.display_name}`);
+    }
+  });
+
+  test('a tester sees the team but is not offered the invite form', async () => {
+    const app = loadApp({ routes: routes(payloads.meTester) });
+    await settle();
+    await app.click('view', { view: 'team' });
+
+    const html = app.html();
+    assert.doesNotMatch(html, /data-action="invite"/,
+      'only an admin may invite, so nobody else is shown the control');
+    for (const m of payloads.members.members) {
+      assert.ok(html.includes(m.display_name), 'but the team is visible to everyone on it');
+    }
+  });
+
+  test('inviting posts the name, email and role', async () => {
+    const seen = [];
+    const app = loadApp({
+      routes: {
+        ...routes(({
+          userId: payloads.meDev.userId, email: payloads.meDev.email, isSiteAdmin: false,
+          projects: payloads.meDev.projects.map((p) => ({ ...p, role: 'admin' }))
+        })),
+        [`POST /api/projects/${w.project.id}/invites`]: (c) => { seen.push(c); return { body: { ok: true }, status: 201 }; }
+      }
+    });
+    await settle();
+    await app.click('view', { view: 'team' });
+
+    app.field('f-mname').value = '  Nguyễn Văn A  ';
+    app.field('f-memail').value = 'a@rgm.example';
+    app.field('f-mrole').value = 'tester';
+    await app.click('invite');
+
+    assert.equal(seen.length, 1, 'the invitation is posted');
+    assert.deepEqual(seen[0].body,
+      { name: 'Nguyễn Văn A', email: 'a@rgm.example', role: 'tester' },
+      'the name is what the admin will see next to the reports');
+  });
+
+  test('an invitation without a name is refused locally', async () => {
+    const seen = [];
+    const app = loadApp({
+      routes: {
+        ...routes(({
+          userId: payloads.meDev.userId, email: payloads.meDev.email, isSiteAdmin: false,
+          projects: payloads.meDev.projects.map((p) => ({ ...p, role: 'admin' }))
+        })),
+        [`POST /api/projects/${w.project.id}/invites`]: (c) => { seen.push(c); return { body: {}, status: 201 }; }
+      }
+    });
+    await settle();
+    await app.click('view', { view: 'team' });
+
+    app.field('f-mname').value = '';
+    app.field('f-memail').value = 'a@rgm.example';
+    await app.click('invite');
+
+    assert.equal(seen.length, 0, 'a nameless invitation is the thing we are trying to avoid');
+    assert.match(app.html(), /toast/);
+  });
+
   test('the report form preselects the milestone that was clicked', async () => {
     // The IR-037 fix. Untestable in a browser here (the preview pane's clicks do not
     // land), so it stayed unverified until this harness existed.
@@ -351,6 +441,94 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
     assert.equal(selected.length, 1, 'exactly one option is preselected');
     assert.equal(selected[0][1], msB,
       'the milestone that was clicked is the one selected, not simply the first');
+  });
+});
+
+describe('ui (dom): a project with nothing in it yet', () => {
+  const base = { userId: 'u1', email: 'd@b.test', isSiteAdmin: false,
+                 projects: [{ id: 'p1', name: 'Line 7 Packing', role: 'developer' }] };
+  const asTester = { ...base, projects: [{ id: 'p1', name: 'Line 7 Packing', role: 'tester' }] };
+
+  const routes = (me) => ({
+    'GET /api/me': me,
+    'GET /api/projects': { projects: me.projects },
+    'GET /api/projects/p1/milestones': { milestones: [] },
+    'GET /api/projects/p1/bugs': { bugs: [], openCount: 0 }
+  });
+
+  test('an empty project does not look like it is still loading', async () => {
+    // "Loading…" was shown whenever the list was empty, so a brand-new project sat on
+    // that word forever with no indication of what to do.
+    const app = loadApp({ routes: routes(base), browserLang: 'en-GB' });
+    await settle();
+
+    const html = app.html();
+    assert.doesNotMatch(html, /Loading…/, 'an empty list is not a loading state');
+    assert.match(html, /No milestones yet/, 'it says what is true');
+  });
+
+  test('a developer can add the first milestone', async () => {
+    const app = loadApp({ routes: routes(base), browserLang: 'en-GB' });
+    await settle();
+
+    const html = app.html();
+    assert.match(html, /data-action="addmilestone"/, 'a way forward');
+    assert.match(html, /id="f-mscode"/);
+    assert.match(html, /id="f-mstitle"/);
+  });
+
+  test('a tester is not offered a control that is not theirs', async () => {
+    const app = loadApp({ routes: routes(asTester), browserLang: 'en-GB' });
+    await settle();
+
+    assert.doesNotMatch(app.html(), /data-action="addmilestone"/,
+      'starting a milestone is a developer action');
+    assert.match(app.html(), /No milestones yet/, 'but the state is still explained');
+  });
+
+  test('adding a milestone posts the code and the name', async () => {
+    const seen = [];
+    const app = loadApp({
+      routes: {
+        ...routes(base),
+        'POST /api/projects/p1/milestones': (c) => { seen.push(c); return { body: { id: 'm1' }, status: 201 }; }
+      }
+    });
+    await settle();
+
+    app.field('f-mscode').value = '  M1  ';
+    app.field('f-mstitle').value = 'Packing list import';
+    await app.click('addmilestone');
+
+    assert.equal(seen.length, 1, 'the milestone is posted');
+    assert.deepEqual(seen[0].body, { code: 'M1', titleEn: 'Packing list import' });
+  });
+
+  test('a milestone without a code or name is refused locally', async () => {
+    const seen = [];
+    const app = loadApp({
+      routes: {
+        ...routes(base),
+        'POST /api/projects/p1/milestones': (c) => { seen.push(c); return { body: {}, status: 201 }; }
+      }
+    });
+    await settle();
+
+    app.field('f-mscode').value = 'M1';
+    app.field('f-mstitle').value = '   ';
+    await app.click('addmilestone');
+
+    assert.equal(seen.length, 0, 'nothing is sent without both');
+    assert.match(app.html(), /toast/);
+  });
+
+  test('an empty bug list says so rather than loading', async () => {
+    const app = loadApp({ routes: routes(base), browserLang: 'en-GB' });
+    await settle();
+    await app.click('view', { view: 'bugs' });
+
+    assert.match(app.html(), /No bugs in this project yet/);
+    assert.doesNotMatch(app.html(), /Loading…/);
   });
 });
 

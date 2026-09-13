@@ -339,7 +339,10 @@ export function buildRoutes() {
       throw new HttpError(403, 'forbidden', 'only a site admin may create projects');
     }
     const { name, client, env, timezone } = await readJson(req);
-    if (!name || !client) throw new HttpError(400, 'missing_fields', 'name and client required');
+    // `client` is optional: this is a single-client shop, and every project is an RGM
+    // project. The column stays (prompts and packets render it) with a default, so
+    // naming one later is a data change rather than a schema change.
+    if (!name) throw new HttpError(400, 'missing_fields', 'name required');
     const project = await createProject(ctx.db, {
       name, client, env, timezone, createdBy: ctx.actor.userId
     });
@@ -366,10 +369,10 @@ export function buildRoutes() {
 
   r.post('/api/projects/:id/invites', handle(async (req, res, ctx) => {
     await authorize(ctx.db, ctx.actor, ctx.params.id, ['admin']);
-    const { email, role, ttlHours } = await readJson(req);
+    const { email, role, name, ttlHours } = await readJson(req);
     if (!email || !role) throw new HttpError(400, 'missing_fields', 'email and role required');
     await createInvite(ctx.db, {
-      projectId: ctx.params.id, email, role, ttlHours,
+      projectId: ctx.params.id, email, role, name, ttlHours,
       actor: ctx.actor, deliver: ctx.deliver
     });
     sendJson(res, 201, { ok: true });
@@ -528,11 +531,16 @@ export function buildRoutes() {
     const rows = await ctx.db.query(
       `SELECT b.id, b.bug_number, b.severity, b.status, b.title_vi, b.milestone_id,
               b.updated_at, m.code AS milestone_code,
+              -- Who reported it, so a list row answers "who found this?" without
+              -- opening every bug.
+              u.display_name AS reporter,
               -- ::int matters: count() is int8, which node-postgres returns as a
               -- *string* (a JS number cannot hold every int8). Without the cast the
               -- row would carry "3" on PostgreSQL and 3 on PGlite.
               (SELECT count(*) FROM bug_attachments a WHERE a.bug_id = b.id)::int AS attachments
-         FROM bugs b JOIN milestones m ON m.id = b.milestone_id
+         FROM bugs b
+         JOIN milestones m ON m.id = b.milestone_id
+         JOIN users u ON u.id = b.reporter_id
         WHERE b.project_id = $1 AND b.deleted_at IS NULL
         ORDER BY b.bug_number DESC`, [ctx.params.id]);
     sendJson(res, 200, {

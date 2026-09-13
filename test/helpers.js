@@ -248,11 +248,12 @@ export async function makeWorld({ limits = null, storage = null } = {}) {
     },
 
     /** Create an invitation and redeem it, returning the invited user's id. */
-    async invite({ projectId, email, role, createdBy }) {
+    async invite({ projectId, email, role, createdBy, name }) {
       const before = mails.length;
       // `createInvite` re-authorizes the actor inside its transaction (RGM4-001),
       // so it needs an identity rather than just an audit trail.
-      await createInvite(db, { projectId, email, role, actor: { userId: createdBy }, deliver });
+      await createInvite(db, { projectId, email, role, name,
+                               actor: { userId: createdBy }, deliver });
       const mail = mails.slice(before).find(m => m.kind === 'invite');
       if (!mail) throw new Error(`no invite issued for ${email}`);
       return mail.token;

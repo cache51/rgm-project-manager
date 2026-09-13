@@ -236,7 +236,7 @@ export async function revokeApiToken(db, userId, tokenId) {
 
 // ─────────────────── invitations (§5) ───────────────────
 
-export async function createInvite(db, { projectId, email, role, actor, deliver,
+export async function createInvite(db, { projectId, email, role, actor, name, deliver,
                                         ttlHours = 72 }) {
   if (!ROLES.includes(role)) throw new HttpError(400, 'bad_role', `unknown role ${role}`);
   const normalized = normalizeEmail(email);
@@ -264,9 +264,11 @@ export async function createInvite(db, { projectId, email, role, actor, deliver,
       [projectId, normalized]);
 
     await tx.query(
-      `INSERT INTO invitations (project_id, email, role, token_hash, expires_at, created_by)
-       VALUES ($1, $2, $3, $4, now() + make_interval(hours => $5::int), $6)`,
-      [projectId, normalized, role, hashToken(token), ttlHours, actor.userId]);
+      `INSERT INTO invitations
+         (project_id, email, role, token_hash, expires_at, created_by, display_name)
+       VALUES ($1, $2, $3, $4, now() + make_interval(hours => $5::int), $6, $7)`,
+      [projectId, normalized, role, hashToken(token), ttlHours, actor.userId,
+       name?.trim() || null]);
   });
 
   if (deliver) await deliver({ to: normalized, token, kind: 'invite' });
@@ -297,16 +299,20 @@ export async function redeemInvite(db, token) {
       `UPDATE invitations SET consumed_at = now()
         WHERE token_hash = $1 AND consumed_at IS NULL AND revoked_at IS NULL
           AND expires_at > now()
-        RETURNING id, project_id, email, role`, [tokenHash]);
+        RETURNING id, project_id, email, role, display_name`, [tokenHash]);
     if (!inv.rows.length) {
       throw new HttpError(400, 'invite_used', 'invitation is expired, revoked or already used');
     }
     const invitation = inv.rows[0];
 
     const u = await tx.query(
+      // The name given when they were invited; otherwise the email local part, which
+      // is what everyone got before invitations could carry one.
       `INSERT INTO users (email, display_name) VALUES ($1, $2)
        ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
-       RETURNING id`, [invitation.email, invitation.email.split('@')[0]]);
+       RETURNING id`,
+      [invitation.email,
+       invitation.display_name?.trim() || invitation.email.split('@')[0]]);
     const userId = u.rows[0].id;
 
     await tx.query(
@@ -458,7 +464,7 @@ export async function bootstrap(db, email) {
 }
 
 /** Create a project plus its counter and the creator's admin membership, atomically. */
-export async function createProject(db, { name, client, env = 'staging',
+export async function createProject(db, { name, client = 'RGM', env = 'staging',
                                           timezone = 'Asia/Ho_Chi_Minh', createdBy }) {
   return withTransaction(db, async (tx) => {
     const p = await tx.query(
