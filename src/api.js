@@ -760,35 +760,29 @@ export function buildRoutes() {
       throw new HttpError(403, 'key_mismatch', 'storage key does not belong to this bug');
     }
 
-    // 3. The object must actually exist — `complete` must not create a row for an
-    //    upload that never happened.
-    const head = await ctx.storage.head(storageKey);
-    if (!head || !head.byteSize) {
+    // 3. A cheap existence check first, so completing an upload that never happened
+    //    answers 400 instead of failing inside the promotion. The authoritative
+    //    check is on the promoted key, below.
+    const staged = await ctx.storage.head(storageKey);
+    if (!staged || !staged.byteSize) {
       throw new HttpError(400, 'upload_missing', 'object was never uploaded');
     }
-    if (head.byteSize > 8_000_000) {
-      throw new HttpError(400, 'too_large', 'uploaded object exceeds the size limit');
-    }
 
-    // 4. The content type has three possible sources, in order of trust: the
-    //    capability we signed, the bucket's own metadata, then the client's claim.
-    const declared = String(claims?.ct ?? head.contentType ?? contentType ?? '').split(';')[0].trim();
-    if (!ALLOWED_IMAGE_TYPES.includes(declared)) {
-      throw new HttpError(400, 'bad_type', `unsupported image type: ${declared || '(none)'}`);
-    }
-    // Proves it maps to a packet entry extension before we store it.
-    extensionFor(declared);
-
-    // 5. Promote and record, together, under a lock on the bug.
+    // 4. Promote, then validate what was promoted — in one transaction.
     //
-    //    Promoting first closes the RGM3-005 window (a presigned PUT stays valid
-    //    until it expires, so the validated object must not be the one served).
+    //    IR-013: validating the staged key and promoting afterwards leaves a
+    //    window, because a presigned PUT stays valid until it expires. Between the
+    //    two, a client can replace the object, and the promoted bytes would differ
+    //    from the metadata that was checked. Reading the FINAL key closes it:
+    //    whatever is there now is exactly what later views, downloads and packets
+    //    will serve.
     //
-    //    Doing it inside the transaction, after re-checking the count, closes two
-    //    more: the attachment limit was only enforced when a capability was
-    //    issued, so thirteen could be taken out and then all completed (IR-022);
-    //    and the row and its event were separate commits, so a failure between
-    //    them left an attachment with no history and no way to retry (IR-021).
+    //    Inside the transaction for three more reasons: the attachment limit was
+    //    only enforced when a capability was issued, so fifteen could be taken out
+    //    and all completed (IR-022); the row and its event were separate commits,
+    //    so a failure between them left an attachment with no history (IR-021);
+    //    and the bug row is locked, so concurrent completions cannot both pass the
+    //    count check.
     const inserted = await withTransaction(ctx.db, async (tx) => {
       await tx.query('SELECT id FROM bugs WHERE id = $1 FOR UPDATE', [ctx.params.id]);
 
@@ -800,10 +794,47 @@ export function buildRoutes() {
           `at most ${MAX_ATTACHMENTS_PER_BUG} screenshots per bug`);
       }
 
+      // Move the object off the key the client holds a capability for.
       let finalKey = storageKey;
       if (typeof ctx.storage.promote === 'function') {
         const target = ctx.storage.keyFor(projectId, ctx.params.id);
-        finalKey = (await ctx.storage.promote(storageKey, target)).key;
+        try {
+          finalKey = (await ctx.storage.promote(storageKey, target)).key;
+        } catch (err) {
+          // Racing completions: the other one already moved it.
+          throw new HttpError(409, 'upload_already_claimed',
+            'this upload was already completed, or was removed');
+        }
+      }
+
+      let declared;
+      let byteSize;
+      try {
+        const head = await ctx.storage.head(finalKey);
+        if (!head || !head.byteSize) {
+          throw new HttpError(400, 'upload_missing', 'object was never uploaded');
+        }
+        if (head.byteSize > 8_000_000) {
+          throw new HttpError(400, 'too_large', 'uploaded object exceeds the size limit');
+        }
+        byteSize = head.byteSize;
+
+        // Three possible sources for the type, in order of trust: the capability
+        // we signed, the bucket's own metadata, then the client's claim.
+        declared = String(claims?.ct ?? head.contentType ?? contentType ?? '')
+          .split(';')[0].trim();
+        if (!ALLOWED_IMAGE_TYPES.includes(declared)) {
+          throw new HttpError(400, 'bad_type',
+            `unsupported image type: ${declared || '(none)'}`);
+        }
+        // Proves it maps to a packet entry extension before we store it.
+        extensionFor(declared);
+      } catch (err) {
+        // The object was already moved, so a rejection here would otherwise
+        // orphan it. Deleting is best-effort: the row is what matters, and the
+        // caller is being told no either way.
+        await ctx.storage.delete(finalKey).catch(() => {});
+        throw err;
       }
 
       // A tester-supplied filename is stored as data; the extension is derived
@@ -813,7 +844,7 @@ export function buildRoutes() {
            (project_id, bug_id, storage_key, filename, byte_size, content_type)
          VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, filename, content_type, byte_size`,
         [projectId, ctx.params.id, finalKey,
-          String(filename ?? 'screenshot').slice(0, 200), head.byteSize, declared]);
+          String(filename ?? 'screenshot').slice(0, 200), byteSize, declared]);
 
       await tx.query(
         `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)

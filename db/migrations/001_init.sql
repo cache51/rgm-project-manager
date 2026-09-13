@@ -181,7 +181,7 @@ CREATE TABLE bug_attachments (
   storage_key  text NOT NULL UNIQUE,
   -- Tester-supplied. Kept as DATA only; never used as a path on disk (RGM3-007).
   filename     text NOT NULL,
-  byte_size    bigint NOT NULL CHECK (byte_size > 0),
+  byte_size    integer NOT NULL CHECK (byte_size > 0),
   content_type text NOT NULL CHECK (content_type LIKE 'image/%'),
   uploaded_at  timestamptz NOT NULL DEFAULT now(),
   FOREIGN KEY (project_id, bug_id)

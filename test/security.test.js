@@ -353,17 +353,31 @@ describe('migrations', () => {
 
     const roles = await db.query(
       `SELECT rolname, rolsuper, rolcanlogin FROM pg_roles
-        WHERE rolname IN ('rgm_app', 'rgm_auditor') ORDER BY rolname`);
+        WHERE rolname IN ('rgm_runtime', 'rgm_auditor') ORDER BY rolname`);
     assert.equal(roles.rows.length, 2, 'both roles should exist in this environment');
     for (const role of roles.rows) {
       assert.equal(role.rolsuper, false, `${role.rolname} must not be a superuser`);
       assert.equal(role.rolcanlogin, false, `${role.rolname} must not be able to log in`);
     }
 
-    // The application role may append to the audit trail and read it — nothing else.
+    // IR-004: the runtime role has to be able to do what the application does.
+    // It previously held grants on `events` alone, so a deployment that used it
+    // could not read `users`, `sessions` or `active_memberships`, and could not
+    // start. Naming the tables the application actually touches is what makes the
+    // role usable rather than merely present.
+    const runtimeTables = await db.query(
+      `SELECT DISTINCT table_name FROM information_schema.role_table_grants
+        WHERE grantee = 'rgm_runtime'`);
+    const names = new Set(runtimeTables.rows.map((r) => r.table_name));
+    for (const needed of ['users', 'sessions', 'active_memberships', 'rate_limit_hits',
+                          'bugs', 'milestones', 'projects', 'events']) {
+      assert.ok(names.has(needed), `rgm_runtime must be able to reach ${needed}`);
+    }
+
+    // ...but the audit trail stays append-only, by grant as well as by trigger.
     const app = await db.query(
       `SELECT privilege_type FROM information_schema.role_table_grants
-        WHERE grantee = 'rgm_app' AND table_name = 'events' ORDER BY privilege_type`);
+        WHERE grantee = 'rgm_runtime' AND table_name = 'events' ORDER BY privilege_type`);
     assert.deepEqual(app.rows.map((r) => r.privilege_type), ['INSERT', 'SELECT'],
       'append-only at the DB level, not just in a trigger');
 
@@ -373,10 +387,20 @@ describe('migrations', () => {
         WHERE grantee = 'rgm_auditor' AND table_name = 'events'`);
     assert.deepEqual(auditor.rows.map((r) => r.privilege_type), ['SELECT']);
 
+    // The old misleading name must no longer name anything the application uses.
+    // It may still exist on a shared cluster, where another database's objects
+    // depend on it and nothing here can drop it — in that case it must at least
+    // hold no access to this database.
+    const stale = await db.query(
+      `SELECT count(*)::int AS c FROM information_schema.role_table_grants
+        WHERE grantee = 'rgm_app'`);
+    assert.equal(stale.rows[0].c, 0,
+      'if rgm_app survives, it must not still be able to reach this database');
+
     await db.close();
   });
 
-  test('rgm_app may append to events and may neither rewrite nor delete them', async () => {
+  test('rgm_runtime may append to events and may neither rewrite nor delete them', async () => {
     const db = await freshDb();
     const admin = await bootstrap(db, 'acl@rgm.example');
     const project = await createProject(db, { name: 'ACL', client: 'X',
@@ -384,7 +408,7 @@ describe('migrations', () => {
 
     // Actually assume the role. Catalog introspection can be wrong about what is
     // enforced; becoming the role cannot.
-    await db.exec('SET ROLE rgm_app');
+    await db.exec('SET ROLE rgm_runtime');
     try {
       const before = (await db.query('SELECT count(*)::int AS c FROM events')).rows[0].c;
 

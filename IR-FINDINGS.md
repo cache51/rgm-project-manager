@@ -5,24 +5,22 @@
 (13 high, 25 medium).
 
 This is the first review of the code by something other than its author, and it
-found things the 243 passing tests did not. **Eighteen of the thirty-eight are
-fixed**, each with a test that would have caught it; the remaining twenty are
-recorded with a plan so they are not lost.
-
-Fixed and still open by severity:
+found things the 243 passing tests did not. **Twenty-two of the thirty-eight are
+fixed**, each with a test that would have caught it; the rest are recorded with a
+plan so they are not lost.
 
 | | high | medium | total |
 |---|---|---|---|
 | Found | 13 | 25 | 38 |
-| Fixed | **9** | **8** | **17** |
+| Fixed | **13** | **9** | **22** |
 | Partly fixed | — | 1 | 1 |
-| Open | 4 | 16 | 20 |
+| Open | 0 | 15 | 15 |
 
-The four high-severity findings still open are IR-004 (the privileges migration
-leaves a runtime role unable to use the app), IR-008/IR-009 (the CLI writes a
-plaintext token to disk, and can pull one project's bug into another project's
-repository) and IR-013 (the staged object can still be replaced between the
-`HEAD` and the promotion).
+**Every high-severity finding is closed.** The fifteen still open are all medium,
+and the largest cluster is the notification and worker lifecycle: leases are not
+renewed during an external call, the outbox ignores its retry deadline, failed
+event translations have no terminal sweep or retry route, and staging objects are
+never cleaned up.
 
 The run that produced this **self-rejected** ("Plan changed during the run") because
 the repository was edited while it ran. The findings are still valid — they are
@@ -35,7 +33,12 @@ re-run is owed.
 
 | ID | Sev | What was wrong | Fix / evidence |
 |---|---|---|---|
+| **IR-013** | high | **Validation of a moving object.** Completion checked the staged key and promoted afterwards. Because a presigned PUT stays valid until it expires, a client could replace the object in between — so the promoted bytes could differ from the metadata that was checked, and every later view, download and packet would serve the replacement. | Promotion happens first, and the object is then validated where it now lives, so what is checked is what is served. A rejection after the move deletes the promoted copy rather than orphaning it, and a racing completion is answered 409 instead of failing. `test/upload-integrity.test.js`. |
 | **IR-001** | high | **Authorization.** `requireScope` was called on 3 of 33 routes, so a `bug:read` token could change bug status, and a read-only token could create invitations or mint more tokens. | Scopes come from one table (`SCOPE_POLICY` in `src/api.js`) applied centrally, and an unlisted route is denied rather than defaulted open. `test/scopes.test.js` asserts every route has a decision and that a staleness-free policy covers the live route list. |
+| **IR-004** | high | **A runtime role that could not run the app.** `002_privileges.sql` created a role named `rgm_app` — as though it were the application's own — and granted it only `events`. A deployment that took the name at face value could not read `users`, `sessions` or `active_memberships`, and could not start; using the owner instead threw away the separation the file exists for. | The role is `rgm_runtime` and holds exactly what the application does — table grants across the schema, with `events` still append-only by grant as well as by trigger. Migration 005 migrates an existing installation, and is deliberately tolerant: roles are cluster-scoped and grants are not, so a role another database still depends on is left alone rather than failing the migration. Verified by assuming the role on a real PostgreSQL 17: it reads `users`, and `UPDATE events` is denied. |
+| **IR-008** | high | **Credentials on disk and in the process list.** `rgm login` wrote a long-lived token into `~/.rgm/config.json` with the process umask (world-readable on a typical machine) and accepted it as a command-line argument, where `ps` shows it to every other user. | The file is written 0600 inside a 0700 directory (and re-saved files are repaired, since `writeFile` ignores `mode` for an existing file). The token is now read from `RGM_TOKEN` or `--token-stdin`; `--token` still works but warns. `test/cli.config.test.js`. |
+| **IR-009** | high | **A packet written into the wrong project.** Project selection is global and the output path comes from the bug number, so `rgm pull 1` in project A's repository could extract project B's BUG-1 over the same directory, silently mixing two clients' reports. | `pull` reads the packet's own `meta.json` and refuses a packet from a different project before writing anything — as it does one it cannot identify, since an unattributable report in a repository is worse than none. Five tests in `test/cli.packet.test.js`. |
+| **IR-017** | med | **Joining a project failed for signed-in users.** `/api/invites/redeem` was not CSRF-exempt, so a user with a session cookie was refused while an anonymous one succeeded — the opposite of who is likely to redeem an invitation. The test client attaches the header automatically, which is how it stayed hidden. | The endpoint is capability-addressed, so the cookie is now irrelevant to it. The test drops the header deliberately and asserts an ordinary write still needs it. |
 | **IR-005** | high | **Privilege restoration.** A role change left outstanding invitations alone, and redemption restores the invited role — so a demoted admin could redeem an invitation issued while they were an admin and become one again. | `setMemberRole` takes the same per-(project,email) lock as redemption and removal, revokes live invitations for the address, and audits the change. `test/api.auth.test.js` → "a demoted admin cannot restore their role with an old invitation". |
 | **IR-010** | high | **Symlink escape.** `rgm pull` validated path strings but wrote through an existing symlink, so a planted `.rgm/BUG-1/bug.md` could overwrite a source file. | Extraction removes any existing entry (discarding the link, not its target), writes with `wx` so it can never follow one, and refuses a symlinked ancestor. Three tests in `test/cli.packet.test.js`. |
 | **IR-015** | med | **Last-admin race.** The guard ran outside the update transaction, so two admins could demote each other past it; `removeMember` had no guard at all. | The guard now runs inside the transaction under a project-level lock in `setMemberRole`. |
@@ -60,10 +63,6 @@ Recorded so they are not lost, roughly in the order worth doing them.
 
 ### Authorization and credential handling
 
-- **IR-008 (high)** — `rgm login` writes a plaintext API token to
-  `~/.rgm/config.json` with default permissions, and accepts it as an argument.
-- **IR-009 (high)** — Project selection is global, so `rgm pull 1` in project A's
-  repository can download project B's bug over the same path.
 - **IR-018 (med)** — Login and invitation secrets travel in query strings, so they
   reach browser history and access logs.
 - **IR-019 (med)** — SMTP latency distinguishes a known address from an unknown
@@ -71,9 +70,6 @@ Recorded so they are not lost, roughly in the order worth doing them.
 
 ### Uploads and storage
 
-- **IR-013 (high)** — Between the `HEAD` and the promotion, a still-valid `PUT` can
-  replace the staged object — the promoted bytes then differ from the validated
-  metadata. Needs versioned/conditional copies.
 - **IR-023 (med)** — Abandoned staging objects are never cleaned up.
 - **IR-020 (med)** — No server-side re-encode, so EXIF/GPS from a client that does
   not strip it reaches storage and packets. (Same as the earlier RGM3-011.)
@@ -100,9 +96,6 @@ Recorded so they are not lost, roughly in the order worth doing them.
 
 ### Interface
 
-- **IR-017 (med)** — The invitation page posts without the CSRF header, so joining
-  a project while signed in fails. The test helper adds the header automatically
-  and masked this.
 - **IR-036 (med)** — An upload failure after bug creation loses the bug id, and the
   error path clears the form — a retry creates a duplicate report.
 - **IR-037 (med)** — "Report bug" on milestone M2 does not preselect M2, so the

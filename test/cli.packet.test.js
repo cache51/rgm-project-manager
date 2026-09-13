@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeZip, crc32 } from '../src/zip.js';
 import { readZip } from '../src/unzip.js';
-import { extractPacket, ensureIgnored } from '../src/cli.js';
+import { extractPacket, ensureIgnored, assertPacketBelongsToProject } from '../src/cli.js';
 import { makeProjectWorld, makeMilestone, fileBug, PNG_BYTES } from './helpers.js';
 
 const run = promisify(execFile);
@@ -92,6 +92,45 @@ describe('pulled packets cannot be committed by accident (IR-035)', () => {
     await writeFile(join(root, '.gitignore'), '# mine\n');
     await ensureIgnored(root);
     assert.equal(await readFile(join(root, '.gitignore'), 'utf8'), '# mine\n');
+  });
+});
+
+describe('a packet is not written into the wrong project (IR-009)', () => {
+  const projectId = '11111111-1111-1111-1111-111111111111';
+  const otherId = '99999999-9999-9999-9999-999999999999';
+
+  const packetFor = (meta) => Buffer.from(makeZip([
+    { name: 'bug.md', data: Buffer.from('# Bug') },
+    { name: 'meta.json', data: Buffer.from(JSON.stringify(meta)) }
+  ]));
+
+  test('a packet from another project is refused, naming both', () => {
+    // Project selection is global and the output path comes from the bug number,
+    // so without this, project B's BUG-1 lands in project A's repository.
+    const zip = packetFor({ id: 'b', project: { id: otherId, name: 'Other Client' } });
+    assert.throws(() => assertPacketBelongsToProject(zip, projectId),
+      /belongs to 'Other Client'/);
+  });
+
+  test('a matching packet is accepted and its meta returned', () => {
+    const zip = packetFor({ id: 'b', project: { id: projectId, name: 'Packing' } });
+    const meta = assertPacketBelongsToProject(zip, projectId);
+    assert.equal(meta.project.name, 'Packing');
+  });
+
+  test('a packet with no meta.json is refused rather than written', () => {
+    const zip = Buffer.from(makeZip([{ name: 'bug.md', data: Buffer.from('# Bug') }]));
+    assert.throws(() => assertPacketBelongsToProject(zip, projectId), /no meta.json/);
+  });
+
+  test('a packet whose meta.json is unreadable is refused', () => {
+    const zip = Buffer.from(makeZip([{ name: 'meta.json', data: Buffer.from('{ not json') }]));
+    assert.throws(() => assertPacketBelongsToProject(zip, projectId), /not readable/);
+  });
+
+  test('a packet that names no project is refused', () => {
+    const zip = packetFor({ id: 'b', project: {} });
+    assert.throws(() => assertPacketBelongsToProject(zip, projectId), /does not name its project/);
   });
 });
 

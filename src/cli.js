@@ -12,7 +12,7 @@
  * `pull` is the primary handoff path: it lands bug.md, meta.json and the
  * screenshots on disk, ready to hand to a coding agent.
  */
-import { readFile, writeFile, mkdir, lstat, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, lstat, rm, chmod } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { readZip } from './unzip.js';
@@ -101,6 +101,43 @@ export async function ensureIgnored(rootDir) {
   }
 }
 
+/**
+ * Refuse a packet that belongs to a different project than the CLI is set to.
+ *
+ * Project selection is global and the output path is derived from the bug number,
+ * so `rgm pull 1` in project A's repository could extract project B's BUG-1 over
+ * the same directory — silently mixing two clients' reports (IR-009).
+ *
+ * `meta.json` is written by the server, so it is the packet's own statement of
+ * where it came from. A packet that cannot be identified is refused rather than
+ * written: an unattributable report in a repository is worse than no report.
+ */
+export function assertPacketBelongsToProject(zipBuffer, projectId) {
+  const entry = readZip(zipBuffer).find((e) => e.name === 'meta.json');
+  if (!entry) {
+    throw new Error('refusing to extract: the packet has no meta.json to identify it');
+  }
+
+  let meta;
+  try {
+    meta = JSON.parse(Buffer.from(entry.data).toString('utf8'));
+  } catch {
+    throw new Error('refusing to extract: the packet meta.json is not readable');
+  }
+
+  const found = meta?.project?.id;
+  if (!found) {
+    throw new Error('refusing to extract: the packet does not name its project');
+  }
+  if (projectId && found !== projectId) {
+    throw new Error(
+      `packet belongs to '${meta.project.name ?? found}' (${found}), but this CLI is set `
+      + `to a different project — run 'rgm use <project>' first, or pull into a `
+      + `separate --out directory`);
+  }
+  return meta;
+}
+
 export async function loadConfig() {
   try {
     return JSON.parse(await readFile(CONFIG_PATH, 'utf8'));
@@ -109,9 +146,26 @@ export async function loadConfig() {
   }
 }
 
+/**
+ * Persist the CLI configuration.
+ *
+ * The file holds a long-lived API token, so it is written 0600 inside a 0700
+ * directory. It used to be created with the process umask, which on a typical
+ * machine means world-readable (IR-008).
+ */
 export async function saveConfig(config) {
-  await mkdir(join(CONFIG_PATH, '..'), { recursive: true });
-  await writeFile(CONFIG_PATH, JSON.stringify(config, null, 2));
+  const dir = join(CONFIG_PATH, '..');
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await writeFile(CONFIG_PATH, JSON.stringify(config, null, 2), { mode: 0o600 });
+  // If the file already existed, `mode` is ignored by the OS; set it explicitly.
+  await chmod(CONFIG_PATH, 0o600).catch(() => {});
+}
+
+/** Read a token from stdin, so it never appears in `ps` output. */
+async function readTokenFromStdin() {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  return Buffer.concat(chunks).toString('utf8').trim();
 }
 
 function api(config) {
@@ -148,8 +202,20 @@ export async function run(argv = process.argv.slice(2)) {
   const config = await loadConfig();
 
   if (command === 'login') {
-    if (!args.url || !args.token) throw new Error('login needs --url and --token');
-    await saveConfig({ ...config, url: args.url, token: args.token });
+    // The token is a long-lived credential. `--token` puts it in the process list
+    // for anyone who runs `ps`, so prefer stdin or the environment and say so.
+    let token = args['token-stdin'] ? await readTokenFromStdin() : null;
+    if (!token && process.env.RGM_TOKEN) token = process.env.RGM_TOKEN.trim();
+    if (!token && args.token) {
+      token = String(args.token);
+      process.stderr.write(
+        'warning: --token is visible to other users in the process list; '
+        + 'prefer RGM_TOKEN=… rgm login --url …\n');
+    }
+    if (!args.url || !token) {
+      throw new Error('login needs --url and a token (RGM_TOKEN, --token-stdin, or --token)');
+    }
+    await saveConfig({ ...config, url: args.url, token });
     return `saved credentials for ${args.url}`;
   }
 
@@ -196,6 +262,11 @@ export async function run(argv = process.argv.slice(2)) {
 
     const res = await call('GET', `/api/bugs/${id}/packet`, { accept: 'application/zip' });
     const zip = Buffer.from(await res.arrayBuffer());
+
+    // Before anything is written: the packet must be from the project this CLI is
+    // set to (IR-009).
+    assertPacketBelongsToProject(zip, config.projectId);
+
     const root = args.out ?? '.rgm';
     const outDir = join(root, code);
     await ensureIgnored(root);
