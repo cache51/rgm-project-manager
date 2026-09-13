@@ -12,6 +12,7 @@ import { writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { makeProjectWorld, makeMilestone, fileBug, PNG_BYTES } from './helpers.js';
 import { FENCE_TOKEN, REGION_BEGIN } from '../src/prompt.js';
+import { readZip } from '../src/unzip.js';
 
 const run = promisify(execFile);
 
@@ -287,6 +288,35 @@ describe('packet: agent handoff', () => {
     // Real unzip validates the archived data.
     const { stdout } = await run('unzip', ['-t', path]);
     assert.match(stdout, /No errors detected/);
+  });
+
+  test('bug.md and the archive describe the same attachments', async () => {
+    // IR-038: the prompt and the archive used to be two independent reads of the
+    // attachment table, so a completion landing between them could name a
+    // screenshot in bug.md that the ZIP did not contain — or omit one it did.
+    const target = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await attach(target.id, 'image/png', 'a.png', PNG_BYTES);
+    await attach(target.id, 'image/jpeg', 'b.jpg', PNG_BYTES);
+
+    const res = await w.devClient.get(`/api/bugs/${target.id}/packet`);
+    const { path, names } = await zipEntries(res.buf, w.dir);
+
+    const screenshots = names.filter((n) => n.startsWith('screenshot_')).sort();
+    assert.equal(screenshots.length, 2, 'both uploads are in the archive');
+
+    // Read the two documents straight from the archive, so what is checked is what
+    // the developer actually receives.
+    const entries = readZip(res.buf);
+    const text = (name) => entries.find((e) => e.name === name).data.toString('utf8');
+
+    const bugMd = text('bug.md');
+    for (const name of screenshots) {
+      assert.ok(bugMd.includes(name), `${name} is in the archive but not named in bug.md`);
+    }
+
+    // And meta.json agrees with both, so all three come from one read.
+    const meta = JSON.parse(text('meta.json'));
+    assert.deepEqual(meta.attachments.map((a) => a.name).sort(), screenshots);
   });
 
   test("a tester's filename never becomes an archive path", async () => {

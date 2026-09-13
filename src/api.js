@@ -887,7 +887,10 @@ export function buildRoutes() {
     if (!bug) throw new HttpError(404, 'not_found', 'bug not found');
 
     const attachments = await attachmentsFor(ctx.db, bug.id);
-    const prompt = await buildPromptFor(ctx.db, bug);
+    // Pass the same list in: `bug.md`, `meta.json` and the archive entries have to
+    // describe one set of attachments, or a concurrent upload can leave the prompt
+    // naming a screenshot the archive does not contain (IR-038).
+    const prompt = await buildPromptFor(ctx.db, bug, { attachments });
     const entries = packetEntryNames(attachments.length, attachments.map(a => a.content_type));
 
     for (const name of entries) {
@@ -958,10 +961,18 @@ function stampIn(iso, timezone) {
   return `${text} (${timezone})`;
 }
 
-/** Assemble the handoff prompt from the stored state. */
-export async function buildPromptFor(db, bug) {
+/**
+ * Build the agent handoff prompt.
+ *
+ * `attachments` may be passed in when the caller has already read them — the
+ * packet route builds `bug.md`, `meta.json` and the archive from one read, so a
+ * screenshot cannot appear in the prompt but be missing from the ZIP, or the
+ * reverse (IR-038).
+ */
+export async function buildPromptFor(db, bug, { attachments: given = null } = {}) {
   const [translations, timeline, attachments] = await Promise.all([
-    translationsFor(db, bug.id), timelineFor(db, bug.id), attachmentsFor(db, bug.id)
+    translationsFor(db, bug.id), timelineFor(db, bug.id),
+    given ? Promise.resolve(given) : attachmentsFor(db, bug.id)
   ]);
   const entries = packetEntryNames(attachments.length, attachments.map(a => a.content_type));
   const tz = bug.project_timezone ?? 'UTC';

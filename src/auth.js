@@ -217,10 +217,28 @@ export async function createInvite(db, { projectId, email, role, createdBy, deli
   const normalized = normalizeEmail(email);
   const token = newToken();
 
-  await db.query(
-    `INSERT INTO invitations (project_id, email, role, token_hash, expires_at, created_by)
-     VALUES ($1, $2, $3, $4, now() + make_interval(hours => $5::int), $6)`,
-    [projectId, normalized, role, hashToken(token), ttlHours, createdBy]);
+  await withTransaction(db, async (tx) => {
+    // The same per-(project,email) lock that redemption and removal take, so a
+    // creation cannot commit after a removal and restore the access it just
+    // revoked. Redemption and removal had it; creation did not (RGM3-003).
+    await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))',
+      [`invite:${projectId}:${normalized}`]);
+
+    // Retire anything expired first. The live-invitation index excludes consumed
+    // and revoked rows but cannot exclude by expiry — `now()` is not immutable, so
+    // it cannot appear in a partial index predicate. An invitation nobody redeemed
+    // therefore kept the next one un-issuable for that address for ever (IR-016).
+    await tx.query(
+      `UPDATE invitations SET revoked_at = now()
+        WHERE project_id = $1 AND email = $2 AND consumed_at IS NULL
+          AND revoked_at IS NULL AND expires_at <= now()`,
+      [projectId, normalized]);
+
+    await tx.query(
+      `INSERT INTO invitations (project_id, email, role, token_hash, expires_at, created_by)
+       VALUES ($1, $2, $3, $4, now() + make_interval(hours => $5::int), $6)`,
+      [projectId, normalized, role, hashToken(token), ttlHours, createdBy]);
+  });
 
   if (deliver) await deliver({ to: normalized, token, kind: 'invite' });
   return { sent: true };

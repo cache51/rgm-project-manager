@@ -5,22 +5,23 @@
 (13 high, 25 medium).
 
 This is the first review of the code by something other than its author, and it
-found things the 243 passing tests did not. **Twenty-two of the thirty-eight are
+found things the 243 passing tests did not. **Twenty-five of the thirty-eight are
 fixed**, each with a test that would have caught it; the rest are recorded with a
 plan so they are not lost.
 
 | | high | medium | total |
 |---|---|---|---|
 | Found | 13 | 25 | 38 |
-| Fixed | **13** | **9** | **22** |
+| Fixed | **13** | **12** | **25** |
 | Partly fixed | — | 1 | 1 |
-| Open | 0 | 15 | 15 |
+| Open | 0 | 12 | 12 |
 
-**Every high-severity finding is closed.** The fifteen still open are all medium,
-and the largest cluster is the notification and worker lifecycle: leases are not
-renewed during an external call, the outbox ignores its retry deadline, failed
-event translations have no terminal sweep or retry route, and staging objects are
-never cleaned up.
+**Every high-severity finding is closed.** The twelve still open are all medium,
+and the largest cluster is the worker lifecycle: leases are not renewed during an
+external call, failed event translations have no terminal sweep or retry route,
+and abandoned staging objects are never cleaned up. Those want a background
+reaper and a heartbeat, which is a piece of the product that does not exist yet
+rather than a defect in one that does.
 
 The run that produced this **self-rejected** ("Plan changed during the run") because
 the repository was edited while it ran. The findings are still valid — they are
@@ -34,6 +35,9 @@ re-run is owed.
 | ID | Sev | What was wrong | Fix / evidence |
 |---|---|---|---|
 | **IR-013** | high | **Validation of a moving object.** Completion checked the staged key and promoted afterwards. Because a presigned PUT stays valid until it expires, a client could replace the object in between — so the promoted bytes could differ from the metadata that was checked, and every later view, download and packet would serve the replacement. | Promotion happens first, and the object is then validated where it now lives, so what is checked is what is served. A rejection after the move deletes the promoted copy rather than orphaning it, and a racing completion is answered 409 instead of failing. `test/upload-integrity.test.js`. |
+| **IR-016** | med | **An expired invitation blocked its own replacement.** The live-invitation index excludes consumed and revoked rows but cannot exclude by expiry, because `now()` is not immutable and so cannot appear in a partial index predicate. An invitation nobody redeemed kept the next one un-issuable for that address for ever. | Creation retires expired invitations for the address first, inside a transaction. That transaction also takes the per-(project,email) advisory lock — which redemption and removal had and **creation did not**, so the earlier RGM3-003 fix was incomplete. |
+| **IR-025** | med | **A brief outage burned every retry.** A failed send is rescheduled as `pending` with a future `lease_until`, but the claim accepted any `pending` row, so five attempts went in a tight loop instead of waiting out the backoff — and a notification waiting would have delivered was parked. | The claim requires a pending row's deadline to have elapsed. Tested by draining twice against a failing provider: one attempt, then zero, then a retry once the window passes. |
+| **IR-038** | med | **A packet that describes two different things.** The packet route read the attachment list, then called the prompt builder, which read it again. An upload completing between the two could put a screenshot in `bug.md` that the ZIP did not contain. | One read feeds `bug.md`, `meta.json` and the archive entries. `test/api.attachments.test.js` asserts all three agree once the archive is opened. |
 | **IR-001** | high | **Authorization.** `requireScope` was called on 3 of 33 routes, so a `bug:read` token could change bug status, and a read-only token could create invitations or mint more tokens. | Scopes come from one table (`SCOPE_POLICY` in `src/api.js`) applied centrally, and an unlisted route is denied rather than defaulted open. `test/scopes.test.js` asserts every route has a decision and that a staleness-free policy covers the live route list. |
 | **IR-004** | high | **A runtime role that could not run the app.** `002_privileges.sql` created a role named `rgm_app` — as though it were the application's own — and granted it only `events`. A deployment that took the name at face value could not read `users`, `sessions` or `active_memberships`, and could not start; using the owner instead threw away the separation the file exists for. | The role is `rgm_runtime` and holds exactly what the application does — table grants across the schema, with `events` still append-only by grant as well as by trigger. Migration 005 migrates an existing installation, and is deliberately tolerant: roles are cluster-scoped and grants are not, so a role another database still depends on is left alone rather than failing the migration. Verified by assuming the role on a real PostgreSQL 17: it reads `users`, and `UPDATE events` is denied. |
 | **IR-008** | high | **Credentials on disk and in the process list.** `rgm login` wrote a long-lived token into `~/.rgm/config.json` with the process umask (world-readable on a typical machine) and accepted it as a command-line argument, where `ps` shows it to every other user. | The file is written 0600 inside a 0700 directory (and re-saved files are repaired, since `writeFile` ignores `mode` for an existing file). The token is now read from `RGM_TOKEN` or `--token-stdin`; `--token` still works but warns. `test/cli.config.test.js`. |
@@ -76,8 +80,6 @@ Recorded so they are not lost, roughly in the order worth doing them.
 
 ### Delivery and workers
 
-- **IR-025 (med)** — The outbox claim ignores the retry deadline, so a short
-  provider outage burns all five attempts instead of backing off.
 - **IR-026 (med)** — SMTP has no idempotency contract, so acceptance followed by a
   crash can deliver a duplicate.
 - **IR-027 (med)** — Leases are never renewed during an external call, and HTTP
@@ -91,8 +93,6 @@ Recorded so they are not lost, roughly in the order worth doing them.
   prompt; only the Vietnamese original is forwarded.
 - **IR-031 (med)** — Packet attachments carry no `eventId`, so screenshots cannot
   be tied to timeline moments in `bug.md`.
-- **IR-038 (med)** — Packet generation reads attachments twice, so a concurrent
-  completion can make `bug.md` list a screenshot the ZIP does not contain.
 
 ### Interface
 
@@ -108,8 +108,6 @@ Recorded so they are not lost, roughly in the order worth doing them.
   now runs the whole suite against a real PostgreSQL 17 (243/243 locally, and it
   found the `count(*)` cast bug on its first run). The CI job still needs to use it.
 - **IR-014 (med)** — Migrations and their ledger entry are not one transaction.
-- **IR-016 (med)** — An expired-but-unredeemed invitation keeps blocking
-  replacements.
 
 ---
 

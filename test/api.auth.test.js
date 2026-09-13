@@ -206,6 +206,29 @@ describe('auth: authorization', () => {
     }
   });
 
+  test('an expired invitation does not block a replacement', async () => {
+    // IR-016: the live-invitation index cannot exclude by expiry (`now()` is not
+    // immutable), so an invitation nobody redeemed kept the next one un-issuable
+    // for that address for ever.
+    const email = 'lapsed@rgm.example';
+    await w.db.query(
+      `INSERT INTO invitations (project_id, email, role, token_hash, expires_at, created_by)
+       VALUES ($1, $2, 'tester', 'stale-hash', now() - interval '1 hour', $3)`,
+      [w.project.id, email, w.admin.userId]);
+
+    const res = await w.adminClient.post(`/api/projects/${w.project.id}/invites`,
+      { email, role: 'tester' });
+    assert.equal(res.status, 201, res.text);
+
+    const rows = await w.db.query(
+      `SELECT revoked_at, consumed_at FROM invitations WHERE email = $1 ORDER BY created_at`,
+      [email]);
+    assert.equal(rows.rows.length, 2, 'the old invitation is retired, not deleted');
+    assert.ok(rows.rows[0].revoked_at !== null, 'the expired one is revoked');
+    assert.equal(rows.rows[1].revoked_at, null, 'and the new one is live');
+    assert.equal(rows.rows[1].consumed_at, null);
+  });
+
   test('an admin can change a member role, and it is audited', async () => {
     const devId = (await w.db.query(
       `SELECT id FROM users WHERE email = 'dev@rgm.example'`)).rows[0].id;

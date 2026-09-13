@@ -48,7 +48,14 @@ UPDATE notifications_outbox AS o
  WHERE o.id IN (
          SELECT id
            FROM notifications_outbox
-          WHERE (status = 'pending' OR (status IN ('running','sending') AND lease_until < now()))
+          WHERE (
+                  -- A fresh row, or one whose backoff has elapsed. A failed send
+                  -- is rescheduled as pending with a future lease_until, so
+                  -- accepting pending rows unconditionally burned every attempt in
+                  -- a tight loop instead of waiting out the retry window (IR-025).
+                  (status = 'pending' AND (lease_until IS NULL OR lease_until <= now()))
+                  OR (status IN ('running','sending') AND lease_until < now())
+                )
             AND attempts < $3::int
           ORDER BY created_at
           FOR UPDATE SKIP LOCKED

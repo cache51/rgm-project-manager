@@ -18,10 +18,10 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { makeWorld, PNG_BYTES } from './helpers.js';
+import { makeWorld, makeProjectWorld, makeMilestone, PNG_BYTES } from './helpers.js';
 import { bootstrap, createProject } from '../src/auth.js';
 import { runBugTranslations, runEventTranslations, StubProvider } from '../src/translate.js';
-import { runOutbox, RecordingSender } from '../src/notify.js';
+import { runOutbox, RecordingSender, enqueueReadyNotifications } from '../src/notify.js';
 
 const run = promisify(execFile);
 
@@ -108,6 +108,52 @@ describe('end to end: a milestone, a bug, a fix and a verifiable handoff', () =>
     const delivered = await runOutbox(w.db, sender, { workerId: workerId() });
     assert.equal(delivered.length, 1);
     assert.equal(sender.sent.length, 2);
+  });
+
+  test('a failing send waits out its backoff instead of burning its attempts', async () => {
+    // IR-025: a failure reschedules the row as `pending` with a future lease_until,
+    // but the claim accepted any pending row — so a short provider outage consumed
+    // every attempt in a tight loop and parked a notification that waiting would
+    // have delivered. Its own world, so it cannot disturb the journey above.
+    const w2 = await makeProjectWorld();
+    try {
+      const milestone = await makeMilestone(w2.adminClient, w2.project.id, 'M-BO', 'Backoff');
+      await enqueueReadyNotifications(w2.db, {
+        projectId: w2.project.id, milestoneId: milestone.id,
+        generation: 1, milestoneCode: 'M-BO'
+      });
+
+      const down = [];
+      const failing = {
+        name: 'provider-down',
+        async send(msg) { down.push(msg); throw new Error('provider is down'); }
+      };
+
+      const first = await runOutbox(w2.db, failing, { workerId: workerId() });
+      assert.equal(first.length, 1);
+      assert.equal(first[0].status, 'retry');
+      assert.equal(down.length, 1);
+
+      // The retry deadline has not elapsed, so the next drain must leave it alone.
+      const second = await runOutbox(w2.db, failing, { workerId: workerId() });
+      assert.equal(second.length, 0, 'the backoff must be respected');
+      assert.equal(down.length, 1, 'and the provider must not be called again at once');
+
+      const row = await w2.db.query(
+        `SELECT attempts, status, lease_until FROM notifications_outbox`);
+      assert.equal(row.rows[0].attempts, 1, 'one attempt, not all of them');
+      assert.equal(row.rows[0].status, 'pending');
+      assert.ok(row.rows[0].lease_until > new Date(), 'a future retry deadline is set');
+
+      // Once the window passes it is eligible again — the attempts were not wasted.
+      await w2.db.query(
+        `UPDATE notifications_outbox SET lease_until = now() - interval '1 second'`);
+      const third = await runOutbox(w2.db, failing, { workerId: workerId() });
+      assert.equal(third.length, 1, 'after the window elapses the retry happens');
+      assert.equal(down.length, 2);
+    } finally {
+      await w2.close();
+    }
   });
 
   test('the tester files a bug in Vietnamese with a screenshot', async () => {
