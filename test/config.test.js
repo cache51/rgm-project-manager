@@ -175,4 +175,46 @@ describe('config: loadConfig', () => {
     assert.equal(both.describe().database, 'postgres (DATABASE_URL)',
       'a connection string must win, or a deployment silently uses a local file');
   });
+
+  test('production refuses the built-in development storage secret', () => {
+    // IR-012: the default secret is in this repository, so anyone could forge an
+    // upload capability with it.
+    assert.throws(
+      () => loadConfig({ NODE_ENV: 'production', STORAGE_DIR: '/tmp/x' }),
+      /STORAGE_SECRET must be set/);
+
+    const cfg = loadConfig({ NODE_ENV: 'production', STORAGE_SECRET: 'a-real-secret' });
+    assert.equal(cfg.secureCookies, true, 'production must default to Secure cookies');
+  });
+
+  test('session cookies default to Secure only in production', () => {
+    assert.equal(loadConfig({ NODE_ENV: 'production', STORAGE_SECRET: 'x' }).secureCookies, true);
+    assert.equal(loadConfig({ STORAGE_DIR: '/tmp/x' }).secureCookies, false);
+    assert.equal(loadConfig({ STORAGE_DIR: '/tmp/x', SECURE_COOKIES: 'true' }).secureCookies,
+      true, 'an explicit setting still wins');
+  });
+
+  test('automatic migration can be switched off for a multi-replica deployment', () => {
+    assert.equal(loadConfig({ STORAGE_DIR: '/tmp/x' }).migrateOnStart, true);
+    assert.equal(
+      loadConfig({ STORAGE_DIR: '/tmp/x', MIGRATE_ON_START: 'false' }).migrateOnStart,
+      false);
+  });
+
+  test('the translator reads the documented base-URL variable, and its alias', () => {
+    // IR-011: the README documented TRANSLATE_API_URL while the loader read
+    // TRANSLATE_BASE_URL — following the docs silently sent bug text and the API
+    // key to api.openai.com instead of the configured endpoint.
+    for (const key of ['TRANSLATE_BASE_URL', 'TRANSLATE_API_URL']) {
+      const cfg = loadConfig({
+        TRANSLATE_PROVIDER: 'openai',
+        [key]: 'http://127.0.0.1:9/v1',
+        TRANSLATE_API_KEY: 'k',
+        STORAGE_DIR: '/tmp/x'
+      });
+      assert.equal(typeof cfg.translationProvider.translate, 'function');
+      assert.notEqual(cfg.translationProvider.name, 'stub',
+        `${key} was ignored and the stub translator was used`);
+    }
+  });
 });

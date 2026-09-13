@@ -32,8 +32,10 @@ RUN mkdir -p /data/storage && chown -R rgm:rgm /data
 
 ENV NODE_ENV=production \
     PORT=3000 \
+    HOST=0.0.0.0 \
     PGLITE_DIR=/data/pg \
-    STORAGE_DIR=/data/storage
+    STORAGE_DIR=/data/storage \
+    MIGRATE_ON_START=false
 
 USER rgm
 EXPOSE 3000

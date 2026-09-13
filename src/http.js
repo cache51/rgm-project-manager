@@ -26,8 +26,17 @@ export function createRouter() {
         let ok = true;
         for (let i = 0; i < r.parts.length; i++) {
           const seg = r.parts[i];
-          if (seg.startsWith(':')) params[seg.slice(1)] = decodeURIComponent(parts[i]);
-          else if (seg !== parts[i]) { ok = false; break; }
+          if (seg.startsWith(':')) {
+            try {
+              params[seg.slice(1)] = decodeURIComponent(parts[i]);
+            } catch {
+              // A malformed escape (`/api/bugs/%`) is a bad request, not a missing
+              // route. It must not escape as a URIError: this runs in the HTTP
+              // listener, not inside a promise, so an uncaught throw takes the
+              // whole process down. One request, unauthenticated.
+              return { handler: null, params: null, malformed: true };
+            }
+          } else if (seg !== parts[i]) { ok = false; break; }
         }
         if (!ok) continue;
         pathMatched = true;

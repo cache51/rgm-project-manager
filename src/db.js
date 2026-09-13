@@ -51,17 +51,26 @@ export async function createDb({ dataDir, url = null, pool = null } = {}) {
       await pglite.exec(sql);
     },
 
-    // PGlite is a single connection, so BEGIN/COMMIT on the handle is correct.
+    /**
+     * PGlite is a single connection shared by every concurrent request, so issuing
+     * BEGIN/COMMIT as separate statements lets two requests interleave: one
+     * request's COMMIT can commit another's half-finished work, and one request's
+     * ROLLBACK can discard another's committed writes.
+     *
+     * PGlite's own `transaction` holds the connection exclusively for the duration
+     * of the callback, which is the only correct way to do this here. The callback
+     * receives a handle pinned to that transaction.
+     */
     async transaction(fn) {
-      await pglite.exec('BEGIN');
-      try {
-        const out = await fn(this);
-        await pglite.exec('COMMIT');
-        return out;
-      } catch (err) {
-        try { await pglite.exec('ROLLBACK'); } catch { /* already unwound */ }
-        throw err;
-      }
+      return pglite.transaction(async (tx) => fn({
+        async query(text, params) {
+          const res = await tx.query(text, params);
+          return { rows: res.rows ?? [], rowCount: res.affectedRows ?? null };
+        },
+        async exec(sql) {
+          await tx.exec(sql);
+        }
+      }));
     },
 
     async close() {

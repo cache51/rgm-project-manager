@@ -38,7 +38,19 @@ export function chooseStorage(env = process.env) {
   }
   return new FsStorage({
     root: env.STORAGE_DIR ?? './.rgm/storage',
-    secret: env.STORAGE_SECRET ?? 'dev-secret-change-me'
+    // The default secret is public knowledge — it is in this repository. Anyone
+    // who can reach the upload endpoint could forge a capability with it, so it
+    // is refused outright in production (IR-012).
+    secret: (() => {
+      const secret = env.STORAGE_SECRET;
+      if (secret) return secret;
+      if (env.NODE_ENV === 'production') {
+        throw new Error('STORAGE_SECRET must be set when NODE_ENV=production; '
+          + 'the built-in development secret is public and would let anyone '
+          + 'forge upload capabilities');
+      }
+      return 'dev-secret-change-me';
+    })()
   });
 }
 
@@ -80,8 +92,8 @@ export function chooseTranslationProvider(env = process.env) {
 
   if (which === 'openai') {
     return withRetry(OpenAiCompatibleProvider({
-      baseUrl: env.TRANSLATE_BASE_URL ?? 'https://api.openai.com',
-      apiKey: env.TRANSLATE_API_KEY,
+      baseUrl: env.TRANSLATE_BASE_URL ?? env.TRANSLATE_API_URL ?? 'https://api.openai.com',
+      apiKey: env.TRANSLATE_API_KEY ?? env.OPENAI_API_KEY,
       model: env.TRANSLATE_MODEL ?? 'gpt-4o-mini'
     }), { attempts: num(env.TRANSLATE_ATTEMPTS, 3) });
   }
@@ -141,7 +153,14 @@ export function loadConfig(env = process.env) {
     port: num(env.PORT, 3000),
     host: env.HOST ?? '127.0.0.1',
     publicUrl,
-    secureCookies: bool(env.SECURE_COOKIES, false),
+    // In production a non-Secure session cookie is sent over plaintext, so the
+    // default has to follow NODE_ENV rather than being off unless asked for
+    // (IR-012).
+    secureCookies: bool(env.SECURE_COOKIES, env.NODE_ENV === 'production'),
+    // Migrating on every boot means N replicas race the same migration. On by
+    // default for local runs; production turns it off so one init job owns the
+    // schema (IR-014).
+    migrateOnStart: env.MIGRATE_ON_START !== 'false',
     // A connection string selects node-postgres; PGLITE_DIR selects the embedded
     // database. createDb resolves the same way.
     databaseUrl: env.DATABASE_URL ?? null,

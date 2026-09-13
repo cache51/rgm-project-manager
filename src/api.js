@@ -475,7 +475,10 @@ export function buildRoutes() {
     const rows = await ctx.db.query(
       `SELECT b.id, b.bug_number, b.severity, b.status, b.title_vi, b.milestone_id,
               b.updated_at, m.code AS milestone_code,
-              (SELECT count(*) FROM bug_attachments a WHERE a.bug_id = b.id) AS attachments
+              -- ::int matters: count() is int8, which node-postgres returns as a
+              -- *string* (a JS number cannot hold every int8). Without the cast the
+              -- row would carry "3" on PostgreSQL and 3 on PGlite.
+              (SELECT count(*) FROM bug_attachments a WHERE a.bug_id = b.id)::int AS attachments
          FROM bugs b JOIN milestones m ON m.id = b.milestone_id
         WHERE b.project_id = $1 AND b.deleted_at IS NULL
         ORDER BY b.bug_number DESC`, [ctx.params.id]);

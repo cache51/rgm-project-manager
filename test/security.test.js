@@ -6,10 +6,28 @@
  */
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { request as httpRequest } from 'node:http';
 import { makeWorld, makeProjectWorld, makeMilestone, freshDb, testDriver } from './helpers.js';
 import { bootstrap, createProject, hashToken } from '../src/auth.js';
-import { migrate, migrationFiles } from '../src/db.js';
+import { migrate, migrationFiles, withTransaction } from '../src/db.js';
 import { hit, prune, LIMITS } from '../src/ratelimit.js';
+
+/** Send a path verbatim, without the client library normalising it. */
+function rawGet(origin, path) {
+  const u = new URL(origin);
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { host: u.hostname, port: u.port, path, method: 'GET' },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => resolve({ status: res.statusCode, body }));
+      });
+    req.on('error', reject);
+    req.end();
+  });
+}
 
 describe('csrf: cookie-authenticated writes', () => {
   let w, ms;
@@ -210,6 +228,68 @@ describe('rate limiting', () => {
   });
 });
 
+describe('robustness: a request must not be able to kill the process', () => {
+  let w;
+  before(async () => { w = await makeProjectWorld(); });
+  after(async () => { await w.close(); });
+
+  test('a malformed URL escape on a matching route is a 400, not a crash', async () => {
+    // IR-002: decodeURIComponent threw straight out of the HTTP listener, so one
+    // unauthenticated request was an outage. Reproduced by running the server and
+    // sending `GET /api/bugs/%` — the process exited with URIError.
+    const res = await rawGet(w.url, '/api/bugs/%');
+    assert.equal(res.status, 400);
+    assert.match(res.body, /bad_request/);
+
+    // The real assertion: the process is still serving.
+    assert.equal((await fetch(`${w.url}/api/health`)).status, 200);
+  });
+
+  test('other malformed escapes do not take it down either', async () => {
+    for (const path of ['/api/bugs/%E0%A4%A', '/api/projects/%C3%28', '/api/uploads/%FF',
+                        '/api/projects/%/members/%']) {
+      const res = await rawGet(w.url, path);
+      assert.ok([400, 404].includes(res.status), `${path} → ${res.status}`);
+    }
+    assert.equal((await fetch(`${w.url}/api/health`)).status, 200);
+  });
+});
+
+describe('concurrency: transactions must not interleave', () => {
+  test('concurrent transactions neither lose work nor resurrect rollbacks', async () => {
+    // IR-003: the embedded driver is one connection shared by every request. When
+    // BEGIN/COMMIT were issued as separate statements, concurrent transactions
+    // interleaved — a rollback could discard a neighbour's committed rows.
+    const db = await freshDb();
+    try {
+      const N = 20;
+      await Promise.all(Array.from({ length: N }, (_, i) =>
+        withTransaction(db, async (tx) => {
+          await tx.query('INSERT INTO users (email, display_name) VALUES ($1, $2)',
+            [`u${i}@rgm.example`, `user ${i}`]);
+          // Yield, so the other transactions genuinely overlap.
+          await new Promise((r) => setTimeout(r, i % 3));
+          if (i % 5 === 0) throw new Error('deliberate rollback');
+          return i;
+        }).catch(() => null)));
+
+      const rows = await db.query('SELECT email FROM users');
+      const committed = new Set(rows.rows.map((r) => r.email));
+      for (let i = 0; i < N; i++) {
+        if (i % 5 === 0) {
+          assert.ok(!committed.has(`u${i}@rgm.example`),
+            `u${i} rolled back but its row survived`);
+        } else {
+          assert.ok(committed.has(`u${i}@rgm.example`),
+            `u${i} committed but its row is missing`);
+        }
+      }
+    } finally {
+      await db.close();
+    }
+  });
+});
+
 describe('migrations', () => {
   test('the suite is running on the driver the environment selected', async () => {
     const db = await freshDb();
@@ -298,8 +378,11 @@ describe('migrations', () => {
         /permission denied|append-only/);
       await assert.rejects(() => db.query('DELETE FROM events'),
         /permission denied|append-only/);
+      // TRUNCATE is refused too — by privilege on PGlite, by the foreign-key
+      // constraint on PostgreSQL 17. Both are refusals, which is the point; the
+      // grant removal itself is asserted from relacl above.
       await assert.rejects(() => db.exec('TRUNCATE events'),
-        /permission denied|append-only/);
+        /permission denied|append-only|cannot truncate/);
 
       // Nothing was lost by those attempts.
       assert.equal((await db.query('SELECT count(*)::int AS c FROM events')).rows[0].c,

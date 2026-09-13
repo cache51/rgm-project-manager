@@ -15,11 +15,13 @@ import { SmtpMailer, HttpMailer, buildMessage, encodeHeader,
 import { OpenAiCompatibleProvider, DeepLProvider, withRetry,
          buildTranslationPrompt } from '../src/translate-providers.js';
 import { runBugTranslations } from '../src/translate.js';
+import { composeNotification } from '../src/notify.js';
 import { makeProjectWorld, makeMilestone, fileBug } from './helpers.js';
 
 // ───────────────────────── a fake SMTP server ─────────────────────────
 
-function startSmtpServer({ offerStartTls = false, dataReply = 250, fragment = false } = {}) {
+function startSmtpServer({ offerStartTls = false, dataReply = 250, fragment = false,
+                           authDeny = false } = {}) {
   const messages = [];
   const transcript = [];
 
@@ -85,7 +87,18 @@ function startSmtpServer({ offerStartTls = false, dataReply = 250, fragment = fa
       const upper = line.toUpperCase();
 
       // AUTH LOGIN is a three-step conversation: challenge, username, password.
-      if (authState === 'user') { authState = 'pass'; write('334 UGFzc3dvcmQ6'); return; }
+      // With authDeny the server rejects AND echoes the credential back, which is
+      // what a real misconfigured server does.
+      if (authState === 'user') {
+        if (authDeny) {
+          authState = null;
+          write(`535 authentication failed for ${line}`);
+          return;
+        }
+        authState = 'pass';
+        write('334 UGFzc3dvcmQ6');
+        return;
+      }
       if (authState === 'pass') { authState = null; write('235 authenticated'); return; }
 
       if (upper.startsWith('EHLO') || upper.startsWith('HELO')) {
@@ -228,6 +241,42 @@ describe('smtp mailer', () => {
       assert.equal(fragmented.messages.length, 1);
       assert.equal(decodeBody(fragmented.messages[0].wire), 'still works');
     } finally { await fragmented.close(); }
+  });
+
+  test('a readiness email carries the application URL, not the placeholder', () => {
+    // IR-024: the URL is worker configuration, not an outbox column — reading
+    // `n.baseUrl` always fell back to the placeholder.
+    const message = composeNotification(
+      { kind: 'milestone.ready', payload: { milestoneCode: 'M3' }, dedupe_key: 'k' },
+      { baseUrl: 'https://rgm.example' });
+    assert.match(message.body, /https:\/\/rgm\.example/);
+    assert.ok(!message.body.includes('chưa cấu hình'),
+      'the placeholder means the configured URL never reached the composer');
+  });
+
+  test('a rejected AUTH does not leak the credential into the error', async () => {
+    // IR-007: the base64 credential used to appear in the thrown message, which
+    // notify.js persists to the outbox and worker.js prints.
+    const denied = await startSmtpServer({ authDeny: true });
+    try {
+      const mailer = SmtpMailer({
+        host: '127.0.0.1', port: denied.port, from: 'no-reply@rgm.local',
+        user: 'rgm', pass: 'hunter2'
+      });
+      const userB64 = Buffer.from('rgm').toString('base64');
+      const passB64 = Buffer.from('hunter2').toString('base64');
+
+      await assert.rejects(
+        () => mailer.send({ to: 'a@b.c', subject: 's', body: 'b' }),
+        (err) => {
+          assert.ok(!err.message.includes(userB64), `leaked the username: ${err.message}`);
+          assert.ok(!err.message.includes(passB64), `leaked the password: ${err.message}`);
+          assert.match(err.message, /\(redacted\)/);
+          return true;
+        });
+    } finally {
+      await denied.close();
+    }
   });
 
   test('a connection failure surfaces as an error', async () => {

@@ -68,7 +68,7 @@ const backoffSeconds = (attempts) => Math.min(300, 2 ** Math.min(attempts, 8));
  *
  * Vietnamese first, because the recipient of a readiness notice is the tester.
  */
-export function composeNotification(n) {
+export function composeNotification(n, { baseUrl = null } = {}) {
   const payload = n.payload ?? {};
   if (n.kind === 'milestone.ready') {
     const code = payload.milestoneCode ?? 'milestone';
@@ -78,7 +78,9 @@ export function composeNotification(n) {
         `Cột mốc ${code} đã sẵn sàng để kiểm thử.`,
         '',
         'Mở ứng dụng để xem các cột mốc và gửi lỗi kèm ảnh chụp màn hình:',
-        n.baseUrl ?? '(chưa cấu hình địa chỉ ứng dụng)',
+        // The base URL has to arrive as an argument: the outbox row has no such
+        // column, so reading `n.baseUrl` always produced the placeholder (IR-024).
+        baseUrl ?? '(chưa cấu hình địa chỉ ứng dụng)',
         '',
         `-- `,
         `Thông báo: ${n.kind}`,
@@ -123,7 +125,7 @@ export async function runOutbox(db, sender, { workerId, max = 50,
     }
 
     try {
-      const message = composeNotification(n);
+      const message = composeNotification(n, { baseUrl });
       const res = await sender.send({
         to: n.email,
         kind: n.kind,

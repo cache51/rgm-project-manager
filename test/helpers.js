@@ -7,6 +7,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { freshDb as freshPgliteDb, migrate } from '../src/db.js';
 import { createPgDb } from '../src/db-pg.js';
 import { FsStorage } from '../src/storage.js';
@@ -15,12 +16,44 @@ import { bootstrap, createProject, requestLoginLink, createInvite,
          redeemInvite } from '../src/auth.js';
 
 /**
- * The whole suite runs twice in CI: once on the PGlite driver, once on the pg
- * driver. `RGM_TEST_DRIVER=pg` selects the latter, which is what proves the two
- * drivers are actually interchangeable rather than merely similar.
+ * The whole suite runs three ways: on the PGlite driver, on the pg driver over a
+ * pool-shaped double, and — with `RGM_TEST_PG_URL` — on the pg driver against a
+ * real PostgreSQL server. The first two prove the drivers are interchangeable;
+ * the third proves the SQL is not PGlite dialect, which is the failure that would
+ * only ever surface in production.
  */
-export const testDriver = () =>
-  (process.env.RGM_TEST_DRIVER === 'pg' ? 'pg' : 'pglite');
+export const testDriver = () => {
+  if (process.env.RGM_TEST_PG_URL) return 'pg';
+  return process.env.RGM_TEST_DRIVER === 'pg' ? 'pg' : 'pglite';
+};
+
+/**
+ * A real database on a real server, dropped-in-fresh per world.
+ *
+ * Each world gets its own database rather than its own schema, because roles and
+ * grants are cluster-scoped: a shared database would make the privilege tests
+ * depend on each other. Creating a database is a few milliseconds.
+ */
+async function freshRealPgDb() {
+  const base = process.env.RGM_TEST_PG_URL;
+  const name = `rgm_t_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
+
+  const { Pool } = await import('pg');
+  const admin = new Pool({ connectionString: base, max: 1 });
+  try {
+    await admin.query(`CREATE DATABASE "${name}"`);
+  } finally {
+    await admin.end();
+  }
+
+  const url = new URL(base);
+  url.pathname = `/${name}`;
+  const pool = new Pool({ connectionString: url.toString(), max: 4 });
+
+  const db = await createPgDb({ pool });
+  await migrate(db);
+  return db;
+}
 
 /**
  * A `pg.Pool`-shaped double backed by one PGlite instance.
@@ -54,10 +87,32 @@ function pgliteAsPgPool(pglite) {
     return { rows: res.rows ?? [], rowCount: res.affectedRows ?? null };
   };
 
+  // Emulate ONE client properly: node-postgres makes a second `connect()` WAIT
+  // until the first handle is released. Handing out the same handle immediately
+  // instead lets two transactions interleave — something no real pool does, and
+  // which made this double disagree with real PostgreSQL about the concurrency
+  // test until it was fixed.
+  let busy = false;
+  const waiting = [];
+  const acquire = () => new Promise((resolve) => {
+    if (busy) waiting.push(resolve);
+    else { busy = true; resolve(); }
+  });
+  const release = () => {
+    const next = waiting.shift();
+    if (next) next();          // stays busy; ownership passes to the next waiter
+    else busy = false;
+  };
+
   return {
     query,
     async connect() {
-      return { query, release() { /* nothing to return to a pool of one */ } };
+      await acquire();
+      return {
+        query,
+        async exec(sql) { await pglite.exec(sql); },
+        release
+      };
     },
     async end() { /* the caller owns the PGlite instance */ }
   };
@@ -65,6 +120,7 @@ function pgliteAsPgPool(pglite) {
 
 /** A fresh, migrated database on whichever driver the environment selects. */
 export async function freshDb() {
+  if (process.env.RGM_TEST_PG_URL) return freshRealPgDb();
   if (testDriver() === 'pg') {
     const { PGlite } = await import('@electric-sql/pglite');
     const pglite = new PGlite();

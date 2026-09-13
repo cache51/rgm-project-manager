@@ -96,6 +96,24 @@ export function createApp({
   const router = buildRoutes();
 
   const server = createServer((req, res) => {
+    // Nothing may escape the listener body. This callback runs in the HTTP server,
+    // not inside a promise, so any uncaught throw is an unhandled exception and
+    // takes the whole process down — reachable with a single unauthenticated
+    // request. `handleRequest` throws on purpose in places; the guard is the
+    // backstop that makes a bug there a 500 instead of an outage.
+    try {
+      handleRequest(req, res);
+    } catch (err) {
+      if (onError) onError(err);
+      if (!res.headersSent) {
+        sendJson(res, 500, { error: 'internal_error', message: 'unexpected server error' });
+      } else {
+        res.end();
+      }
+    }
+  });
+
+  function handleRequest(req, res) {
     let url;
     try {
       url = new URL(req.url, 'http://localhost');
@@ -121,6 +139,12 @@ export function createApp({
     }
 
     const match = router.match(req.method, url.pathname);
+    if (match?.malformed) {
+      // The path contained an escape sequence that is not valid UTF-8. Answering
+      // 400 is the whole point of `match` returning it rather than throwing.
+      sendJson(res, 400, { error: 'bad_request', message: 'malformed URL escape' });
+      return;
+    }
     if (!match) {
       sendJson(res, 404, { error: 'not_found', message: 'no such endpoint' });
       return;
@@ -160,7 +184,7 @@ export function createApp({
         sendJson(res, 500, { error: 'internal_error', message: 'unexpected server error' });
         if (onError) onError(err);
       });
-  });
+  }
 
   return { server, router };
 }
@@ -171,7 +195,7 @@ export async function createAppFromEnv(env = process.env) {
   const config = loadConfig(env);
 
   const db = await createDb({ dataDir: config.dataDir, url: config.databaseUrl });
-  await migrate(db);
+  if (config.migrateOnStart) await migrate(db);
 
   const app = createApp({
     db,

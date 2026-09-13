@@ -74,6 +74,10 @@ class SmtpSession {
     this.buffer = '';
     this.waiters = [];
     this.closed = false;
+    // Stored, not just used: startTls builds a replacement session and has to
+    // carry the timeout across, and without this it passed `undefined` — which
+    // silently disables the idle timeout on the secured socket (IR-006).
+    this.timeoutMs = timeoutMs;
     socket.setTimeout(timeoutMs);
     socket.on('data', (chunk) => {
       this.buffer += chunk.toString('utf8');
@@ -136,8 +140,12 @@ class SmtpSession {
     const res = await this.readResponse();
     const codes = Array.isArray(expect) ? expect : [expect];
     if (!codes.includes(res.code)) {
+      // When the command carried a credential, the response is redacted too: a
+      // server may echo the AUTH line back, and base64 is not protection. This
+      // error is persisted to the outbox and printed by the worker (IR-007).
       const shown = hidden ? '(redacted)' : line;
-      throw new Error(`SMTP: ${shown} → ${res.code} ${res.text}`);
+      const detail = hidden ? '' : ` ${res.text}`;
+      throw new Error(`SMTP: ${shown} → ${res.code}${detail}`);
     }
     return res;
   }
@@ -153,7 +161,8 @@ class SmtpSession {
         rejectUnauthorized }, () => resolve(tls));
       tls.once('error', reject);
     });
-    // Replace the transport in place, keeping the same reader.
+    // Replace the transport in place, keeping the same reader — and the timeout,
+    // which is why the constructor stores it.
     const session = new SmtpSession(secured, this.timeoutMs);
     session.buffer = '';
     return session;
@@ -212,11 +221,14 @@ export function SmtpMailer({
         }
 
         if (user) {
-          // AUTH LOGIN: credentials are base64, and the server echoes them back in
-          // its error text, so those responses must never be logged verbatim.
-          await session.command('AUTH LOGIN', 334);
-          await session.command(Buffer.from(user, 'utf8').toString('base64'), 334);
-          await session.command(Buffer.from(pass ?? '', 'utf8').toString('base64'), 235);
+          // AUTH LOGIN: the credential commands are marked hidden, so neither the
+          // command nor the server's reply can reach an error message, the outbox
+          // table, or the worker's log (IR-007).
+          await session.command('AUTH LOGIN', 334, { hidden: true });
+          await session.command(Buffer.from(user, 'utf8').toString('base64'), 334,
+            { hidden: true });
+          await session.command(Buffer.from(pass ?? '', 'utf8').toString('base64'), 235,
+            { hidden: true });
         }
 
         await session.command(`MAIL FROM:<${from}>`, 250);

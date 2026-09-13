@@ -5,6 +5,11 @@ Developer ↔ tester communication hub for multiple internal projects.
 *v3 — closes all open items from the round-2 dual review (Codex RGM-010…022,
 Claude RGM2-001…016). Round history and dispositions: `PLAN-REVIEW-LOG.md`.*
 
+> **Superseded in part by `PLAN-v4.md`.** This document is the design as
+> intended; the product now exists, so where the two disagree the code and its
+> tests are authoritative. `PLAN-v4.md` records the disposition of every round-3
+> finding, with evidence, and names the two that remain open.
+
 ## Problem
 
 Testers (Vietnamese speakers) test a build after a developer marks a milestone
