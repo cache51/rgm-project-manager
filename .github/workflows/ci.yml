@@ -103,4 +103,4 @@ jobs:
           # double, so this job was named for something it did not do (IR-034).
           # Each test world gets its own database on the server below.
           RGM_TEST_PG_URL: postgres://postgres:postgres@127.0.0.1:5432/rgm
-        run: node --test --test-concurrency=1 test/
+        run: node --test --test-concurrency=1 test/*.test.js

@@ -12,9 +12,9 @@
     "worker": "node src/worker.js",
     "migrate": "node src/migrate.js",
     "bootstrap": "node src/bootstrap.js",
-    "test": "node --test --test-concurrency=1 test/",
-    "test:pg": "RGM_TEST_DRIVER=pg node --test --test-concurrency=1 test/",
-    "test:realpg": "node --test --test-concurrency=1 test/",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "test:pg": "RGM_TEST_DRIVER=pg node --test --test-concurrency=1 test/*.test.js",
+    "test:realpg": "node --test --test-concurrency=1 test/*.test.js",
     "test:all": "npm test && npm run test:pg",
     "smoke": "bash scripts/smoke.sh"
   },
