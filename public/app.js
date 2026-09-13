@@ -36,7 +36,9 @@ const T = {
     pass: 'Đạt', fail: 'Không đạt', assignee: 'Người test', anyTester: 'Bất kỳ tester nào',
     saved: 'Đã lưu', signOut: 'Đăng xuất', addNote: 'Thêm bình luận',
     noReady: 'Không có cột mốc nào ở trạng thái "Sẵn sàng kiểm thử".',
-    trPending: 'Đang dịch…', trFailed: 'Dịch lỗi', trMissing: 'Chưa có bản dịch'
+    trPending: 'Đang dịch…', trFailed: 'Dịch lỗi', trMissing: 'Chưa có bản dịch',
+    noProjects: 'Chưa có dự án nào — hãy tạo dự án đầu tiên.', create: 'Tạo dự án',
+    nameL: 'Tên dự án', envL: 'Môi trường'
   },
   zh: {
     projects: '專案', ms: '里程碑', bugs: 'Bug 列表', nav: '導覽', lang: '語言',
@@ -60,7 +62,9 @@ const T = {
     pass: '通過', fail: '不通過', assignee: '測試人員', anyTester: '任何測試人員',
     saved: '已儲存', signOut: '登出', addNote: '新增留言',
     noReady: '目前沒有「待測試」的里程碑。',
-    trPending: '翻譯中…', trFailed: '翻譯失敗', trMissing: '尚無譯文'
+    trPending: '翻譯中…', trFailed: '翻譯失敗', trMissing: '尚無譯文',
+    noProjects: '尚無專案——先建立第一個專案。', create: '建立專案',
+    nameL: '專案名稱', envL: '環境'
   },
   en: {
     projects: 'Projects', ms: 'Milestones', bugs: 'Bug reports', nav: 'Navigation',
@@ -84,7 +88,9 @@ const T = {
     pass: 'Pass', fail: 'Fail', assignee: 'Assignee', anyTester: 'Any tester',
     saved: 'Saved', signOut: 'Sign out', addNote: 'Add comment',
     noReady: 'No milestone is currently ready for testing.',
-    trPending: 'Translating…', trFailed: 'Translation failed', trMissing: 'No translation yet'
+    trPending: 'Translating…', trFailed: 'Translation failed', trMissing: 'No translation yet',
+    noProjects: 'No projects yet — create the first one.', create: 'Create project',
+    nameL: 'Project name', envL: 'Environment'
   }
 };
 
@@ -225,7 +231,7 @@ async function refresh() {
     await loadProjects();
     if (S.bug) S.bug = await api('GET', `/api/bugs/${S.bug.id}`);
     render();
-  } catch (err) { notice(String(err.message), 'bad'); }
+  } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
 }
 
 // ───────────────────────── render ─────────────────────────
@@ -519,6 +525,26 @@ document.getElementById('app').addEventListener('click', async (event) => {
         await api('POST', '/api/auth/logout');
         location.replace('/login');
         break;
+      case 'createproject': {
+        // The first thing a new install needs. Failures are surfaced rather than
+        // swallowed, because there is nothing else on this screen to try.
+        const name = document.getElementById('f-pname').value.trim();
+        const client = document.getElementById('f-pclient').value.trim();
+        const env = document.getElementById('f-penv').value;
+        if (!name || !client) {
+          notice('Enter a project name and a client.', 'bad');
+          break;
+        }
+        try {
+          await api('POST', '/api/projects', { name, client, env });
+          S.notice = null;
+          await boot();
+        } catch (err) {
+          console.error(err);
+          notice(String(err.message || 'Could not create the project.'), 'bad');
+        }
+        break;
+      }
       case 'openbug':
         await openBug(el.dataset.id);
         break;
@@ -552,6 +578,9 @@ document.getElementById('app').addEventListener('click', async (event) => {
         break;
     }
   } catch (err) {
+    // Logged as well as shown: a notice vanishes after four seconds, and a silently
+    // swallowed error is the hardest kind to diagnose — including in tests.
+    console.error(err);
     notice(String(err.message), 'bad');
   }
 });
@@ -687,15 +716,39 @@ async function boot() {
   S.lang = me.projects.length ? S.lang : 'vi';
 
   if (!me.projects.length) {
-    // A signed-in user with no membership: say so plainly rather than showing
-    // an empty shell that looks broken.
+    // A signed-in user with no membership.
+    //
+    // A site admin gets a working create form: the API has always allowed
+    // POST /api/projects for them, but the screen offered no way to do it, so a
+    // fresh install was a dead end whose own sentence promised a capability it did
+    // not provide. This is the first thing anyone sees, and no test covered it —
+    // test/ui.test.js checks the payloads the UI renders, never the DOM.
     document.getElementById('app').innerHTML = `
       <main style="margin:auto;padding:60px">
+        ${S.notice ? `<div class="toast ${S.notice.kind}">${esc(S.notice.text)}</div>` : ''}
         <div class="card" style="max-width:520px;margin:auto">
           <h2 style="margin-top:0">${t('projects')}</h2>
-          <p>${esc(me.email)} is not a member of any project yet.</p>
-          <p class="rel">An admin must invite you, or you can create a project if you are a site admin.</p>
-          <button class="btn" data-action="signout">${t('signOut')}</button>
+          ${me.isSiteAdmin ? `
+            <p class="rel">${t('noProjects')}</p>
+            <label>${t('nameL')}</label>
+            <input id="f-pname" placeholder="Packing List Automation">
+            <label>${t('client')}</label>
+            <input id="f-pclient" placeholder="Lucky Brand">
+            <label>${t('envL')}</label>
+            <select id="f-penv">
+              <option value="staging" selected>staging</option>
+              <option value="production">production</option>
+            </select>
+            <div style="margin-top:14px">
+              <button class="btn" data-action="createproject">${t('create')}</button>
+            </div>
+          ` : `
+            <p>${esc(me.email)} is not a member of any project yet.</p>
+            <p class="rel">An admin must invite you.</p>
+          `}
+          <div style="margin-top:16px">
+            <button class="btn" data-action="signout">${t('signOut')}</button>
+          </div>
         </div>
       </main>`;
     return;

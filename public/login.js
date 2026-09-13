@@ -44,6 +44,20 @@ async function acceptInvite(value) {
   }
 }
 
+/**
+ * A same-origin path, or null.
+ *
+ * `startsWith('/')` is not enough for this: `//evil.test` and `/\evil.test` also
+ * start with a slash, but a browser reads them as protocol-relative URLs and
+ * resolves them to another host — so a sign-in link could be used to bounce someone
+ * off-site. Found by this page's own test after the first version shipped.
+ */
+function localPath(value) {
+  if (!value || !value.startsWith('/')) return null;
+  if (value.startsWith('//') || value.startsWith('/\\')) return null;
+  return value;
+}
+
 async function consume(value) {
   heading.textContent = 'Signing you in…';
   note.textContent = '';
@@ -60,8 +74,7 @@ async function consume(value) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body.message ?? `sign-in failed (${res.status})`);
     }
-    const next = params.get('next');
-    location.replace(next && next.startsWith('/') ? next : '/');
+    location.replace(localPath(params.get('next')) ?? '/');
   } catch (err) {
     heading.textContent = 'That link did not work';
     note.textContent = err.message;
