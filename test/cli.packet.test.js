@@ -8,14 +8,92 @@ import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir, stat, lstat, symlink, mkdtemp, rm }
+  from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeZip, crc32 } from '../src/zip.js';
 import { readZip } from '../src/unzip.js';
-import { extractPacket } from '../src/cli.js';
+import { extractPacket, ensureIgnored } from '../src/cli.js';
 import { makeProjectWorld, makeMilestone, fileBug, PNG_BYTES } from './helpers.js';
 
 const run = promisify(execFile);
+
+describe('packet extraction does not follow symlinks (IR-010)', () => {
+  let dir;
+  before(async () => { dir = await mkdtemp(join(tmpdir(), 'rgm-symlink-')); });
+  after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  test('a symlink planted at the destination does not overwrite its target', async () => {
+    const precious = join(dir, 'precious.txt');
+    await writeFile(precious, 'ORIGINAL');
+    const target = join(dir, 'BUG-1');
+    await mkdir(target, { recursive: true });
+    // The attack: the path a packet wants to write already points elsewhere.
+    await symlink(precious, join(target, 'bug.md'));
+
+    const zip = Buffer.from(makeZip([{ name: 'bug.md', data: Buffer.from('from the packet') }]));
+    await extractPacket(zip, target);
+
+    assert.equal(await readFile(precious, 'utf8'), 'ORIGINAL',
+      'the file outside the packet directory must be untouched');
+    const stat = await lstat(join(target, 'bug.md'));
+    assert.ok(!stat.isSymbolicLink(), 'the link must be replaced by a real file');
+    assert.equal(await readFile(join(target, 'bug.md'), 'utf8'), 'from the packet');
+  });
+
+  test('a symlinked ancestor directory is refused outright', async () => {
+    const elsewhere = join(dir, 'elsewhere');
+    await mkdir(elsewhere, { recursive: true });
+    const target = join(dir, 'BUG-2');
+    await mkdir(target, { recursive: true });
+    // A directory entry inside the packet resolving through a symlink.
+    await symlink(elsewhere, join(target, 'sub'));
+
+    const zip = Buffer.from(makeZip([
+      { name: 'sub/bug.md', data: Buffer.from('should not land') }
+    ]));
+    await assert.rejects(() => extractPacket(zip, target),
+      /refusing to extract through the symlinked directory/);
+    assert.equal((await readdir(elsewhere)).length, 0,
+      'nothing may be written outside the packet directory');
+  });
+
+  test('a normal extraction still works, and can be re-run', async () => {
+    const target = join(dir, 'BUG-3');
+    const zip = Buffer.from(makeZip([
+      { name: 'bug.md', data: Buffer.from('first') },
+      { name: 'screenshot_01.png', data: PNG_BYTES }
+    ]));
+    assert.deepEqual(await extractPacket(zip, target), ['bug.md', 'screenshot_01.png']);
+
+    // Re-pulling a packet overwrites its own files — that is the point of `pull`.
+    const second = Buffer.from(makeZip([{ name: 'bug.md', data: Buffer.from('second') }]));
+    await extractPacket(second, target);
+    assert.equal(await readFile(join(target, 'bug.md'), 'utf8'), 'second');
+  });
+});
+
+describe('pulled packets cannot be committed by accident (IR-035)', () => {
+  let dir;
+  before(async () => { dir = await mkdtemp(join(tmpdir(), 'rgm-ignore-')); });
+  after(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  test('a .gitignore is created that ignores everything', async () => {
+    const root = join(dir, '.rgm');
+    await ensureIgnored(root);
+    const contents = await readFile(join(root, '.gitignore'), 'utf8');
+    assert.match(contents, /^\*$/m, 'the directory must ignore its whole contents');
+  });
+
+  test('an existing .gitignore is not clobbered', async () => {
+    const root = join(dir, '.rgm2');
+    await mkdir(root, { recursive: true });
+    await writeFile(join(root, '.gitignore'), '# mine\n');
+    await ensureIgnored(root);
+    assert.equal(await readFile(join(root, '.gitignore'), 'utf8'), '# mine\n');
+  });
+});
 
 describe('zip reader', () => {
   let dir;

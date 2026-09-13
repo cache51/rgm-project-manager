@@ -8,7 +8,8 @@ import { HttpError } from './auth.js';
 export function createRouter() {
   const routes = [];
   const add = (method, pattern, handler) =>
-    routes.push({ method, parts: pattern.split('/').filter(Boolean), handler });
+    routes.push({ method, pattern, parts: pattern.split('/').filter(Boolean), handler,
+                  scope: null });
 
   return {
     get: (p, h) => add('GET', p, h),
@@ -16,6 +17,9 @@ export function createRouter() {
     put: (p, h) => add('PUT', p, h),
     patch: (p, h) => add('PATCH', p, h),
     del: (p, h) => add('DELETE', p, h),
+
+    /** Every route, so policy coverage can be asserted rather than assumed. */
+    routes: () => routes,
 
     match(method, pathname) {
       const parts = pathname.split('/').filter(Boolean);
@@ -40,7 +44,10 @@ export function createRouter() {
         }
         if (!ok) continue;
         pathMatched = true;
-        if (r.method === method) return { handler: r.handler, params, allowed: null };
+        if (r.method === method) {
+          return { handler: r.handler, params, allowed: null, scope: r.scope,
+                   pattern: r.pattern };
+        }
       }
       return pathMatched ? { handler: null, params: null, allowed: 'method' } : null;
     }

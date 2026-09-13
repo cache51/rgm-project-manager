@@ -152,6 +152,60 @@ describe('auth: authorization', () => {
     assert.equal(res.json.error, 'bad_role');
   });
 
+  test('a demoted admin cannot restore their role with an old invitation', async () => {
+    // IR-005: the role change left outstanding invitations alone, and redemption
+    // restores the invited role — so a downgraded admin could redeem an
+    // invitation issued while they were an admin and become one again.
+    //
+    // Its own world: this adds a second admin, and the last-admin test below
+    // depends on there being exactly one.
+    const w2 = await makeProjectWorld();
+    try {
+      // A second admin, so the project is not down to its last one.
+      const second = await w2.invite({ projectId: w2.project.id,
+        email: 'climber@rgm.example', role: 'admin', createdBy: w2.admin.userId });
+      const secondId = (await w2.redeem(second)).userId;
+
+      const third = 'stale@rgm.example';
+      const first = await w2.invite({ projectId: w2.project.id, email: third,
+        role: 'admin', createdBy: w2.admin.userId });
+      const thirdId = (await w2.redeem(first)).userId;
+
+      // A fresh admin invitation, left live, then they are demoted while holding it.
+      const live = await w2.invite({ projectId: w2.project.id, email: third,
+        role: 'admin', createdBy: w2.admin.userId });
+      const demoted = await w2.adminClient.patch(
+        `/api/projects/${w2.project.id}/members/${thirdId}`, { role: 'tester' });
+      assert.equal(demoted.status, 200, demoted.text);
+      assert.equal(demoted.json.role, 'tester');
+
+      // The invitation issued while they were an admin is revoked by the change...
+      // (A consumed invitation keeps revoked_at null — only the live one matters.)
+      const liveRows = await w2.db.query(
+        `SELECT revoked_at FROM invitations WHERE email = $1 AND consumed_at IS NULL`,
+        [third]);
+      assert.ok(liveRows.rows.length > 0, 'an unconsumed invitation exists');
+      assert.ok(liveRows.rows.every(r => r.revoked_at !== null),
+        'the live invitation must be revoked by the demotion');
+
+      // ...so redeeming it cannot hand the admin role back.
+      await assert.rejects(() => w2.redeem(live), /invit/i);
+      const after = await w2.db.query(
+        `SELECT role FROM active_memberships WHERE project_id = $1 AND user_id = $2`,
+        [w2.project.id, thirdId]);
+      assert.equal(after.rows[0].role, 'tester',
+        'the demotion must stick; the invitation must not restore admin');
+
+      // The project kept an admin.
+      const still = await w2.db.query(
+        `SELECT role FROM active_memberships WHERE project_id = $1 AND user_id = $2`,
+        [w2.project.id, secondId]);
+      assert.equal(still.rows[0].role, 'admin');
+    } finally {
+      await w2.close();
+    }
+  });
+
   test('an admin can change a member role, and it is audited', async () => {
     const devId = (await w.db.query(
       `SELECT id FROM users WHERE email = 'dev@rgm.example'`)).rows[0].id;
@@ -161,11 +215,12 @@ describe('auth: authorization', () => {
     assert.equal(res.status, 200);
     assert.equal(res.json.role, 'tester');
 
-    // The audit trail records who changed it, not just that it changed.
+    // The audit trail records who changed what, not just that something changed.
     const events = await w.db.query(
       `SELECT kind, payload FROM events WHERE kind = 'membership.role_changed'`);
     assert.equal(events.rows.length, 1);
-    assert.equal(events.rows[0].payload.role, 'tester');
+    assert.equal(events.rows[0].payload.from, 'developer');
+    assert.equal(events.rows[0].payload.to, 'tester');
 
     // And the new role is what authorization now uses.
     assert.equal((await w.devClient.post(`/api/projects/${w.project.id}/milestones`,

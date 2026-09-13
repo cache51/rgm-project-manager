@@ -102,6 +102,36 @@ describe('attachments: two-phase upload', () => {
       'the UI and the packet must agree on every entry name');
   });
 
+  test('the attachment limit is enforced at completion, not only at presign', async () => {
+    // IR-022: the limit was checked when a capability was issued, so fifteen could
+    // be taken out and then every one completed.
+    const target = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+
+    const signed = [];
+    for (let i = 0; i < 15; i++) {
+      const res = await w.testerClient.post(`/api/bugs/${target.id}/attachments/presign`,
+        { contentType: 'image/png', byteSize: PNG_BYTES.length });
+      assert.equal(res.status, 201, `presign ${i} before any completion`);
+      signed.push(res.json);
+    }
+
+    const statuses = [];
+    for (const s of signed) {
+      await w.testerClient.put(s.uploadUrl, PNG_BYTES);
+      const done = await w.testerClient.post(`/api/bugs/${target.id}/attachments/complete`,
+        { storageKey: s.storageKey, uploadToken: s.uploadToken, filename: 'a.png' });
+      statuses.push(done.status);
+    }
+
+    const accepted = statuses.filter((s) => s === 201).length;
+    assert.equal(accepted, 12, `exactly the limit may be stored; ${accepted} were`);
+
+    const stored = await w.db.query(
+      `SELECT count(*)::int AS c FROM bug_attachments WHERE bug_id = $1`, [target.id]);
+    assert.equal(stored.rows[0].c, 12,
+      'the database must hold no more than the limit');
+  });
+
   test('completing promotes the object, so the capability cannot replace it later', async () => {
     // RGM3-005: a presigned PUT stays valid until it expires, so the object the
     // client validated must not be the object later served.

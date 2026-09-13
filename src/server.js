@@ -10,7 +10,7 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve, extname, sep, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createDb, migrate } from './db.js';
-import { buildRoutes } from './api.js';
+import { buildRoutes, PUBLIC, UNSPECIFIED } from './api.js';
 import { resolveActor, sendJson, sendBytes } from './http.js';
 import { resolveSession, resolveApiToken, verifyCsrfToken, HttpError } from './auth.js';
 
@@ -25,7 +25,14 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const CSRF_EXEMPT = [
   /^\/api\/auth\/request-link$/,
   /^\/api\/auth\/consume$/,
-  /^\/api\/uploads\//
+  /^\/api\/uploads\//,
+  // Capability-addressed: the invitation token IS the authority, and it is a
+  // single-use secret an attacker cannot guess. Requiring a CSRF header here made
+  // redemption depend on unrelated ambient state — a signed-in user (whose
+  // browser attaches a session cookie) was refused while an anonymous one
+  // succeeded, which is why joining a project failed for exactly the people most
+  // likely to do it (IR-017).
+  /^\/api\/invites\/redeem$/
 ];
 
 export function csrfRequired(method, pathname) {
@@ -164,6 +171,21 @@ export function createApp({
     resolveActor(req, { db, resolveSession, resolveApiToken })
       .then((actor) => {
         ctx.actor = actor;
+
+        // Token scopes, from the route's policy. A signed-in browser is the user's
+        // full authority and is not scoped; a token is narrowed. This never grants
+        // more than the user has — `authorize` still runs the membership check
+        // inside every handler.
+        if (actor?.via === 'api_token') {
+          if (match.scope === UNSPECIFIED) {
+            throw new HttpError(403, 'no_scope_policy',
+              'this route has no scope policy; refusing to guess');
+          }
+          if (match.scope && match.scope !== PUBLIC && !actor.scopes?.includes(match.scope)) {
+            throw new HttpError(403, 'insufficient_scope',
+              `this token lacks the ${match.scope} scope`);
+          }
+        }
 
         // A cookie-authenticated write must prove it read the CSRF cookie. This
         // is the one place it is checked, so no route can forget it. Bearer

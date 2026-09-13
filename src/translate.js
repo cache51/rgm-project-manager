@@ -137,7 +137,13 @@ export async function runEventTranslations(db, provider, { workerId, max = 50,
     const { event_id: eventId, field, lang } = claimed.rows[0];
 
     try {
-      const src = await db.query(`SELECT payload->>'note' AS note FROM events WHERE id = $1`,
+      // IR-028: close and reopen store their text as `payload.reason`, while this
+      // read only `payload.note` — so every such translation failed with "has no
+      // note to translate" even against a healthy provider. Both are accepted, and
+      // coalescing on read also repairs rows already written.
+      const src = await db.query(
+        `SELECT COALESCE(payload->>'note', payload->>'reason') AS note
+           FROM events WHERE id = $1`,
         [eventId]);
       const note = src.rows[0]?.note;
       if (!note) throw new Error(`event ${eventId} has no note to translate`);

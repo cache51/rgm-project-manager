@@ -12,9 +12,9 @@
  * `pull` is the primary handoff path: it lands bug.md, meta.json and the
  * screenshots on disk, ready to hand to a coding agent.
  */
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, lstat, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { readZip } from './unzip.js';
 import { assertSafeRelativePath, packetPathFor } from './packet.js';
 
@@ -45,12 +45,60 @@ export async function extractPacket(zipBuffer, targetDir) {
   await mkdir(targetDir, { recursive: true });
   const written = [];
   for (const entry of files) {
+    // IR-010: validating the path string is not enough. If `.rgm/BUG-1/bug.md`
+    // already exists as a symlink to a source file, a plain write follows it and
+    // overwrites the source. Removing first discards the link itself, and `wx`
+    // makes the write create a new file rather than follow one — so neither the
+    // leaf nor an ancestor can be used to escape the packet directory.
+    await assertNoSymlinkedAncestor(targetDir, entry.name);
     const path = packetPathFor(targetDir, entry.name);
-    await mkdir(join(path, '..'), { recursive: true });
-    await writeFile(path, entry.data);
+    await mkdir(dirname(path), { recursive: true });
+    await rm(path, { force: true });
+    await writeFile(path, entry.data, { flag: 'wx' });
     written.push(entry.name);
   }
   return written;
+}
+
+/**
+ * Refuse to extract into a symlinked directory.
+ *
+ * Only components that already exist are checked; the rest are created as real
+ * directories by `mkdir`.
+ */
+async function assertNoSymlinkedAncestor(targetDir, relPath) {
+  const segments = relPath.split('/').slice(0, -1);
+  let current = targetDir;
+  for (const segment of segments) {
+    current = join(current, segment);
+    try {
+      const stat = await lstat(current);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`refusing to extract through the symlinked directory ${current}`);
+      }
+    } catch (err) {
+      if (err.code === 'ENOENT') return;             // will be created for real
+      throw err;
+    }
+  }
+}
+
+/**
+ * Make sure a pulled packet cannot be committed by accident (IR-035).
+ *
+ * Packets contain client bug reports and screenshots. A `<root>/.gitignore`
+ * ignoring everything keeps `git add .` from staging them, without touching the
+ * repository's own ignore file.
+ */
+export async function ensureIgnored(rootDir) {
+  const ignorePath = join(rootDir, '.gitignore');
+  try {
+    await lstat(ignorePath);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+    await mkdir(rootDir, { recursive: true });
+    await writeFile(ignorePath, '# pulled packets are local working data\n*\n');
+  }
 }
 
 export async function loadConfig() {
@@ -148,7 +196,9 @@ export async function run(argv = process.argv.slice(2)) {
 
     const res = await call('GET', `/api/bugs/${id}/packet`, { accept: 'application/zip' });
     const zip = Buffer.from(await res.arrayBuffer());
-    const outDir = join(args.out ?? '.rgm', code);
+    const root = args.out ?? '.rgm';
+    const outDir = join(root, code);
+    await ensureIgnored(root);
     const written = await extractPacket(zip, outDir);
     return `${code} -> ${outDir}\n  ${written.join('\n  ')}`;
   }

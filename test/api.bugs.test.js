@@ -281,6 +281,30 @@ describe('bugs: translation', () => {
       'the note must be readable to a Chinese-speaking developer (RGM2-005)');
   });
 
+  test('a close reason is translated, not silently dropped', async () => {
+    // IR-028: close/reopen write `payload.reason` while the translator read
+    // `payload.note`, so every one of these failed with "has no note to
+    // translate" — a feature that was simply broken, and no test noticed because
+    // none of them closed a bug with a reason.
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    const closed = await w.devClient.post(`/api/bugs/${bug.id}/status`,
+      { action: 'close', reason: 'Không tái hiện được trên bản dựng mới' });
+    assert.equal(closed.status, 200, closed.text);
+
+    const results = await runEventTranslations(w.db, StubProvider(),
+      { workerId: randomUUID() });
+    assert.ok(results.some(r => r.status === 'done'),
+      `the close reason must translate; got ${JSON.stringify(results)}`);
+
+    const rows = await w.db.query(
+      `SELECT et.lang, et.status, et.text FROM event_translations et
+         JOIN events e ON e.id = et.event_id
+        WHERE e.kind = 'bug.closed'`);
+    assert.ok(rows.rows.length > 0, 'a translation row was queued for the close');
+    const zh = rows.rows.find(r => r.lang === 'zh');
+    assert.equal(zh.status, 'done', `expected done, got ${zh.status}`);
+  });
+
   test('the handoff prompt renders timestamps in the project timezone, not raw UTC', async () => {
     const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
     const prompt = await w.devClient.get(`/api/bugs/${bug.id}/prompt`);

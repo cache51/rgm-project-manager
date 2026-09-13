@@ -42,6 +42,29 @@ describe('csrf: cookie-authenticated writes', () => {
   });
   after(async () => { await w.close(); });
 
+  test('a sign-in link is still exempt, and an invitation is too', async () => {
+    // IR-017: redemption is capability-addressed, so the session cookie must not
+    // decide whether it works. The browser flow is /login?invite=… from someone who
+    // already has a session, and login.js sends no CSRF header — while this test
+    // client adds one automatically, which is exactly how the break stayed hidden.
+    const invite = await w.invite({ projectId: w.project.id,
+      email: 'joiner@rgm.example', role: 'tester', createdBy: w.admin.userId });
+
+    const signedIn = w.newClient();
+    await w.loginAs('dev@rgm.example', signedIn);
+    signedIn.dropCsrf();                      // as the browser would send it
+
+    const redeemed = await signedIn.post('/api/invites/redeem', { token: invite });
+    assert.equal(redeemed.status, 200, redeemed.text);
+
+    // The exemption is that one endpoint, not a hole in the rule: an ordinary
+    // cookie-authenticated write still needs the header.
+    const refused = await signedIn.post(`/api/projects/${w.project.id}/milestones`,
+      { code: 'M-NOCSRF', titleEn: 'x' });
+    assert.equal(refused.status, 403, refused.text);
+    assert.equal(refused.json.error, 'csrf_failed');
+  });
+
   test('the session cookie is HttpOnly and the csrf cookie is not', async () => {
     const client = w.newClient();
     const before = w.mails.length;

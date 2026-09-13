@@ -205,12 +205,9 @@ export async function revokeApiToken(db, userId, tokenId) {
   return r.rows.length > 0;
 }
 
-export function requireScope(actor, scope) {
-  if (actor?.via !== 'api_token') return;               // sessions carry full rights
-  if (!actor.scopes?.includes(scope)) {
-    throw new HttpError(403, 'insufficient_scope', `token lacks scope ${scope}`);
-  }
-}
+// Scopes are enforced centrally, from the route policy in api.js — see
+// SCOPE_POLICY there. Keeping a second per-call-site helper was how three routes
+// came to be checked and thirty were not (IR-001).
 
 // ─────────────────── invitations (§5) ───────────────────
 
@@ -324,6 +321,69 @@ export async function removeMember(db, { projectId, userId, actorId }) {
 
     return { email, revokedInvites: invites.rows.length,
              cancelledNotifications: cancelled.rows.length };
+  });
+}
+
+/**
+ * Change a member's role.
+ *
+ * Three things have to happen together, which is why this is not a bare UPDATE:
+ *
+ *   - A project-level lock, so the last-admin guard cannot be satisfied twice by
+ *     two admins demoting each other concurrently (IR-015).
+ *   - The same per-(project,email) lock that redemption and removal take, and
+ *     revocation of outstanding invitations for that address. Without it a
+ *     downgraded admin could redeem an invitation issued while they were an admin
+ *     and get the role back (IR-005).
+ *   - The audit event, so a role change is attributable.
+ */
+export async function setMemberRole(db, { projectId, userId, role, actorId }) {
+  if (!ROLES.includes(role)) {
+    throw new HttpError(400, 'bad_role', `role must be one of ${ROLES.join(', ')}`);
+  }
+
+  return withTransaction(db, async (tx) => {
+    const m = await tx.query(
+      `SELECT u.email, m.role AS current_role
+         FROM memberships m JOIN users u ON u.id = m.user_id
+        WHERE m.project_id = $1 AND m.user_id = $2 AND m.revoked_at IS NULL`,
+      [projectId, userId]);
+    if (!m.rows.length) throw new HttpError(404, 'not_a_member', 'no active membership');
+    const { email, current_role: currentRole } = m.rows[0];
+
+    await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`members:${projectId}`]);
+    await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))',
+      [`invite:${projectId}:${email}`]);
+
+    if (role !== 'admin' && currentRole === 'admin') {
+      const admins = await tx.query(
+        `SELECT count(*)::int AS c FROM active_memberships
+          WHERE project_id = $1 AND role = 'admin'`, [projectId]);
+      if (admins.rows[0].c <= 1) {
+        throw new HttpError(400, 'last_admin', 'a project must keep at least one admin');
+      }
+    }
+
+    // Any live invitation for this address is now wrong, whatever the new role:
+    // it encodes the role the address was invited with, not the one they hold.
+    const revoked = await tx.query(
+      `UPDATE invitations SET revoked_at = now()
+        WHERE project_id = $1 AND email = $2 AND consumed_at IS NULL AND revoked_at IS NULL
+        RETURNING id`, [projectId, email]);
+
+    const updated = await tx.query(
+      `UPDATE memberships SET role = $1
+        WHERE project_id = $2 AND user_id = $3 AND revoked_at IS NULL
+        RETURNING user_id, role`, [role, projectId, userId]);
+
+    await tx.query(
+      `INSERT INTO events (project_id, membership_user_id, actor_id, kind, payload)
+       VALUES ($1, $2, $3, 'membership.role_changed', $4)`,
+      [projectId, userId, actorId,
+        JSON.stringify({ from: currentRole, to: role, revokedInvites: revoked.rows.length })]);
+
+    return { ...updated.rows[0], from: currentRole,
+             revokedInvites: revoked.rows.length };
   });
 }
 

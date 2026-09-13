@@ -7,9 +7,9 @@ import { createRouter, readJson, readBytes, sendJson, sendBytes, redirect,
 import {
   HttpError, authorize, authorizeBug, authorizeMilestone, activeMembership,
   requestLoginLink, consumeLoginToken, resolveSession, revokeSession,
-  mintApiToken, resolveApiToken, revokeApiToken, requireScope,
-  createInvite, redeemInvite, removeMember, bootstrap, createProject,
-  ROLES, normalizeEmail
+  mintApiToken, resolveApiToken, revokeApiToken,
+  createInvite, redeemInvite, removeMember, setMemberRole, bootstrap, createProject,
+  normalizeEmail
 } from './auth.js';
 import { withTransaction } from './db.js';
 import { buildPrompt } from './prompt.js';
@@ -36,6 +36,81 @@ const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif
  * complete) but excluded from the prompt.
  */
 const AUDIT_ONLY_KINDS = new Set(['attachment.downloaded', 'packet.downloaded']);
+
+// ───────────────────── token scope policy (IR-001) ─────────────────────
+//
+// Scopes narrow an API token; a signed-in browser is the user's full authority
+// and is not scoped. Enforcing them at each call site meant three routes were
+// checked and the other thirty were not — a `bug:read` token could change bug
+// status, and a read-only token could create invitations. The policy lives here,
+// in one table, and `applyScopePolicy` refuses to leave a route unspecified; a
+// test asserts every route appears below.
+
+/** Reachable without a token scope (unauthenticated, or capability-addressed). */
+export const PUBLIC = 'public';
+/** A route nobody assigned a policy to. Denied at runtime, and a test failure. */
+export const UNSPECIFIED = 'unspecified';
+
+export const SCOPE_POLICY = {
+  // Any authenticated actor, whatever the token's scopes — the CLI needs this to
+  // learn who it is before it can do anything scoped.
+  'GET /api/me': null,
+
+  // Reading the product.
+  'GET /api/projects': 'bug:read',
+  'GET /api/projects/:id/milestones': 'bug:read',
+  'GET /api/projects/:id/bugs': 'bug:read',
+  'GET /api/projects/:id/bugs/by-number/:n': 'bug:read',
+  'GET /api/bugs/:id': 'bug:read',
+  'GET /api/bugs/:id/prompt': 'bug:read',
+  'GET /api/bugs/:id/packet': 'bug:read',
+  'GET /api/attachments/:id': 'bug:read',
+
+  // Testers' work, and the developers' response to it.
+  'POST /api/projects/:id/bugs': 'bug:write',
+  'POST /api/bugs/:id/status': 'bug:write',
+  'POST /api/bugs/:id/comments': 'bug:write',
+  'POST /api/bugs/:id/retest': 'bug:write',
+  'POST /api/bugs/:id/translations/:lang/retry': 'bug:write',
+  'POST /api/bugs/:id/attachments/presign': 'bug:write',
+  'POST /api/bugs/:id/attachments/complete': 'bug:write',
+  'POST /api/projects/:id/milestones': 'bug:write',
+  'POST /api/milestones/:id/status': 'bug:write',
+
+  // Administration: membership, invitations, tokens, and the route inventory.
+  'POST /api/projects': 'admin',
+  'GET /api/projects/:id/members': 'admin',
+  'POST /api/projects/:id/invites': 'admin',
+  'DELETE /api/projects/:id/members/:userId': 'admin',
+  'PATCH /api/projects/:id/members/:userId': 'admin',
+  'GET /api/tokens': 'admin',
+  'POST /api/tokens': 'admin',
+  'DELETE /api/tokens/:id': 'admin',
+  'GET /api/debug/routes': 'admin'
+};
+
+export const PUBLIC_ROUTES = new Set([
+  'GET /api/health',
+  'POST /api/auth/request-link',
+  'POST /api/auth/consume',
+  // Logout only revokes the caller's own session, so there is nothing to escalate.
+  'POST /api/auth/logout',
+  // Capability-addressed: the token in the URL is the credential.
+  'POST /api/invites/redeem',
+  'PUT /api/uploads/:token'
+]);
+
+/** Attach a scope to every route. Anything unlisted is denied, not defaulted open. */
+export function applyScopePolicy(router) {
+  for (const route of router.routes()) {
+    const key = `${route.method} ${route.pattern}`;
+    if (PUBLIC_ROUTES.has(key)) route.scope = PUBLIC;
+    else if (Object.prototype.hasOwnProperty.call(SCOPE_POLICY, key)) {
+      route.scope = SCOPE_POLICY[key];
+    } else route.scope = UNSPECIFIED;
+  }
+  return router;
+}
 
 // ───────────────────────── loaders ─────────────────────────
 
@@ -320,37 +395,15 @@ export function buildRoutes() {
   r.patch('/api/projects/:id/members/:userId', handle(async (req, res, ctx) => {
     await authorize(ctx.db, ctx.actor, ctx.params.id, ['admin']);
     const { role } = await readJson(req);
-    if (!ROLES.includes(role)) {
-      throw new HttpError(400, 'bad_role', `role must be one of ${ROLES.join(', ')}`);
-    }
 
-    // An admin must not be able to demote the last admin — including themselves —
-    // and leave the project with nobody who can administer it.
-    if (role !== 'admin') {
-      const admins = await ctx.db.query(
-        `SELECT count(*)::int AS c FROM active_memberships
-          WHERE project_id = $1 AND role = 'admin'`, [ctx.params.id]);
-      const target = await ctx.db.query(
-        `SELECT role FROM active_memberships WHERE project_id = $1 AND user_id = $2`,
-        [ctx.params.id, ctx.params.userId]);
-      if (admins.rows[0].c <= 1 && target.rows[0]?.role === 'admin') {
-        throw new HttpError(400, 'last_admin',
-          'a project must keep at least one admin');
-      }
-    }
-
-    const updated = await withTransaction(ctx.db, async (tx) => {
-      const upd = await tx.query(
-        `UPDATE memberships SET role = $1
-          WHERE project_id = $2 AND user_id = $3 AND revoked_at IS NULL
-          RETURNING user_id, role`, [role, ctx.params.id, ctx.params.userId]);
-      if (!upd.rows.length) throw new HttpError(404, 'not_a_member', 'no active membership');
-
-      await tx.query(
-        `INSERT INTO events (project_id, membership_user_id, actor_id, kind, payload)
-         VALUES ($1,$2,$3,'membership.role_changed',$4)`,
-        [ctx.params.id, ctx.params.userId, ctx.actor.userId, JSON.stringify({ role })]);
-      return upd.rows[0];
+    // Validation, the last-admin guard, the invitation revocation and the audit
+    // event all happen inside one transaction in `setMemberRole` — doing the guard
+    // out here let two admins demote each other past it (IR-005, IR-015).
+    const updated = await setMemberRole(ctx.db, {
+      projectId: ctx.params.id,
+      userId: ctx.params.userId,
+      role,
+      actorId: ctx.actor.userId
     });
 
     sendJson(res, 200, updated);
@@ -419,7 +472,7 @@ export function buildRoutes() {
   // ── bugs ──
   r.post('/api/projects/:id/bugs', handle(async (req, res, ctx) => {
     const role = await authorize(ctx.db, ctx.actor, ctx.params.id);
-    requireScope(ctx.actor, 'bug:write');
+
     const { milestoneId, severity, titleVi, bodyVi } = await readJson(req);
     if (!milestoneId || !severity || !titleVi || !bodyVi) {
       throw new HttpError(400, 'missing_fields',
@@ -642,7 +695,7 @@ export function buildRoutes() {
   // ── attachments: two-phase upload (§8) ──
   r.post('/api/bugs/:id/attachments/presign', handle(async (req, res, ctx) => {
     const { projectId } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
-    requireScope(ctx.actor, 'bug:write');
+
     const { contentType, byteSize } = await readJson(req);
 
     if (!ALLOWED_IMAGE_TYPES.includes(String(contentType))) {
@@ -686,7 +739,7 @@ export function buildRoutes() {
 
   r.post('/api/bugs/:id/attachments/complete', handle(async (req, res, ctx) => {
     const { projectId } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
-    requireScope(ctx.actor, 'bug:write');
+
     const { storageKey, uploadToken, filename, contentType } = await readJson(req);
     if (!storageKey) throw new HttpError(400, 'missing_fields', 'storageKey is required');
 
@@ -726,32 +779,52 @@ export function buildRoutes() {
     // Proves it maps to a packet entry extension before we store it.
     extensionFor(declared);
 
-    // 5. Promote to a key no client holds a capability for. A presigned PUT stays
-    //    valid until it expires, so without this an uploader could pass
-    //    validation and then replace the bytes at that key — every later view,
-    //    download and packet would differ from what was checked (RGM3-005).
-    let finalKey = storageKey;
-    if (typeof ctx.storage.promote === 'function') {
-      const target = ctx.storage.keyFor(projectId, ctx.params.id);
-      finalKey = (await ctx.storage.promote(storageKey, target)).key;
-    }
+    // 5. Promote and record, together, under a lock on the bug.
+    //
+    //    Promoting first closes the RGM3-005 window (a presigned PUT stays valid
+    //    until it expires, so the validated object must not be the one served).
+    //
+    //    Doing it inside the transaction, after re-checking the count, closes two
+    //    more: the attachment limit was only enforced when a capability was
+    //    issued, so thirteen could be taken out and then all completed (IR-022);
+    //    and the row and its event were separate commits, so a failure between
+    //    them left an attachment with no history and no way to retry (IR-021).
+    const inserted = await withTransaction(ctx.db, async (tx) => {
+      await tx.query('SELECT id FROM bugs WHERE id = $1 FOR UPDATE', [ctx.params.id]);
 
-    // A tester-supplied filename is stored as data; the extension is derived from
-    // the validated content type, never from the name (RGM-S1-008).
-    const ins = await ctx.db.query(
-      `INSERT INTO bug_attachments
-         (project_id, bug_id, storage_key, filename, byte_size, content_type)
-       VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, filename, content_type, byte_size`,
-      [projectId, ctx.params.id, finalKey, String(filename ?? 'screenshot').slice(0, 200),
-        head.byteSize, declared]);
+      const count = await tx.query(
+        `SELECT count(*)::int AS c FROM bug_attachments WHERE bug_id = $1`,
+        [ctx.params.id]);
+      if (count.rows[0].c >= MAX_ATTACHMENTS_PER_BUG) {
+        throw new HttpError(400, 'too_many_attachments',
+          `at most ${MAX_ATTACHMENTS_PER_BUG} screenshots per bug`);
+      }
 
-    await ctx.db.query(
-      `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
-       VALUES ($1,$2,$3,'bug.attachment_added',$4)`,
-      [projectId, ctx.params.id, ctx.actor.userId,
-        JSON.stringify({ attachmentId: ins.rows[0].id, filename: ins.rows[0].filename })]);
+      let finalKey = storageKey;
+      if (typeof ctx.storage.promote === 'function') {
+        const target = ctx.storage.keyFor(projectId, ctx.params.id);
+        finalKey = (await ctx.storage.promote(storageKey, target)).key;
+      }
 
-    sendJson(res, 201, ins.rows[0]);
+      // A tester-supplied filename is stored as data; the extension is derived
+      // from the validated content type, never from the name (RGM-S1-008).
+      const ins = await tx.query(
+        `INSERT INTO bug_attachments
+           (project_id, bug_id, storage_key, filename, byte_size, content_type)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, filename, content_type, byte_size`,
+        [projectId, ctx.params.id, finalKey,
+          String(filename ?? 'screenshot').slice(0, 200), head.byteSize, declared]);
+
+      await tx.query(
+        `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
+         VALUES ($1,$2,$3,'bug.attachment_added',$4)`,
+        [projectId, ctx.params.id, ctx.actor.userId,
+          JSON.stringify({ attachmentId: ins.rows[0].id, filename: ins.rows[0].filename })]);
+
+      return ins.rows[0];
+    });
+
+    sendJson(res, 201, inserted);
   }));
 
   r.get('/api/attachments/:id', handle(async (req, res, ctx) => {
@@ -830,6 +903,10 @@ export function buildRoutes() {
   }));
 
   r.get('/api/debug/routes', handle(async (req, res) => sendJson(res, 200, { ok: true })));
+
+  // One place decides scopes for all 33 routes, and anything it does not list is
+  // denied rather than defaulted open (IR-001).
+  applyScopePolicy(r);
 
   return r;
 }

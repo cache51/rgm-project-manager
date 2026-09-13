@@ -237,6 +237,34 @@ describe('s3 storage', () => {
     dir = await mkdtemp(join(tmpdir(), 'rgm-s3-'));
     storage = new S3Storage({ ...creds, endpoint: stub.url, forcePathStyle: true });
   });
+
+  test('virtual-host style puts the bucket in the host, not nowhere', async () => {
+    // IR-032: with forcePathStyle false the bucket was dropped from the URL
+    // entirely, so requests went to the service root with the object key read as
+    // a bucket name — nothing worked, and nothing failed loudly either.
+    const virtualHost = new S3Storage({ ...creds, endpoint: 'http://s3.example.internal:9000',
+      forcePathStyle: false });
+    const key = virtualHost.keyFor('11111111-1111-1111-1111-111111111111',
+      '22222222-2222-2222-2222-222222222222');
+
+    const signed = virtualHost.presignUpload({ key, contentType: 'image/png' });
+    const url = new URL(signed.url);
+
+    assert.equal(url.hostname, `${creds.bucket}.s3.example.internal`,
+      'the bucket must be part of the hostname');
+    assert.ok(!url.pathname.includes(creds.bucket),
+      'and must not also appear in the path');
+    assert.equal(url.searchParams.get('X-Amz-SignedHeaders'), 'content-type;host',
+      'the signature must cover the host it is actually sent to');
+  });
+
+  test('virtual-host style against an IP endpoint is refused at construction', async () => {
+    // `bucket.127.0.0.1` is not a valid host, and the URL setter ignores it
+    // silently — so this has to fail where it can say what to change.
+    assert.throws(
+      () => new S3Storage({ ...creds, endpoint: stub.url, forcePathStyle: false }),
+      /needs a DNS endpoint.*S3_FORCE_PATH_STYLE=true/s);
+  });
   after(async () => {
     await stub.close();
     await rm(dir, { recursive: true, force: true });

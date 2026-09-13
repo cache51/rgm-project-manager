@@ -54,6 +54,19 @@ export class S3Storage {
     this.secretAccessKey = secretAccessKey;
     this.forcePathStyle = forcePathStyle;
     this.fetch = fetchImpl;
+
+    if (!forcePathStyle) {
+      // Virtual-host addressing needs a DNS endpoint: `bucket.127.0.0.1` is not a
+      // valid host. Worse, assigning that hostname to a URL silently does nothing,
+      // so the bucket would quietly drop out of the URL again (IR-032). Refuse at
+      // construction, where the message can name the fix.
+      const host = new URL(this.endpoint).hostname;
+      if (/^[\d.]+$/.test(host) || host.includes(':')) {
+        throw new Error(
+          `S3 virtual-host addressing needs a DNS endpoint, but the endpoint host is `
+          + `'${host}'. Set S3_FORCE_PATH_STYLE=true for an IP-addressed gateway.`);
+      }
+    }
   }
 
   /** Same shape as FsStorage: server-chosen, never derived from a filename. */
@@ -61,14 +74,23 @@ export class S3Storage {
     return `${projectId}/${bugId}/${randomUUID()}`;
   }
 
-  #host() {
-    return new URL(this.endpoint).host;
-  }
-
-  /** Path-style (`host/bucket/key`) is what MinIO and friends expect. */
+  /**
+   * The object's URL.
+   *
+   * Path-style is `endpoint/bucket/key`. Virtual-host style is
+   * `bucket.endpoint/key` — the bucket belongs in the HOST. Omitting it sent
+   * requests to the service root with the object key read as a bucket name, so
+   * nothing worked and nothing failed loudly (IR-032).
+   */
   #objectUrl(key) {
-    const suffix = this.forcePathStyle ? `/${this.bucket}/${encodePath(key)}` : `/${encodePath(key)}`;
-    return new URL(suffix, this.endpoint);
+    const base = new URL(this.endpoint);
+    if (this.forcePathStyle) {
+      return new URL(`/${this.bucket}/${encodePath(key)}`, base);
+    }
+    // Built as a string rather than by assigning `.hostname`: that setter silently
+    // ignores an invalid host, which is how the bucket came to be missing from the
+    // URL without anything reporting an error (IR-032).
+    return new URL(`${base.protocol}//${this.bucket}.${base.host}/${encodePath(key)}`);
   }
 
   #scope(dateStamp) {
@@ -122,7 +144,7 @@ export class S3Storage {
 
   /** A signed request to send now. */
   async #send(method, url, { payload = Buffer.alloc(0), contentType = null, extra = {} } = {}) {
-    const headers = { host: this.#host(), ...extra };
+    const headers = { host: url.host, ...extra };
     if (contentType) headers['content-type'] = contentType;
 
     const payloadHash = method === 'GET' || method === 'HEAD'
@@ -160,7 +182,7 @@ export class S3Storage {
     url.searchParams.set('X-Amz-SignedHeaders', 'content-type;host');
 
     // The signature must cover content-type, or a client could upload anything.
-    const headers = { host: this.#host(), 'content-type': contentType };
+    const headers = { host: url.host, 'content-type': contentType };
     const { signature } = this.sign({
       method: 'PUT', url, headers, payloadHash: UNSIGNED_PAYLOAD, now
     });
@@ -188,7 +210,7 @@ export class S3Storage {
     url.searchParams.set('X-Amz-SignedHeaders', 'host');
 
     const { signature } = this.sign({
-      method: 'GET', url, headers: { host: this.#host() },
+      method: 'GET', url, headers: { host: url.host },
       payloadHash: UNSIGNED_PAYLOAD, now
     });
     url.searchParams.set('X-Amz-Signature', signature);
@@ -247,7 +269,7 @@ export class S3Storage {
   async promote(fromKey, toKey) {
     const url = this.#objectUrl(toKey);
     const headers = {
-      host: this.#host(),
+      host: url.host,
       // CopyObject takes the source as a signed header, not a path segment.
       'x-amz-copy-source': `/${this.bucket}/${encodePath(fromKey)}`,
       'x-amz-metadata-directive': 'COPY'
