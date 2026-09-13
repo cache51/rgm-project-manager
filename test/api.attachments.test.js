@@ -102,6 +102,57 @@ describe('attachments: two-phase upload', () => {
       'the UI and the packet must agree on every entry name');
   });
 
+  test('completing promotes the object, so the capability cannot replace it later', async () => {
+    // RGM3-005: a presigned PUT stays valid until it expires, so the object the
+    // client validated must not be the object later served.
+    const target = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    const presign = (await w.testerClient.post(`/api/bugs/${target.id}/attachments/presign`,
+      { contentType: 'image/png', byteSize: PNG_BYTES.length })).json;
+    await w.testerClient.put(presign.uploadUrl, PNG_BYTES);
+
+    const done = await w.testerClient.post(`/api/bugs/${target.id}/attachments/complete`,
+      { storageKey: presign.storageKey, uploadToken: presign.uploadToken, filename: 'a.png' });
+    assert.equal(done.status, 201);
+
+    // The object has moved off the key the client holds a capability for.
+    assert.equal(await w.storage.head(presign.storageKey), null,
+      'the validated key must be vacated');
+
+    // Re-uploading through the still-valid capability changes nothing that is served.
+    await w.testerClient.put(presign.uploadUrl, Buffer.from('REPLACED AFTER VALIDATION'));
+    const payload = (await w.testerClient.get(`/api/bugs/${target.id}`)).json;
+    const att = payload.attachments.at(-1);
+    const download = await w.devClient.get(att.url);
+    assert.equal(download.status, 200);
+    assert.ok(download.buf.equals(PNG_BYTES),
+      'the bytes served must be the ones that were validated');
+  });
+
+  test('downloading a packet does not change the next packet', async () => {
+    const b = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    const presign = (await w.testerClient.post(`/api/bugs/${b.id}/attachments/presign`,
+      { contentType: 'image/png', byteSize: PNG_BYTES.length })).json;
+    await w.testerClient.put(presign.uploadUrl, PNG_BYTES);
+    await w.testerClient.post(`/api/bugs/${b.id}/attachments/complete`,
+      { storageKey: presign.storageKey, uploadToken: presign.uploadToken, filename: 'x.png' });
+
+    const first = await w.devClient.get(`/api/bugs/${b.id}/prompt`);
+    await w.devClient.get(`/api/bugs/${b.id}/packet`);
+    await w.devClient.get(`/api/bugs/${b.id}/packet`);
+    const second = await w.devClient.get(`/api/bugs/${b.id}/prompt`);
+
+    // RGM3-008: auditing reads must not feed back into the prompt, or bug.md stops
+    // being byte-identical between two pulls of the same packet.
+    assert.equal(second.text, first.text, 'the prompt must be byte-identical');
+
+    // ...while the audit trail still records the downloads.
+    const payload = (await w.devClient.get(`/api/bugs/${b.id}`)).json;
+    assert.ok(payload.timeline.some((e) => e.kind === 'packet.downloaded'),
+      'pulling the handoff is audited, just not in the prompt');
+    assert.equal(payload.timeline.filter((e) => e.kind === 'packet.downloaded').length, 2,
+      'each pull is recorded separately');
+  });
+
   test('completing with a tampered token is refused', async () => {
     const presign = (await w.testerClient.post(`/api/bugs/${bug.id}/attachments/presign`,
       { contentType: 'image/png', byteSize: PNG_BYTES.length })).json;

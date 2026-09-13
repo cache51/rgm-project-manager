@@ -128,6 +128,7 @@ function makeClient(baseUrl) {
     get: (p, o) => request('GET', p, o),
     post: (p, b, o) => request('POST', p, { ...o, body: b }),
     put: (p, b, o) => request('PUT', p, { ...o, body: b, raw: true }),
+    patch: (p, b, o) => request('PATCH', p, { ...o, body: b }),
     del: (p, o) => request('DELETE', p, o),
     request,
     get cookie() { return sessionToken === null ? '' : `session=${sessionToken}`; },

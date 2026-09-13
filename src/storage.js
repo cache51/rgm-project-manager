@@ -13,7 +13,7 @@
  * and is HMAC-signed (RGM3-004).
  */
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
-import { mkdir, writeFile, readFile, stat, rm } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, stat, rm, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 export class StorageError extends Error {
@@ -85,6 +85,23 @@ export class FsStorage {
     await mkdir(dirname(p), { recursive: true });
     await writeFile(p, bytes);
     return { key, byteSize: bytes.length };
+  }
+
+  /**
+   * Move an object to a key no client has a capability for.
+   *
+   * RGM3-005: a presigned PUT stays valid until it expires, so an uploader could
+   * complete a validation and then replace the bytes at the same key — every
+   * later view, download and packet would differ from what was checked. Promoting
+   * on completion means the client's capability points at a key nothing
+   * references any more.
+   */
+  async promote(fromKey, toKey) {
+    const src = this.#path(fromKey);
+    const dest = this.#path(toKey);
+    await mkdir(dirname(dest), { recursive: true });
+    await rename(src, dest);
+    return { key: toKey };
   }
 
   async get(key) {

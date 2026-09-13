@@ -151,6 +151,61 @@ describe('auth: authorization', () => {
     assert.equal(res.status, 400);
     assert.equal(res.json.error, 'bad_role');
   });
+
+  test('an admin can change a member role, and it is audited', async () => {
+    const devId = (await w.db.query(
+      `SELECT id FROM users WHERE email = 'dev@rgm.example'`)).rows[0].id;
+
+    const res = await w.adminClient.patch(`/api/projects/${w.project.id}/members/${devId}`,
+      { role: 'tester' });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.role, 'tester');
+
+    // The audit trail records who changed it, not just that it changed.
+    const events = await w.db.query(
+      `SELECT kind, payload FROM events WHERE kind = 'membership.role_changed'`);
+    assert.equal(events.rows.length, 1);
+    assert.equal(events.rows[0].payload.role, 'tester');
+
+    // And the new role is what authorization now uses.
+    assert.equal((await w.devClient.post(`/api/projects/${w.project.id}/milestones`,
+      { code: 'M-AFTER', titleEn: 'x' })).status, 403,
+      'a tester cannot create milestones');
+  });
+
+  test('the last admin cannot be demoted, or the project becomes unmanageable', async () => {
+    const adminId = (await w.db.query(
+      `SELECT id FROM users WHERE email = 'admin@rgm.example'`)).rows[0].id;
+
+    const res = await w.adminClient.patch(`/api/projects/${w.project.id}/members/${adminId}`,
+      { role: 'developer' });
+    assert.equal(res.status, 400);
+    assert.equal(res.json.error, 'last_admin');
+
+    // The admin still is one.
+    const still = await w.db.query(
+      `SELECT role FROM active_memberships WHERE project_id = $1 AND user_id = $2`,
+      [w.project.id, adminId]);
+    assert.equal(still.rows[0].role, 'admin');
+  });
+
+  test('a role change needs a valid role and an active membership', async () => {
+    const devId = (await w.db.query(
+      `SELECT id FROM users WHERE email = 'dev@rgm.example'`)).rows[0].id;
+    assert.equal((await w.adminClient.patch(
+      `/api/projects/${w.project.id}/members/${devId}`, { role: 'nope' })).status, 400);
+
+    const ghost = '99999999-9999-9999-9999-999999999999';
+    assert.equal((await w.adminClient.patch(
+      `/api/projects/${w.project.id}/members/${ghost}`, { role: 'tester' })).status, 404);
+  });
+
+  test('a non-admin cannot change a role', async () => {
+    const testerId = (await w.db.query(
+      `SELECT id FROM users WHERE email = 'tester@rgm.example'`)).rows[0].id;
+    assert.equal((await w.testerClient.patch(
+      `/api/projects/${w.project.id}/members/${testerId}`, { role: 'admin' })).status, 403);
+  });
 });
 
 describe('auth: membership revocation', () => {

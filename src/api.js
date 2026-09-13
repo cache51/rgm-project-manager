@@ -27,6 +27,16 @@ const iso = (v) => (v instanceof Date ? v.toISOString() : v);
 const MAX_ATTACHMENTS_PER_BUG = 12;
 const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/heic'];
 
+/**
+ * Event kinds that are operational audit rather than part of the bug's story.
+ *
+ * RGM3-008: auditing reads appends events, and events feed the prompt — so a
+ * developer downloading a packet would change the next packet, breaking the
+ * byte-identical `bug.md` guarantee. These kinds are recorded (the trail is
+ * complete) but excluded from the prompt.
+ */
+const AUDIT_ONLY_KINDS = new Set(['attachment.downloaded', 'packet.downloaded']);
+
 // ───────────────────────── loaders ─────────────────────────
 
 async function loadBug(db, bugId) {
@@ -304,6 +314,46 @@ export function buildRoutes() {
       projectId: ctx.params.id, userId: ctx.params.userId, actorId: ctx.actor.userId
     });
     sendJson(res, 200, result);
+  }));
+
+  // RGM3-009: the plan promised role changes; there was no endpoint for one.
+  r.patch('/api/projects/:id/members/:userId', handle(async (req, res, ctx) => {
+    await authorize(ctx.db, ctx.actor, ctx.params.id, ['admin']);
+    const { role } = await readJson(req);
+    if (!ROLES.includes(role)) {
+      throw new HttpError(400, 'bad_role', `role must be one of ${ROLES.join(', ')}`);
+    }
+
+    // An admin must not be able to demote the last admin — including themselves —
+    // and leave the project with nobody who can administer it.
+    if (role !== 'admin') {
+      const admins = await ctx.db.query(
+        `SELECT count(*)::int AS c FROM active_memberships
+          WHERE project_id = $1 AND role = 'admin'`, [ctx.params.id]);
+      const target = await ctx.db.query(
+        `SELECT role FROM active_memberships WHERE project_id = $1 AND user_id = $2`,
+        [ctx.params.id, ctx.params.userId]);
+      if (admins.rows[0].c <= 1 && target.rows[0]?.role === 'admin') {
+        throw new HttpError(400, 'last_admin',
+          'a project must keep at least one admin');
+      }
+    }
+
+    const updated = await withTransaction(ctx.db, async (tx) => {
+      const upd = await tx.query(
+        `UPDATE memberships SET role = $1
+          WHERE project_id = $2 AND user_id = $3 AND revoked_at IS NULL
+          RETURNING user_id, role`, [role, ctx.params.id, ctx.params.userId]);
+      if (!upd.rows.length) throw new HttpError(404, 'not_a_member', 'no active membership');
+
+      await tx.query(
+        `INSERT INTO events (project_id, membership_user_id, actor_id, kind, payload)
+         VALUES ($1,$2,$3,'membership.role_changed',$4)`,
+        [ctx.params.id, ctx.params.userId, ctx.actor.userId, JSON.stringify({ role })]);
+      return upd.rows[0];
+    });
+
+    sendJson(res, 200, updated);
   }));
 
   // ── milestones ──
@@ -673,13 +723,23 @@ export function buildRoutes() {
     // Proves it maps to a packet entry extension before we store it.
     extensionFor(declared);
 
+    // 5. Promote to a key no client holds a capability for. A presigned PUT stays
+    //    valid until it expires, so without this an uploader could pass
+    //    validation and then replace the bytes at that key — every later view,
+    //    download and packet would differ from what was checked (RGM3-005).
+    let finalKey = storageKey;
+    if (typeof ctx.storage.promote === 'function') {
+      const target = ctx.storage.keyFor(projectId, ctx.params.id);
+      finalKey = (await ctx.storage.promote(storageKey, target)).key;
+    }
+
     // A tester-supplied filename is stored as data; the extension is derived from
     // the validated content type, never from the name (RGM-S1-008).
     const ins = await ctx.db.query(
       `INSERT INTO bug_attachments
          (project_id, bug_id, storage_key, filename, byte_size, content_type)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, filename, content_type, byte_size`,
-      [projectId, ctx.params.id, storageKey, String(filename ?? 'screenshot').slice(0, 200),
+      [projectId, ctx.params.id, finalKey, String(filename ?? 'screenshot').slice(0, 200),
         head.byteSize, declared]);
 
     await ctx.db.query(
@@ -715,7 +775,7 @@ export function buildRoutes() {
 
   // ── packet: the agent handoff (§10) ──
   r.get('/api/bugs/:id/packet', handle(async (req, res, ctx) => {
-    await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
+    const { projectId } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
     const bug = await loadBug(ctx.db, ctx.params.id);
     if (!bug) throw new HttpError(404, 'not_found', 'bug not found');
 
@@ -749,6 +809,16 @@ export function buildRoutes() {
 
     const zip = makeZip(files);
     const archive = packetArchiveName(`BUG-${bug.bug_number}`, bug.title_vi);
+
+    // Pulling the handoff is a meaningful audit action, so it is recorded — and
+    // because it is audit-only it is excluded from the prompt timeline, keeping
+    // bug.md byte-identical between two pulls (RGM3-008).
+    await ctx.db.query(
+      `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
+       VALUES ($1,$2,$3,'packet.downloaded',$4)`,
+      [projectId, bug.id, ctx.actor.userId,
+        JSON.stringify({ entries: entries.length + 2, archive })]);
+
     sendBytes(res, 200, Buffer.from(zip), 'application/zip', {
       // Non-ASCII names need the RFC 6266 form, with an ASCII fallback.
       'content-disposition': contentDisposition(archive, `BUG-${bug.bug_number}.zip`),
@@ -819,9 +889,13 @@ export async function buildPromptFor(db, bug) {
       errors: { title: snapshot.title.error, body: snapshot.body.error },
       state: snapshot.body.status.zh
     },
-    timeline: timeline.map(e => ({
-      at: stampIn(e.at, tz), actor: e.actor, kind: e.kind, note: e.note ?? e.reason
-    })),
+    timeline: timeline
+      // Audit-only events are excluded so that downloading a packet does not
+      // change the next packet (RGM3-008).
+      .filter((e) => !AUDIT_ONLY_KINDS.has(e.kind))
+      .map(e => ({
+        at: stampIn(e.at, tz), actor: e.actor, kind: e.kind, note: e.note ?? e.reason
+      })),
     attachments: attachments.map((a, i) => ({
       name: entries[i], originalFilename: a.filename
     }))

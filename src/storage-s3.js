@@ -235,4 +235,39 @@ export class S3Storage {
       throw new Error(`S3 DELETE ${key} failed: ${res.status}`);
     }
   }
+
+  /**
+   * Server-side copy, then remove the source.
+   *
+   * RGM3-005: the presigned PUT the client holds stays valid until it expires, so
+   * the object it validated must not be the object later served. Copying to a key
+   * no capability was ever issued for closes that window — and doing it
+   * server-side means the bytes never pass through the app.
+   */
+  async promote(fromKey, toKey) {
+    const url = this.#objectUrl(toKey);
+    const headers = {
+      host: this.#host(),
+      // CopyObject takes the source as a signed header, not a path segment.
+      'x-amz-copy-source': `/${this.bucket}/${encodePath(fromKey)}`,
+      'x-amz-metadata-directive': 'COPY'
+    };
+    const payloadHash = sha256Hex('');
+    headers['x-amz-content-sha256'] = payloadHash;
+    const date = new Date();
+    headers['x-amz-date'] = amzDate(date);
+
+    const { authorization } = this.sign({
+      method: 'PUT', url, headers, payloadHash, now: date
+    });
+    headers.authorization = authorization;
+
+    const res = await this.fetch(url, { method: 'PUT', headers });
+    if (!res.ok) {
+      throw new Error(`S3 COPY ${fromKey} → ${toKey} failed: ${res.status} `
+        + `${await res.text().catch(() => '')}`);
+    }
+    await this.delete(fromKey);
+    return { key: toKey };
+  }
 }

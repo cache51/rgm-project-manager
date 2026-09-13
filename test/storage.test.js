@@ -120,6 +120,22 @@ async function startS3Stub({ accessKeyId, secretAccessKey, region, bucket }) {
       }
 
       if (req.method === 'PUT') {
+        // CopyObject: the source arrives as a signed header, and the body is empty.
+        const copySource = req.headers['x-amz-copy-source'];
+        if (copySource) {
+          const srcKey = decodeURIComponent(
+            String(copySource).replace(new RegExp(`^/?${bucket}/`), ''));
+          const src = objects.get(srcKey);
+          if (!src) {
+            res.writeHead(404, { 'content-type': 'application/xml' });
+            res.end('<Error><Code>NoSuchKey</Code></Error>');
+            return;
+          }
+          objects.set(key, { body: src.body, contentType: src.contentType });
+          res.writeHead(200, { 'content-type': 'application/xml' });
+          res.end('<CopyObjectResult/>');
+          return;
+        }
         objects.set(key, { body, contentType: req.headers['content-type'] ?? null });
         res.writeHead(200, { etag: `"${sha256hex(body)}"` });
         res.end();
