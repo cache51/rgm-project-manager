@@ -51,6 +51,29 @@ async function freshRealPgDb() {
   const pool = new Pool({ connectionString: url.toString(), max: 4 });
 
   const db = await createPgDb({ pool });
+
+  // Drop the database when the world closes.
+  //
+  // Without this every world leaks one, and they accumulate across runs — a CI
+  // service container left hundreds behind per run, and 432 had piled up locally
+  // before this was added. `WITH (FORCE)` (PostgreSQL 13+) terminates any
+  // connection still holding the database open.
+  const innerClose = db.close.bind(db);
+  let closed = false;
+  db.close = async () => {
+    if (closed) return;
+    closed = true;
+    await innerClose();
+    const admin = new Pool({ connectionString: base, max: 1 });
+    try {
+      await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    } catch {
+      // Best effort: a leftover database must never fail a test run.
+    } finally {
+      await admin.end();
+    }
+  };
+
   await migrate(db);
   return db;
 }
