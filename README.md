@@ -50,15 +50,15 @@ mailer to deliver it with. Ask an admin if your address is not recognised.
 
 | What | In the UI | Who |
 |---|---|---|
-| Create a project | **Create project** (first-run screen) | site admin |
+| Create a project | Sidebar → **＋ Create project** (also on the first-run screen) | site admin |
 | Rename / re-environment a project | Sidebar → **✎ Rename project** | project admin |
 | Remove a project | Sidebar → **🗑 Remove** | project admin |
 | Restore a removed project | Sidebar → **Removed** → **Restore** | project admin |
-| Create a milestone | Milestones → **Add milestone** | admin, developer |
+| Create a milestone | Milestones → **＋ Add milestone** above the list | admin, developer |
 | Rename a milestone | Milestone card → **✎ Edit** | admin, developer |
-| Move a milestone along | Milestone card → lifecycle buttons | admin, developer |
+| Move a milestone along | Milestone card → its lifecycle buttons (`start → in_progress`, `ready`, `finish`, `reset`) | admin, developer |
 | Remove / restore a milestone | Card → **🗑 Remove** / **Removed** section → **Restore** | admin, developer |
-| Report a bug | Milestones → **🐞 Report bug** (on a `ready` milestone) | tester |
+| Report a bug | Milestones → **🐞 Report bug** (on a `ready` milestone) | any member |
 | Correct a report | Bug detail → **✎ Edit this report** | the reporter, or an admin, while it is open |
 | Move a bug along / retest | Bug detail → the action buttons | by role and state |
 | Comment | Bug detail → **Add comment** | any member |
@@ -66,6 +66,15 @@ mailer to deliver it with. Ask an admin if your address is not recognised.
 | Add a person | Team → **Add someone to the project** | project admin |
 | Change someone's role | Team → a **Role: …** chip on their row | project admin |
 | Remove a person | Team → **🗑 Remove** | project admin |
+
+Two rules the UI follows rather than duplicating:
+
+- **Which moves are legal comes from the server.** Each milestone carries an
+  `availableActions` list computed by the same state machine the route enforces, so the
+  buttons offered are the ones that will be accepted. A client-side copy of the state
+  machine would drift and start offering moves the API refuses.
+- **A control that would be refused is not rendered.** A tester is never shown "Remove
+  project".
 
 **Removal is always a soft delete.** The row and its history stay in the database — a
 bug is evidence, and a project holds that history — so the thing stops being listed and

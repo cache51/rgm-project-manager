@@ -181,6 +181,10 @@ const S = {
   view: 'milestones', lang: initialLang(), bug: null, prompt: null,
   milestones: null, bugs: null, busy: false, notice: null,
   members: [],
+  // Screens that are revealed on demand: the create-project form is no longer only
+  // the first-run screen, and the add-milestone form is no longer only the empty
+  // list. Both were dead ends once you already had one of the thing.
+  creatingProject: false, addingMilestone: false,
   // What has been removed from this project. Fetched alongside the live lists for the
   // roles that may put something back, so removal is reversible from the app rather
   // than only from SQL.
@@ -287,12 +291,15 @@ async function loadProjects() {
 
 async function loadMilestones() {
   const { milestones } = await api('GET', `/api/projects/${S.projectId}/milestones`);
-  S.milestones = milestones;
+  // `?? []` rather than trusting the key to be there: an unexpected body used to leave
+  // S.milestones undefined, and render() then threw on `.length` — a blank screen from
+  // a payload shape, not from anything the user did.
+  S.milestones = milestones ?? [];
 }
 
 async function loadBugs() {
   const { bugs } = await api('GET', `/api/projects/${S.projectId}/bugs`);
-  S.bugs = bugs;
+  S.bugs = bugs ?? [];
 }
 
 /**
@@ -372,6 +379,11 @@ function sidebar() {
       </div>
     </div>
 
+    ${S.me?.isSiteAdmin ? `
+    <div class="padmin">
+      <span class="mini" data-action="newproject">＋ ${t('create')}</span>
+    </div>` : ''}
+
     ${myRole() === 'admin' && S.projectId ? `
     <div class="padmin">
       <span class="mini" data-action="renameproject">✎ ${t('renameProject')}</span>
@@ -438,6 +450,25 @@ function topbar() {
   </div>`;
 }
 
+/**
+ * The add-milestone form.
+ *
+ * Shared by the empty-list card and the "Add milestone" control above a populated
+ * list — the form used to exist only in the empty case, so once a project had one
+ * milestone there was no way to add a second.
+ */
+function addMilestoneForm() {
+  return `
+    <label>${t('msCodeL')}</label>
+    <input id="f-mscode" placeholder="M1">
+    <label>${t('msTitleL')}</label>
+    <input id="f-mstitle" placeholder="Packing list import">
+    <div style="margin-top:14px">
+      <button class="btn" data-action="addmilestone">${t('addMs')}</button>
+      ${S.milestones?.length ? `<button class="btn" data-action="canceladdms">${t('cancel')}</button>` : ''}
+    </div>`;
+}
+
 function milestoneCards() {
   // `null` means not fetched yet; `[]` means fetched and genuinely empty. Showing
   // "Loading…" for the second case made a new project look permanently stuck.
@@ -450,15 +481,7 @@ function milestoneCards() {
     <div class="card" style="max-width:560px">
       <h2 style="margin:0 0 12px;font-size:15px">🗂 ${t('addMs')}</h2>
       <p class="rel">${t('noMilestones')}</p>
-      ${canDevelop() ? `
-        <label>${t('msCodeL')}</label>
-        <input id="f-mscode" placeholder="M1">
-        <label>${t('msTitleL')}</label>
-        <input id="f-mstitle" placeholder="Packing list import">
-        <div style="margin-top:14px">
-          <button class="btn" data-action="addmilestone">${t('addMs')}</button>
-        </div>
-      ` : `<p class="rel">${t('noReady')}</p>`}
+      ${canDevelop() ? addMilestoneForm() : `<p class="rel">${t('noReady')}</p>`}
     </div>` + removedMilestones();
   }
 
@@ -469,7 +492,20 @@ function milestoneCards() {
         : t('noReady')}</div>`
     : '';
 
-  return hint + `<div class="grid">${S.milestones.map((m) => `
+  // A way to add another milestone, above the list. It used to be offered only when
+  // the list was empty, so a project with one milestone could never get a second.
+  const addControl = canDevelop()
+    ? (S.addingMilestone
+        ? `<div class="card" style="max-width:560px;margin-bottom:16px">
+             <h2 style="margin:0 0 12px;font-size:15px">🗂 ${t('addMs')}</h2>
+             ${addMilestoneForm()}
+           </div>`
+        : `<div style="margin-bottom:14px">
+             <span class="mini" data-action="showaddms">＋ ${t('addMs')}</span>
+           </div>`)
+    : '';
+
+  return hint + addControl + `<div class="grid">${S.milestones.map((m) => `
     <div class="card">
       <span class="st ${MS_CLASS[m.status]}">${statusLabel('milestone', m.status)}</span>
       <h3 style="margin-top:10px">${esc(titleFor(m))}</h3>
@@ -479,10 +515,20 @@ function milestoneCards() {
         ${m.completed_at ? `<div><em>${t('done')}</em><b>${fmt(m.completed_at)}</b></div>` : ''}
         <div><em>${t('updatedL')}</em><b>${fmt(m.updated_at)}</b> <span class="rel">${rel(m.updated_at)}</span></div>
       </div>
-      ${m.status === 'ready' && myRole() === 'tester'
-        ? `<div class="foot" style="margin-top:12px">
-             <button class="btn pri" data-action="report" data-ms="${esc(m.id)}">🐞 ${t('report')}</button>
-           </div>` : ''}
+      <!-- The moves come from the server (availableActions), so the buttons offered
+           are exactly the ones the route will accept. -->
+      ${(m.availableActions ?? []).length ? `
+        <div class="foot" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+          ${m.availableActions.map((a) => `
+            <button class="btn sm" data-action="mstransition" data-id="${esc(m.id)}"
+                    data-move="${esc(a.action)}" data-reason="${a.requiresReason ? '1' : ''}">
+              ${esc(a.action)} → ${statusLabel('milestone', a.to)}
+            </button>`).join(' ')}
+        </div>` : ''}
+      ${m.status === 'ready' ? `
+        <div class="foot" style="margin-top:12px">
+          <button class="btn pri" data-action="report" data-ms="${esc(m.id)}">🐞 ${t('report')}</button>
+        </div>` : ''}
       ${canDevelop() ? `
         <div class="foot" style="margin-top:12px;gap:8px">
           <span class="mini" data-action="renamemilestone" data-id="${esc(m.id)}">✎ ${t('edit')}</span>
@@ -787,6 +833,29 @@ function reportForm() {
 }
 
 /**
+ * The create-project form.
+ *
+ * Shared by the first-run screen and the sidebar's "New project", so the two cannot
+ * drift — and so that having one project does not remove the ability to add another.
+ * (It did: this form lived only inside the first-run screen, which renders only when
+ * you have no projects at all.)
+ */
+function createProjectForm() {
+  return `
+    <label>${t('nameL')}</label>
+    <input id="f-pname" placeholder="Packing List Automation">
+    <label>${t('envL')}</label>
+    <select id="f-penv">
+      <option value="staging" selected>staging</option>
+      <option value="production">production</option>
+    </select>
+    <div style="margin-top:14px">
+      <button class="btn" data-action="createproject">${t('create')}</button>
+      ${S.creatingProject ? `<button class="btn" data-action="cancelproject">${t('cancel')}</button>` : ''}
+    </div>`;
+}
+
+/**
  * The screen a signed-in user sees before any project exists.
  *
  * A site admin gets a working create form: the API has always allowed
@@ -803,16 +872,7 @@ function firstRun() {
           <h2 style="margin-top:0">${t('projects')}</h2>
           ${me.isSiteAdmin ? `
             <p class="rel">${t('noProjects')}</p>
-            <label>${t('nameL')}</label>
-            <input id="f-pname" placeholder="Packing List Automation">
-            <label>${t('envL')}</label>
-            <select id="f-penv">
-              <option value="staging" selected>staging</option>
-              <option value="production">production</option>
-            </select>
-            <div style="margin-top:14px">
-              <button class="btn" data-action="createproject">${t('create')}</button>
-            </div>
+            ${createProjectForm()}
           ` : `
             <p>${esc(me.email)} is not a member of any project yet.</p>
             <p class="rel">An admin must invite you.</p>
@@ -843,7 +903,12 @@ function render() {
     return;
   }
 
-  const body = S.bug ? bugDetail()
+  const body = S.creatingProject ? `
+    <div class="card" style="max-width:560px">
+      <h2 style="margin:0 0 12px;font-size:15px">＋ ${t('create')}</h2>
+      ${createProjectForm()}
+    </div>`
+    : S.bug ? bugDetail()
     : S.reporting ? reportForm()
     : S.view === 'milestones' ? milestoneCards()
     : S.view === 'team' ? teamPanel()
@@ -868,6 +933,37 @@ document.getElementById('app').addEventListener('click', async (event) => {
 
   try {
     switch (action) {
+      // ── revealing the forms that used to be unreachable ──
+      case 'newproject':
+        S.creatingProject = true;
+        render();
+        break;
+      case 'cancelproject':
+        S.creatingProject = false;
+        render();
+        break;
+      case 'showaddms':
+        S.addingMilestone = true;
+        render();
+        break;
+      case 'canceladdms':
+        S.addingMilestone = false;
+        render();
+        break;
+      case 'mstransition': {
+        // `reset` needs a reason, and the server records it. A prompt answered with
+        // nothing means the move was abandoned, so nothing is sent.
+        const needsReason = el.dataset.reason === '1';
+        const reason = needsReason ? (window.prompt(t('reasonL')) ?? '').trim() : undefined;
+        if (needsReason && !reason) break;
+        try {
+          await api('POST', `/api/milestones/${el.dataset.id}/status`,
+            { action: el.dataset.move, reason });
+          notice(t('saved'));
+          await refresh();
+        } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
+        break;
+      }
       // ── editing and removing ──
       // Each of these does the thing and then reloads, so what is on screen is what
       // the server now holds rather than what was hoped for.
@@ -1014,8 +1110,12 @@ document.getElementById('app').addEventListener('click', async (event) => {
           break;
         }
         try {
-          await api('POST', '/api/projects', { name, env });
+          const created = await api('POST', '/api/projects', { name, env });
           S.notice = null;
+          S.creatingProject = false;
+          // Adding a second project: stay where you are and switch to it, rather than
+          // dropping the operator back into whatever they were looking at.
+          if (S.me?.projects.length && created?.id) S.projectId = created.id;
           await boot();
         } catch (err) {
           console.error(err);
@@ -1032,6 +1132,7 @@ document.getElementById('app').addEventListener('click', async (event) => {
         }
         try {
           await api('POST', `/api/projects/${S.projectId}/milestones`, { code, titleEn });
+          S.addingMilestone = false;
           notice(t('saved'));
           await refresh();
         } catch (err) { console.error(err); notice(String(err.message), 'bad'); }

@@ -180,6 +180,82 @@ describe('ui (dom): editing and removing', () => {
     assert.equal(post.path, '/api/milestones/gone-1/restore');
   });
 
+  test('a site admin can start a second project, not only the first', async () => {
+    // The create-project form lived only inside the first-run screen, which renders
+    // only when you have no projects — so having one made a second impossible.
+    const meAdmin = {
+      ...payloads.meDev, isSiteAdmin: true,
+      projects: payloads.meDev.projects.map((p) => ({ ...p, role: 'admin' }))
+    };
+    const created = [];
+    const app = loadApp({
+      routes: {
+        ...projectRoutes(meAdmin),
+        // A real server answers for the new project too — empty, but a 200. Without
+        // these the harness falls back to `{}`, which is not a shape the API sends.
+        'GET /api/projects/project-new/milestones': { milestones: [] },
+        'GET /api/projects/project-new/bugs': { bugs: [], openCount: 0 },
+        'POST /api/projects': (c) => {
+          created.push(c);
+          return { body: { id: 'project-new', name: 'Line 8 Packing' }, status: 201 };
+        }
+      }
+    });
+    await settle();
+
+    assert.match(app.html(), /data-action="newproject"/, 'the sidebar offers it');
+    await app.click('newproject');
+    assert.match(app.html(), /id="f-pname"/, 'and asking for it reveals the form');
+
+    app.field('f-pname').value = 'Line 8 Packing';
+    app.field('f-penv').value = 'staging';
+    await app.click('createproject');
+
+    assert.equal(created.length, 1, 'the second project is created');
+    assert.deepEqual(created[0].body, { name: 'Line 8 Packing', env: 'staging' });
+  });
+
+  test('a developer can add a second milestone, not only the first', async () => {
+    const app = loadApp({ routes: projectRoutes(payloads.meDev) });
+    await settle();
+
+    // This world already has a milestone, so this is exactly the case that was a dead
+    // end: the form used to render only when the list was empty.
+    assert.ok(payloads.milestones.milestones.length > 0, 'the world has a milestone');
+    assert.match(app.html(), /data-action="showaddms"/, 'the list offers Add milestone');
+    assert.doesNotMatch(app.html(), /id="f-mscode"/,
+      'and keeps the form out of the way until it is asked for');
+
+    await app.click('showaddms');
+    assert.match(app.html(), /id="f-mscode"/, 'the form appears');
+
+    app.field('f-mscode').value = 'M2';
+    app.field('f-mstitle').value = 'Second cut';
+    await app.click('addmilestone');
+
+    const post = app.calls.find((c) =>
+      c.method === 'POST' && String(c.path).includes('/milestones'));
+    assert.ok(post, 'the second milestone is created');
+    assert.deepEqual(post.body, { code: 'M2', titleEn: 'Second cut' });
+  });
+
+  test('a tester is offered neither the milestone form nor the moves', async () => {
+    // `availableActions` is computed per role by the server, so it cannot be replayed
+    // from a developer's payload: the fixture has to carry what a tester would receive.
+    const asTester = {
+      milestones: payloads.milestones.milestones.map((m) => ({ ...m, availableActions: [] }))
+    };
+    const app = loadApp({
+      routes: { ...projectRoutes(payloads.meTester),
+                [`GET /api/projects/${w.project.id}/milestones`]: asTester }
+    });
+    await settle();
+
+    assert.doesNotMatch(app.html(), /data-action="showaddms"/);
+    assert.doesNotMatch(app.html(), /data-action="mstransition"/);
+    assert.match(app.html(), /data-action="report"/, 'but reporting is still theirs');
+  });
+
   test('an admin sees change-role and remove for each member', async () => {
     const members = { members: [
       { id: 'u1', email: 'a@b.test', display_name: 'Linh', role: 'tester' },

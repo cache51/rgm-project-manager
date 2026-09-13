@@ -681,13 +681,22 @@ export function buildRoutes() {
   }));
 
   r.get('/api/projects/:id/milestones', handle(async (req, res, ctx) => {
-    await authorize(ctx.db, ctx.actor, ctx.params.id);
+    const role = await authorize(ctx.db, ctx.actor, ctx.params.id);
     const rows = await ctx.db.query(
       `SELECT id, code, title_en, title_vi, title_zh, status, due_at, completed_at,
               ready_count, updated_at
          FROM milestones WHERE project_id = $1 AND deleted_at IS NULL ORDER BY code`,
       [ctx.params.id]);
-    sendJson(res, 200, { milestones: rows.rows });
+    sendJson(res, 200, {
+      milestones: rows.rows.map((m) => ({
+        ...m,
+        // Which moves are legal from here, decided by the same state machine the
+        // route enforces. The browser must not keep its own copy of this: a client-side
+        // guess drifts, and then offers a button the server refuses.
+        availableActions: availableTransitions('milestone', m.status, role,
+          { isSiteAdmin: !!ctx.actor?.isSiteAdmin })
+      }))
+    });
   }));
 
   r.post('/api/milestones/:id/status', handle(async (req, res, ctx) => {

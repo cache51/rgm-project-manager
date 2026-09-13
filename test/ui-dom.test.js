@@ -164,15 +164,80 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
       'each ready milestone gets its own report control');
   });
 
-  test('a developer is not offered the tester report control', async () => {
-    // Role-appropriate controls: a developer does not file test reports. (The
-    // payload test asserted the same for bug actions; this is the DOM half.)
-    const app = loadApp({ routes: routes(payloads.meDev) });
+  test('anyone on the project can file a report on a ready milestone', async () => {
+    // This used to be testers only. That made reporting impossible for the people
+    // setting a project up — an admin could create a project, a milestone and mark it
+    // ready, and then had no way to file a single issue against it. The API has always
+    // allowed any member (POST /api/projects/:id/bugs authorizes with ROLES), so the
+    // browser was the only thing refusing.
+    for (const [who, me] of [['tester', payloads.meTester], ['developer', payloads.meDev]]) {
+      const app = loadApp({ routes: routes(me) });
+      await settle();
+      await app.click('view', { view: 'milestones' });
+
+      const count = (app.html().match(/data-action="report"/g) ?? []).length;
+      assert.equal(count, 2, `a ${who} should be able to report on each ready milestone`);
+    }
+  });
+
+  test('a milestone offers exactly the moves the server said are legal', async () => {
+    // The state machine lives on the server (availableActions on each milestone), so
+    // the buttons offered are the ones the route will accept — no client-side copy of
+    // which transition is legal from where.
+    const withActions = {
+      milestones: payloads.milestones.milestones.map((m, i) => ({
+        ...m,
+        availableActions: i === 0
+          ? [{ action: 'start', to: 'in_progress', requiresReason: false }]
+          : [{ action: 'reset', to: 'planned', requiresReason: true }]
+      }))
+    };
+    const app = loadApp({
+      routes: { ...routes(payloads.meDev),
+                [`GET /api/projects/${w.project.id}/milestones`]: withActions }
+    });
     await settle();
     await app.click('view', { view: 'milestones' });
 
-    assert.equal((app.html().match(/data-action="report"/g) ?? []).length, 0,
-      'a developer must not be shown a control that is not theirs');
+    const html = app.html();
+    assert.match(html, /data-action="mstransition"[^>]*data-move="start"/);
+    assert.match(html, /data-action="mstransition"[^>]*data-move="reset"/);
+    assert.doesNotMatch(html, /data-move="finish"/, 'not a legal move, so not offered');
+  });
+
+  test('a milestone move is sent, and reset asks for its reason first', async () => {
+    const withActions = {
+      milestones: [{ ...payloads.milestones.milestones[0],
+                     availableActions: [
+                       { action: 'start', to: 'in_progress', requiresReason: false },
+                       { action: 'reset', to: 'planned', requiresReason: true }
+                     ] }]
+    };
+    const app = loadApp({
+      routes: { ...routes(payloads.meDev),
+                [`GET /api/projects/${w.project.id}/milestones`]: withActions }
+    });
+    await settle();
+    await app.click('view', { view: 'milestones' });
+
+    // A move that needs no reason goes straight through.
+    await app.click('mstransition', { id: 'ms-1', move: 'start', reason: '' });
+    let posts = app.calls.filter((c) => c.method === 'POST' && String(c.path).includes('/status'));
+    assert.equal(posts.length, 1);
+    assert.deepEqual(posts[0].body, { action: 'start' });
+
+    // Reset requires one; declining the prompt must send nothing.
+    app.promptAnswer.value = '';
+    await app.click('mstransition', { id: 'ms-1', move: 'reset', reason: '1' });
+    posts = app.calls.filter((c) => c.method === 'POST' && String(c.path).includes('/status'));
+    assert.equal(posts.length, 1, 'a cancelled prompt sends nothing');
+
+    app.promptAnswer.value = '  started too early  ';
+    await app.click('mstransition', { id: 'ms-1', move: 'reset', reason: '1' });
+    posts = app.calls.filter((c) => c.method === 'POST' && String(c.path).includes('/status'));
+    assert.equal(posts.length, 2);
+    assert.deepEqual(posts[1].body, { action: 'reset', reason: 'started too early' },
+      'the reason is trimmed and travels with the move');
   });
 
   test('the bug list shows the report with its code, status and timestamp', async () => {
