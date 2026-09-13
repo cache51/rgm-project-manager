@@ -14,7 +14,8 @@
 import { randomUUID } from 'node:crypto';
 import { createDb } from './db.js';
 import { loadConfig } from './config.js';
-import { parkExhaustedTranslations, parkExhaustedOutbox, ClaimPolicy } from './claim.js';
+import { parkExhaustedTranslations, parkExhaustedEventTranslations,
+         parkExhaustedOutbox, ClaimPolicy } from './claim.js';
 import { runBugTranslations, runEventTranslations } from './translate.js';
 import { runOutbox } from './notify.js';
 
@@ -57,8 +58,11 @@ while (!stopping) {
   const didWork = bugs.length + events.length + outbox.length > 0;
   if (!didWork) {
     // Park exhausted jobs only when idle, so the sweep never races a live lease.
+    // All three queues: leaving event translations out left a row stuck in
+    // `running` for ever, with no retry and no trace (IR-029).
     const parked = [
       ...(await parkExhaustedTranslations(db)).map(r => `bug ${r.bug_id}`),
+      ...(await parkExhaustedEventTranslations(db)).map(r => `event ${r.event_id}`),
       ...(await parkExhaustedOutbox(db)).map(r => `outbox ${r.id}`)
     ];
     for (const p of parked) process.stdout.write(`[park] ${p} exhausted\n`);

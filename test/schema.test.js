@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import {
   claimTranslation, claimOutbox, ClaimPolicy,
-  parkExhaustedTranslations, parkExhaustedOutbox
+  parkExhaustedTranslations, parkExhaustedOutbox, parkExhaustedEventTranslations
 } from '../src/claim.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -361,6 +361,29 @@ test('an outbox row stranded at sending is retirable after its lease expires', a
   // ...but the sweep can retire it rather than leaving it `sending` forever
   assert.equal((await parkExhaustedOutbox(db)).length, 1);
   const row = await db.query(`SELECT status, error FROM notifications_outbox`);
+  assert.equal(row.rows[0].status, 'failed');
+  assert.match(row.rows[0].error, /exhausted/);
+});
+
+test('a stranded event translation is retirable, not left running for ever', async () => {
+  // IR-029: the sweep covered bug translations and the outbox but not
+  // event_translations, so a worker that died on its final attempt left a row in
+  // `running` for ever — never retried, never parked, and nothing reported it.
+  const { db, ids } = await fresh();
+
+  const event = await db.query(
+    `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
+     VALUES ($1,$2,$3,'bug.retest_fail','{"note":"Thùng bị lệch"}'::jsonb)
+     RETURNING id`, [ids.projA, ids.bugA, ids.tester]);
+
+  await db.query(
+    `INSERT INTO event_translations (event_id, field, lang, status, attempts, lease_until)
+     VALUES ($1, 'note', 'zh', 'running', $2, now() - interval '1 minute')`,
+    [event.rows[0].id, ClaimPolicy.maxAttempts]);
+
+  assert.equal((await parkExhaustedEventTranslations(db)).length, 1);
+  const row = await db.query(
+    `SELECT status, error FROM event_translations WHERE event_id = $1`, [event.rows[0].id]);
   assert.equal(row.rows[0].status, 'failed');
   assert.match(row.rows[0].error, /exhausted/);
 });

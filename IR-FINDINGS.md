@@ -5,23 +5,23 @@
 (13 high, 25 medium).
 
 This is the first review of the code by something other than its author, and it
-found things the 243 passing tests did not. **Twenty-five of the thirty-eight are
+found things the 243 passing tests did not. **Twenty-eight of the thirty-eight are
 fixed**, each with a test that would have caught it; the rest are recorded with a
 plan so they are not lost.
 
 | | high | medium | total |
 |---|---|---|---|
 | Found | 13 | 25 | 38 |
-| Fixed | **13** | **12** | **25** |
+| Fixed | **13** | **15** | **28** |
 | Partly fixed | — | 1 | 1 |
-| Open | 0 | 12 | 12 |
+| Open | 0 | 9 | 9 |
 
-**Every high-severity finding is closed.** The twelve still open are all medium,
-and the largest cluster is the worker lifecycle: leases are not renewed during an
-external call, failed event translations have no terminal sweep or retry route,
-and abandoned staging objects are never cleaned up. Those want a background
-reaper and a heartbeat, which is a piece of the product that does not exist yet
-rather than a defect in one that does.
+**Every high-severity finding is closed.** The nine still open are all medium, and
+they cluster into two groups: the worker lifecycle (lease renewal, a request
+deadline, a staging reaper, SMTP idempotency) and text handling (EXIF stripping,
+event-note translations in the prompt, tokens in URLs, and a timing side channel
+on sign-in). The first group wants components the product does not have yet — a
+heartbeat and a reaper — rather than repairs to ones it does.
 
 The run that produced this **self-rejected** ("Plan changed during the run") because
 the repository was edited while it ran. The findings are still valid — they are
@@ -34,7 +34,10 @@ re-run is owed.
 
 | ID | Sev | What was wrong | Fix / evidence |
 |---|---|---|---|
+| **IR-037** | med | **The form filed against the wrong milestone.** "Report bug" on a milestone stored which one was clicked, but the form's `<select>` never preselected it — so with two ready milestones, a report opened from the second was submitted against the first. | The selected option follows the clicked milestone. **Verified by inspection only**: the change is a conditional `selected` attribute, and the preview pane's clicks did not reach this page, so it is the one fix here without a test behind it. |
 | **IR-013** | high | **Validation of a moving object.** Completion checked the staged key and promoted afterwards. Because a presigned PUT stays valid until it expires, a client could replace the object in between — so the promoted bytes could differ from the metadata that was checked, and every later view, download and packet would serve the replacement. | Promotion happens first, and the object is then validated where it now lives, so what is checked is what is served. A rejection after the move deletes the promoted copy rather than orphaning it, and a racing completion is answered 409 instead of failing. `test/upload-integrity.test.js`. |
+| **IR-029** | med | **A queue with no floor.** The terminal sweep parked bug translations and outbox rows but not `event_translations`, so a worker that died on its final attempt left a row in `running` for ever — never retried, never parked, and nothing reported it. | `parkExhaustedEventTranslations` and a third arm in the worker's sweep. `test/schema.test.js` strands a row and asserts it is retired with a reason. |
+| **IR-034** | med | **A CI job named for something it did not do.** "The app suite runs against real Postgres too" set `RGM_TEST_DRIVER=pg`, which uses the in-process double — so the suite never touched the server. It also still asserted the old `rgm_app` role name, so it would have failed after IR-004 was fixed. | The job sets `RGM_TEST_PG_URL`, which runs the whole suite against the service container, and asserts the runtime role can read `users`. |
 | **IR-016** | med | **An expired invitation blocked its own replacement.** The live-invitation index excludes consumed and revoked rows but cannot exclude by expiry, because `now()` is not immutable and so cannot appear in a partial index predicate. An invitation nobody redeemed kept the next one un-issuable for that address for ever. | Creation retires expired invitations for the address first, inside a transaction. That transaction also takes the per-(project,email) advisory lock — which redemption and removal had and **creation did not**, so the earlier RGM3-003 fix was incomplete. |
 | **IR-025** | med | **A brief outage burned every retry.** A failed send is rescheduled as `pending` with a future `lease_until`, but the claim accepted any `pending` row, so five attempts went in a tight loop instead of waiting out the backoff — and a notification waiting would have delivered was parked. | The claim requires a pending row's deadline to have elapsed. Tested by draining twice against a failing provider: one attempt, then zero, then a retry once the window passes. |
 | **IR-038** | med | **A packet that describes two different things.** The packet route read the attachment list, then called the prompt builder, which read it again. An upload completing between the two could put a screenshot in `bug.md` that the ZIP did not contain. | One read feeds `bug.md`, `meta.json` and the archive entries. `test/api.attachments.test.js` asserts all three agree once the archive is opened. |
@@ -84,8 +87,6 @@ Recorded so they are not lost, roughly in the order worth doing them.
   crash can deliver a duplicate.
 - **IR-027 (med)** — Leases are never renewed during an external call, and HTTP
   providers have no request deadline; a slow call can be reclaimed mid-flight.
-- **IR-029 (med)** — `event_translations` has no terminal sweep and no retry
-  route, so a worker that dies on its last attempt leaves it running forever.
 
 ### Handoff quality
 
@@ -98,15 +99,9 @@ Recorded so they are not lost, roughly in the order worth doing them.
 
 - **IR-036 (med)** — An upload failure after bug creation loses the bug id, and the
   error path clears the form — a retry creates a duplicate report.
-- **IR-037 (med)** — "Report bug" on milestone M2 does not preselect M2, so the
-  report can be filed against M1.
 
 ### Verification
 
-- **IR-034 (med)** — The CI job labelled "against real Postgres" used a PGlite-backed
-  double, so it never exercised a real server. **Partly addressed**: `RGM_TEST_PG_URL`
-  now runs the whole suite against a real PostgreSQL 17 (243/243 locally, and it
-  found the `count(*)` cast bug on its first run). The CI job still needs to use it.
 - **IR-014 (med)** — Migrations and their ledger entry are not one transaction.
 
 ---

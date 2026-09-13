@@ -100,6 +100,24 @@ RETURNING id, attempts;
 `;
 
 /**
+ * Event translations need the same terminal transition.
+ *
+ * The sweep covered bug translations and the outbox but not this table, so an
+ * event translation whose worker died on its final attempt stayed `running`
+ * forever — never retried, never parked, and invisible (IR-029).
+ */
+export const PARK_EXHAUSTED_EVENT_TRANSLATIONS_SQL = `
+UPDATE event_translations
+   SET status = 'failed',
+       error  = coalesce(error, 'exhausted ' || attempts || ' attempts'),
+       updated_at = now()
+ WHERE status IN ('pending','running')
+   AND attempts >= $1::int
+   AND (lease_until IS NULL OR lease_until < now())
+RETURNING event_id, lang, attempts;
+`;
+
+/**
  * Reclaim threshold used by the worker. Exported so tests and callers agree.
  */
 export const ClaimPolicy = Object.freeze({
@@ -127,5 +145,10 @@ export async function parkExhaustedTranslations(db, policy = ClaimPolicy) {
 
 export async function parkExhaustedOutbox(db, policy = ClaimPolicy) {
   const res = await db.query(PARK_EXHAUSTED_OUTBOX_SQL, [policy.maxAttempts]);
+  return res.rows;
+}
+
+export async function parkExhaustedEventTranslations(db, policy = ClaimPolicy) {
+  const res = await db.query(PARK_EXHAUSTED_EVENT_TRANSLATIONS_SQL, [policy.maxAttempts]);
   return res.rows;
 }

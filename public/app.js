@@ -457,7 +457,7 @@ function reportForm() {
     <div class="card" style="margin-top:14px;max-width:640px">
       <h2 style="margin:0 0 14px;font-size:16px">🐞 ${t('send')}</h2>
       <label>${t('msL')}</label>
-      <select id="f-ms">${ready.map((m) => `<option value="${esc(m.id)}">${esc(m.code)} — ${esc(titleFor(m))}</option>`).join('')}</select>
+      <select id="f-ms">${ready.map((m) => `<option value="${esc(m.id)}"${m.id === S.reportFor ? ' selected' : ''}>${esc(m.code)} — ${esc(titleFor(m))}</option>`).join('')}</select>
       <label>${t('sevL')}</label>
       <select id="f-sev">
         <option value="high">${esc(SEV.high[S.lang])}</option>
