@@ -1,6 +1,6 @@
 {
   "name": "rgm-project-manager",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Developer ↔ tester communication hub: multi-project bug tracking with Vietnamese/Chinese/English translation and one-command AI-agent handoff",

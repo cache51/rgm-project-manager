@@ -46,7 +46,9 @@ describe('ui: static serving', () => {
     const res = await w.newClient().get('/login');
     assert.equal(res.status, 200);
     assert.match(res.text, /\/login\.js/);
-    assert.match(res.text, /Send link/);
+    assert.match(res.text, /an admin added you with/);
+    assert.doesNotMatch(res.text, /send a one-time|password/i,
+      'the page must not promise a link or ask for a password');
   });
 
   test('assets are served with the right content types', async () => {

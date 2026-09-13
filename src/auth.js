@@ -43,11 +43,49 @@ export async function activeMembership(db, userId, projectId) {
 }
 
 /**
+ * Assert a project has not been removed.
+ *
+ * A removed project is not a live target: nothing may be read or written through it.
+ * 410 Gone rather than 403, because "forbidden" sends the reader looking for a
+ * permissions problem that is not there.
+ */
+export async function requireLiveProject(db, projectId) {
+  const r = await db.query('SELECT deleted_at FROM projects WHERE id = $1', [projectId]);
+  if (!r.rows.length) throw new HttpError(404, 'not_found', 'project not found');
+  if (r.rows[0].deleted_at) {
+    throw new HttpError(410, 'project_removed', 'this project was removed');
+  }
+}
+
+/**
  * Resolve the actor's effective role in a project and assert it is sufficient.
  * A site admin acts with admin authority anywhere, but still needs an active
  * membership to reach project data (RGM-S1-004).
+ *
+ * A removed project is refused even for its own members — that is what removal means.
+ * Restoring one therefore cannot come through here; see `authorizeRemovedProject`.
  */
 export async function authorize(db, actor, projectId, allowed = ROLES) {
+  if (!actor) throw new HttpError(401, 'unauthenticated', 'sign in required');
+  const role = await activeMembership(db, actor.userId, projectId);
+  if (!role) throw new HttpError(403, 'not_a_member', 'not a member of this project');
+  await requireLiveProject(db, projectId);
+  const effective = actor.isSiteAdmin ? 'admin' : role;
+  if (!allowed.includes(effective)) {
+    throw new HttpError(403, 'forbidden', `requires ${allowed.join(' or ')}`);
+  }
+  return effective;
+}
+
+/**
+ * Authorize an action on a project that is *not* live.
+ *
+ * `authorize` refuses removed projects on purpose, so restoring is the one thing that
+ * cannot go through it. The membership test is otherwise identical — deliberately, so
+ * this is not a weaker door: you still have to be an admin on the project to bring it
+ * back.
+ */
+export async function authorizeRemovedProject(db, actor, projectId, allowed = ['admin']) {
   if (!actor) throw new HttpError(401, 'unauthenticated', 'sign in required');
   const role = await activeMembership(db, actor.userId, projectId);
   if (!role) throw new HttpError(403, 'not_a_member', 'not a member of this project');
@@ -85,15 +123,22 @@ export async function requireActorAuthority(tx, actor, projectId, allowed = ROLE
 
 /** Resolve the project a bug belongs to, then authorize against it. */
 export async function authorizeBug(db, actor, bugId, allowed = ROLES) {
-  const r = await db.query('SELECT id, project_id FROM bugs WHERE id = $1', [bugId]);
+  const r = await db.query('SELECT id, project_id, deleted_at FROM bugs WHERE id = $1', [bugId]);
   if (!r.rows.length) throw new HttpError(404, 'not_found', 'bug not found');
+  if (r.rows[0].deleted_at) {
+    throw new HttpError(410, 'bug_removed', 'this bug was removed');
+  }
   const role = await authorize(db, actor, r.rows[0].project_id, allowed);
   return { projectId: r.rows[0].project_id, role };
 }
 
 export async function authorizeMilestone(db, actor, milestoneId, allowed = ROLES) {
-  const r = await db.query('SELECT id, project_id FROM milestones WHERE id = $1', [milestoneId]);
+  const r = await db.query(
+    'SELECT id, project_id, deleted_at FROM milestones WHERE id = $1', [milestoneId]);
   if (!r.rows.length) throw new HttpError(404, 'not_found', 'milestone not found');
+  if (r.rows[0].deleted_at) {
+    throw new HttpError(410, 'milestone_removed', 'this milestone was removed');
+  }
   const role = await authorize(db, actor, r.rows[0].project_id, allowed);
   return { projectId: r.rows[0].project_id, role };
 }
@@ -134,7 +179,16 @@ export async function consumeLoginToken(db, token, { absoluteDays = 30 } = {}) {
       RETURNING user_id`, [hashToken(token)]);
   if (!claimed.rows.length) return null;
 
-  const userId = claimed.rows[0].user_id;
+  return mintSession(db, claimed.rows[0].user_id, { absoluteDays });
+}
+
+/**
+ * Start a session for a user.
+ *
+ * The CSRF secret is returned once, to be set as a readable cookie. Only its hash is
+ * stored, and it is bound to this session.
+ */
+export async function mintSession(db, userId, { absoluteDays = 30 } = {}) {
   const sessionToken = newToken();
   const csrfToken = newToken();
   await db.query(
@@ -142,9 +196,27 @@ export async function consumeLoginToken(db, token, { absoluteDays = 30 } = {}) {
      VALUES ($1, $2, $3, now() + make_interval(days => $4::int))`,
     [userId, hashToken(sessionToken), hashToken(csrfToken), absoluteDays]);
 
-  // The CSRF secret is returned once, to be set as a readable cookie. Only its
-  // hash is stored, and it is bound to this session.
   return { userId, sessionToken, csrfToken };
+}
+
+/**
+ * Sign in with an email address alone.
+ *
+ * This deployment is an internal tool with no mailer, so the one-time-link flow meant
+ * reading a link out of the server console — unusable for the testers it was meant to
+ * serve, and the reason every sign-in needed a hand. A session is opened for whatever
+ * address is given, and the role comes from the membership an admin already recorded.
+ *
+ * The tradeoff is deliberate and worth stating plainly: this cannot tell two people
+ * apart beyond the address each types, so the audit trail records the address someone
+ * *claimed*, not one they proved. That is acceptable for a trusted internal tool; it
+ * would not be on the public internet.
+ */
+export async function directSignIn(db, email, { absoluteDays = 30 } = {}) {
+  const normalized = normalizeEmail(email);
+  const u = await db.query('SELECT id FROM users WHERE email = $1', [normalized]);
+  if (!u.rows.length) return null;      // only addresses an admin has added may enter
+  return mintSession(db, u.rows[0].id, { absoluteDays });
 }
 
 /** Resolve a session cookie. Idle timeout is enforced here, not by a cron. */
@@ -273,6 +345,55 @@ export async function createInvite(db, { projectId, email, role, actor, name, de
 
   if (deliver) await deliver({ to: normalized, token, kind: 'invite' });
   return { sent: true };
+}
+
+/**
+ * Put someone on a project: an email, a name and a role, applied immediately.
+ *
+ * This replaces the invitation flow for this deployment. An invitation was a secret
+ * that had to be delivered to be useful; there is no mailer here, so the token only
+ * ever travelled through the server console — which is the machinery being removed.
+ * Recording the mapping directly reaches the same state without the intermediate
+ * secret, and an admin adding someone is the same act either way.
+ *
+ * Reuses the invitation lock and the actor re-check, so adding someone cannot race a
+ * removal or land on authority the caller has since lost.
+ */
+export async function addMember(db, { projectId, email, name, role, actor }) {
+  if (!ROLES.includes(role)) throw new HttpError(400, 'bad_role', `unknown role ${role}`);
+  const normalized = normalizeEmail(email);
+
+  return withTransaction(db, async (tx) => {
+    await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))',
+      [`invite:${projectId}:${normalized}`]);
+    await requireActorAuthority(tx, actor, projectId, ['admin']);
+
+    // COALESCE keeps a name already recorded: re-adding someone, or adding them to a
+    // second project under a different spelling, must not rename them.
+    const u = await tx.query(
+      `INSERT INTO users (email, display_name) VALUES ($1, $2)
+       ON CONFLICT (email) DO UPDATE
+          SET display_name = COALESCE(users.display_name, EXCLUDED.display_name)
+       RETURNING id, display_name`,
+      [normalized, name?.trim() || normalized.split('@')[0]]);
+
+    const m = await tx.query(
+      `INSERT INTO memberships (project_id, user_id, role, revoked_at)
+       VALUES ($1,$2,$3,NULL)
+       ON CONFLICT (project_id, user_id)
+       DO UPDATE SET role = EXCLUDED.role, revoked_at = NULL
+       RETURNING user_id, role`,
+      [projectId, u.rows[0].id, role]);
+
+    await tx.query(
+      `INSERT INTO events (project_id, membership_user_id, actor_id, kind, payload)
+       VALUES ($1,$2,$3,'membership.added',$4)`,
+      [projectId, u.rows[0].id, actor.userId,
+       JSON.stringify({ email: normalized, role, name: u.rows[0].display_name })]);
+
+    return { userId: u.rows[0].id, email: normalized,
+             displayName: u.rows[0].display_name, role: m.rows[0].role };
+  });
 }
 
 /**

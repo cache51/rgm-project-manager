@@ -6,137 +6,15 @@
  * one was: a fresh install told a site admin "you can create a project if you are a
  * site admin" and offered no way to do it. Nothing could have caught that.
  *
- * This loads the real `public/app.js` into a stub DOM (no browser, no dependency —
- * the app only reaches for document/location/fetch/navigator.clipboard/URL) and
- * drives it. The payloads it renders come from a real server via `makeProjectWorld`,
- * not from fixtures, so the shapes cannot drift from what the API actually sends.
+ * This drives the real `public/app.js` through the shared stub DOM in
+ * `test/ui-harness.js`. The payloads it renders come from a real server via
+ * `makeProjectWorld`, not from fixtures, so the shapes cannot drift from what the API
+ * actually sends.
  */
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import vm from 'node:vm';
 import { makeProjectWorld, makeMilestone, fileBug, PNG_BYTES } from './helpers.js';
-
-const here = dirname(fileURLToPath(import.meta.url));
-const SOURCE = readFileSync(join(here, '..', 'public', 'app.js'), 'utf8');
-
-/** Let every pending microtask and timer callback run. */
-async function settle(times = 60) {
-  for (let i = 0; i < times; i++) await new Promise((r) => setTimeout(r, 0));
-}
-
-/**
- * Load app.js in a stub DOM.
- *
- * `routes` maps "METHOD /path" to either a payload, or a function receiving the
- * recorded call and returning { body, status, headers }.
- */
-function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
-  const calls = [];
-  const fields = new Map();
-  const copied = [];
-  const downloads = [];
-  const listeners = {};
-  const redirects = [];
-  const promptAnswer = { value: '' };
-
-  // A tiny localStorage: the app remembers the language choice, and that has to be
-  // assertable without a browser.
-  const store = new Map(Object.entries(stored));
-  const localStorage = {
-    getItem: (k) => (store.has(k) ? store.get(k) : null),
-    setItem: (k, v) => store.set(k, String(v)),
-    removeItem: (k) => store.delete(k)
-  };
-
-  const field = (id) => {
-    if (!fields.has(id)) fields.set(id, { id, value: '', files: [] });
-    return fields.get(id);
-  };
-
-  const appEl = { innerHTML: '', addEventListener: (ev, fn) => { listeners[ev] = fn; } };
-
-  const document = {
-    getElementById: (id) => (id === 'app' ? appEl : field(id)),
-    addEventListener: () => {},
-    querySelector: () => null,
-    cookie: '',
-    body: { appendChild() {} },
-    createRange: () => ({ selectNodeContents() {} }),
-    createElement: () => ({
-      href: '', download: '', style: {},
-      click() { downloads.push({ href: this.href, download: this.download }); },
-      remove() {}, appendChild() {}
-    })
-  };
-
-  const respond = (body, status = 200, headers = {}) => {
-    const h = { 'content-type': 'application/json', ...headers };
-    return {
-      ok: status < 400,
-      status,
-      headers: { get: (k) => h[String(k).toLowerCase()] ?? null },
-      json: async () => body,
-      text: async () => (typeof body === 'string' ? body : JSON.stringify(body, null, 2)),
-      blob: async () => ({ size: typeof body === 'string' ? body.length : 4096 })
-    };
-  };
-
-  const ctx = {
-    console,
-    setTimeout, clearTimeout, setInterval, clearInterval,
-    document,
-    location: { replace: (u) => redirects.push(u), href: 'http://127.0.0.1:3000/' },
-    navigator: { clipboard: { writeText: async (t) => { copied.push(t); } }, language: browserLang },
-    localStorage,
-    URL: { createObjectURL: () => 'blob:stub', revokeObjectURL() {} },
-    getSelection: () => ({ removeAllRanges() {}, addRange() {} }),
-    // The status-change reason comes from a window.prompt dialog — see transition()
-    // in app.js. The harness answers it so the flow can be driven.
-    prompt: () => promptAnswer.value,
-    fetch: async (path, opts = {}) => {
-      const method = (opts.method ?? 'GET').toUpperCase();
-      const call = { method, path, body: opts.body ? JSON.parse(opts.body) : null };
-      calls.push(call);
-
-      const route = routes[`${method} ${path}`];
-      if (typeof route === 'function') {
-        const out = route(call) ?? {};
-        return respond(out.body ?? {}, out.status ?? 200, out.headers);
-      }
-      // A plain value is the payload. Nothing is inferred from its shape: a bug
-      // payload has a `status` field ('new'), and an earlier version of this harness
-      // mistook that for a response descriptor — so `res.status` became the string
-      // 'new' and the app threw it as an error message. Use a function when the
-      // status or headers matter.
-      if (route !== undefined) return respond(route);
-      return respond({}, 200);
-    }
-  };
-  ctx.window = ctx;
-
-  vm.createContext(ctx);
-  vm.runInContext(SOURCE, ctx, { filename: 'public/app.js' });
-
-  return {
-    calls, copied, downloads, listeners, fields, redirects, promptAnswer, store,
-    ctx,
-    html: () => appEl.innerHTML,
-    field: (id) => field(id),
-    apiCalls: () => calls.filter((c) => String(c.path).startsWith('/api/')),
-    /** Invoke the app's delegated click handler as a browser would. */
-    async click(action, dataset = {}) {
-      const el = { dataset: { action, ...dataset } };
-      await listeners.click({
-        target: { closest: () => el },
-        preventDefault() {}
-      });
-      await settle();
-    }
-  };
-}
+import { loadApp, settle } from './ui-harness.js';
 
 describe('ui (dom): a fresh install', () => {
   test('a site admin is offered a working create-project form', async () => {
@@ -376,7 +254,7 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
     }
   });
 
-  test('inviting posts the name, email and role', async () => {
+  test('adding someone posts the name, email and role', async () => {
     const seen = [];
     const app = loadApp({
       routes: {
@@ -384,7 +262,7 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
           userId: payloads.meDev.userId, email: payloads.meDev.email, isSiteAdmin: false,
           projects: payloads.meDev.projects.map((p) => ({ ...p, role: 'admin' }))
         })),
-        [`POST /api/projects/${w.project.id}/invites`]: (c) => { seen.push(c); return { body: { ok: true }, status: 201 }; }
+        [`POST /api/projects/${w.project.id}/members`]: (c) => { seen.push(c); return { body: { userId: 'u9' }, status: 201 }; }
       }
     });
     await settle();
@@ -395,13 +273,13 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
     app.field('f-mrole').value = 'tester';
     await app.click('invite');
 
-    assert.equal(seen.length, 1, 'the invitation is posted');
+    assert.equal(seen.length, 1, 'the person is added');
     assert.deepEqual(seen[0].body,
       { name: 'Nguyễn Văn A', email: 'a@rgm.example', role: 'tester' },
       'the name is what the admin will see next to the reports');
   });
 
-  test('an invitation without a name is refused locally', async () => {
+  test('adding someone without a name is refused locally', async () => {
     const seen = [];
     const app = loadApp({
       routes: {
@@ -409,7 +287,7 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
           userId: payloads.meDev.userId, email: payloads.meDev.email, isSiteAdmin: false,
           projects: payloads.meDev.projects.map((p) => ({ ...p, role: 'admin' }))
         })),
-        [`POST /api/projects/${w.project.id}/invites`]: (c) => { seen.push(c); return { body: {}, status: 201 }; }
+        [`POST /api/projects/${w.project.id}/members`]: (c) => { seen.push(c); return { body: {}, status: 201 }; }
       }
     });
     await settle();

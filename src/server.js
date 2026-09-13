@@ -6,6 +6,7 @@
  * storage, mailer and database without touching routes.
  */
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join, resolve, extname, sep, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +14,7 @@ import { createDb, migrate } from './db.js';
 import { buildRoutes, PUBLIC, UNSPECIFIED } from './api.js';
 import { resolveActor, sendJson, sendBytes } from './http.js';
 import { resolveSession, resolveApiToken, verifyCsrfToken, HttpError } from './auth.js';
+import { startWorkerLoop } from './worker-loop.js';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -239,6 +241,55 @@ export async function listen(app, { port = 3000, host = '127.0.0.1' } = {}) {
   return { url: `http://${host}:${addr.port}`, port: addr.port };
 }
 
+/**
+ * Stop cleanly: the queue loop, then the database, then the listener.
+ *
+ * Closing the database is not tidiness. The embedded engine runs with fsync disabled
+ * (`-F` is in its default start parameters), so a process that exits with writes still
+ * buffered loses them — which is what happened here: a restart discarded a project, its
+ * memberships, its milestone and its sessions, and left a data directory the engine
+ * then refused to reopen. Nothing had been wrong with the data; it had never reached
+ * the disk.
+ *
+ * Exported so the shutdown path is testable rather than assumed.
+ */
+export async function shutdownApp(app, { loop = null, onExit = () => process.exit(0),
+                                         graceMs = 3000 } = {}) {
+  if (loop) loop.stop();
+  if (loop) { try { await loop.done; } catch { /* already failed; still flush */ } }
+
+  if (app.db?.close) {
+    try { await app.db.close(); }
+    catch (err) { console.error('closing the database failed:', err); }
+  }
+
+  const timer = setTimeout(onExit, graceMs);
+  if (timer.unref) timer.unref();
+  app.server.close(() => { clearTimeout(timer); onExit(); });
+}
+
+/**
+ * Start the queue loop in this process, when the configuration says so.
+ *
+ * Returns the loop handle, or null when a separate worker owns the queue. Exported so
+ * the wiring is testable: "does the server drain the queue locally?" is a claim that
+ * should be checked, not assumed.
+ */
+export function startQueueLoop(app) {
+  if (!app.config.inlineWorker) return null;
+  // The worker id is recorded in `claimed_by`, which is a uuid column — so it has to
+  // be a uuid. An "inline:1234" style label fails the insert and the queue never
+  // drains at all (caught by test/worker-inline.test.js).
+  return startWorkerLoop(app.db, {
+    provider: app.config.translationProvider,
+    sender: app.config.mailer,
+    workerId: randomUUID(),
+    glossary: app.config.glossary,
+    baseUrl: app.config.publicUrl,
+    log: (line) => process.stdout.write(`${line}\n`)
+  });
+}
+
 // Run directly: `npm start`
 if (import.meta.url === `file://${process.argv[1]}`) {
   const app = await createAppFromEnv();
@@ -251,7 +302,17 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     process.stdout.write(`  ${key}: ${value}\n`);
   }
 
-  const shutdown = () => app.server.close(() => process.exit(0));
+  // With the embedded database this is the only place the queue can be drained: a
+  // second process cannot share a PGlite data directory, so `npm run worker` dies and
+  // leaves tester notes untranslated. See src/worker-loop.js.
+  const loop = startQueueLoop(app);
+
+  let stopping = false;
+  const shutdown = () => {
+    if (stopping) return;
+    stopping = true;
+    shutdownApp(app, { loop });
+  };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }

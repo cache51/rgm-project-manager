@@ -206,3 +206,23 @@
   .lb{position:fixed;inset:0;background:rgba(15,23,42,.82);display:none;place-items:center;z-index:100;padding:40px}
   .lb.on{display:grid}
   .lb .inner{background:#fff;border-radius:12px;max-width:760px;width:100%;overflow:hidden}
+
+  /* ── editing and removing ──
+     Small inline controls. Neutral colours on purpose: they sit in the dark sidebar
+     and in the light main area, so they tint rather than assume a background. */
+  .mini{font-size:11px;padding:3px 9px;border-radius:6px;display:inline-block;cursor:pointer;
+        white-space:nowrap;color:inherit;border:1px solid rgba(148,163,184,.45);
+        background:rgba(148,163,184,.16)}
+  .mini:hover{background:rgba(148,163,184,.3)}
+  .mini.bad{color:#ef4444;border-color:rgba(239,68,68,.45);background:rgba(239,68,68,.12)}
+  .mini.bad:hover{background:rgba(239,68,68,.22)}
+  .mini.go{color:#10b981;border-color:rgba(16,185,129,.45);background:rgba(16,185,129,.12)}
+  .mini.go:hover{background:rgba(16,185,129,.22)}
+  .padmin{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-top:8px}
+  .gone .nm{text-decoration:line-through;opacity:.75}
+  .removed-group{margin-top:18px;padding-top:14px;border-top:1px dashed var(--line,#e2e8f0)}
+  .card.removed, .row.removed{opacity:.62}
+  .editform{display:flex;flex-direction:column;gap:10px;margin:14px 0}
+  .editform label{font-size:12px;color:#64748b}
+  .editform textarea, .editform select{width:100%;font:inherit;padding:9px 11px;border-radius:8px;
+        border:1px solid #cbd5e1;background:#fff;color:inherit}

@@ -83,6 +83,95 @@ describe('auth: login', () => {
   });
 });
 
+describe('auth: signing in with an address, and adding people', () => {
+  let w;
+  before(async () => { w = await makeProjectWorld(); });
+  after(async () => { await w.close(); });
+
+  test('a known address gets a session, with no link and no password', async () => {
+    const fresh = w.newClient();
+    const res = await fresh.post('/api/auth/direct', { email: 'tester@rgm.example' });
+    assert.equal(res.status, 200, res.text);
+
+    const me = await fresh.get('/api/me');
+    assert.equal(me.status, 200, 'the session cookie works');
+    assert.equal(me.json.email, 'tester@rgm.example');
+    assert.equal(me.json.projects[0].role, 'tester', 'and the role is the one recorded');
+  });
+
+  test('the address is normalised, so the case does not matter', async () => {
+    const fresh = w.newClient();
+    assert.equal((await fresh.post('/api/auth/direct', { email: 'TESTER@RGM.EXAMPLE' })).status, 200);
+  });
+
+  test('an address nobody added is refused, and says what to do', async () => {
+    const fresh = w.newClient();
+    const res = await fresh.post('/api/auth/direct', { email: 'stranger@example.com' });
+    assert.equal(res.status, 404);
+    assert.match(res.json.message, /ask an admin/i);
+    assert.equal((await fresh.get('/api/me')).status, 401, 'and no session was created');
+  });
+
+  test('an email is required', async () => {
+    assert.equal((await w.newClient().post('/api/auth/direct', {})).status, 400);
+  });
+
+  test('an admin adds someone, who can sign in straight away', async () => {
+    // This is the whole mapping: email → role, applied, no secret to deliver.
+    const res = await w.adminClient.post(`/api/projects/${w.project.id}/members`,
+      { email: 'new.tester@rgm.example', name: 'Trần Thị B', role: 'tester' });
+    assert.equal(res.status, 201, res.text);
+    assert.equal(res.json.displayName, 'Trần Thị B');
+
+    const fresh = w.newClient();
+    assert.equal((await fresh.post('/api/auth/direct',
+      { email: 'new.tester@rgm.example' })).status, 200);
+    assert.equal((await fresh.get('/api/me')).json.projects[0].role, 'tester');
+
+    // And they are named, so the report says who filed it.
+    const list = (await w.adminClient.get(`/api/projects/${w.project.id}/members`)).json;
+    assert.ok(list.members.some((m) => m.display_name === 'Trần Thị B'));
+  });
+
+  test('a developer cannot add anyone', async () => {
+    const res = await w.devClient.post(`/api/projects/${w.project.id}/members`,
+      { email: 'x@y.example', name: 'X', role: 'tester' });
+    assert.equal(res.status, 403);
+  });
+
+  test('email and role are both required', async () => {
+    const base = `/api/projects/${w.project.id}/members`;
+    assert.equal((await w.adminClient.post(base, { name: 'X', role: 'tester' })).status, 400);
+    assert.equal((await w.adminClient.post(base, { email: 'x@y.example' })).status, 400);
+    assert.equal((await w.adminClient.post(base,
+      { email: 'x@y.example', role: 'superuser' })).status, 400, 'an unknown role is refused');
+  });
+
+  test('adding someone again keeps the name they already had', async () => {
+    const base = `/api/projects/${w.project.id}/members`;
+    await w.adminClient.post(base, { email: 'keep2@rgm.example', name: 'Linh', role: 'tester' });
+    const again = await w.adminClient.post(base,
+      { email: 'keep2@rgm.example', name: 'Different', role: 'developer' });
+
+    assert.equal(again.json.displayName, 'Linh', 'a name in use is not overwritten');
+    assert.equal(again.json.role, 'developer', 'but the role is updated');
+  });
+
+  test('someone added needs no prior invitation to be recognised', async () => {
+    // No invitation row, no token: the user and membership are the whole record.
+    await w.adminClient.post(`/api/projects/${w.project.id}/members`,
+      { email: 'direct.only@rgm.example', name: 'Direct', role: 'tester' });
+
+    const invitations = await w.db.query(
+      `SELECT 1 FROM invitations WHERE email = 'direct.only@rgm.example'`);
+    assert.equal(invitations.rows.length, 0, 'no invitation was involved');
+
+    const fresh = w.newClient();
+    assert.equal((await fresh.post('/api/auth/direct',
+      { email: 'direct.only@rgm.example' })).status, 200, 'and they can sign in');
+  });
+});
+
 describe('auth: authorization', () => {
   let w;
   before(async () => { w = await makeProjectWorld(); });

@@ -2,7 +2,7 @@
 # Start the RGM Project Manager locally (server + worker), with logs on disk.
 #
 #   bash scripts/dev-up.sh          # start both
-#   bash scripts/dev-login.sh       # mint a sign-in link and print it
+#   bash scripts/dev-login.sh       # show the addresses that can sign in
 #   bash scripts/dev-down.sh        # stop both
 #
 # Everything lives under ~/.rgm-local so it survives restarts:
@@ -34,12 +34,26 @@ fi
 nohup node src/server.js > "$DATA/server.log" 2>&1 &
 echo $! > "$DATA/server.pid"
 
-nohup node src/worker.js > "$DATA/worker.log" 2>&1 &
-echo $! > "$DATA/worker.pid"
+# The embedded database accepts a single process, so a separate worker cannot share
+# the data directory: starting one only writes a crash into worker.log while the queue
+# sits undrained. Only start one when a real Postgres is configured; otherwise the
+# server runs the same loop in-process (see src/worker-loop.js).
+WORKER_NOTE="the server drains the queue in-process"
+if [ -n "${DATABASE_URL:-}" ]; then
+  nohup node src/worker.js > "$DATA/worker.log" 2>&1 &
+  echo $! > "$DATA/worker.pid"
+  WORKER_NOTE="separate worker pid $(cat "$DATA/worker.pid")"
+else
+  rm -f "$DATA/worker.pid"
+fi
 
-for _ in $(seq 1 40); do
+# 40 × 0.5s was not enough when the machine is busy running the test suite: the
+# server was still initialising its database when the check gave up, and the script's
+# exit then killed it before it had logged anything.
+for _ in $(seq 1 120); do
   if curl -fsS -o /dev/null "$PUBLIC_URL/api/health" 2>/dev/null; then
-    echo "up on $PUBLIC_URL  (pids: server $(cat "$DATA/server.pid"), worker $(cat "$DATA/worker.pid"))"
+    echo "up on $PUBLIC_URL  (server pid $(cat "$DATA/server.pid"))"
+    echo "queue: $WORKER_NOTE"
     echo "logs: $DATA/server.log, $DATA/worker.log"
     exit 0
   fi

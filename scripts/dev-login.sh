@@ -1,40 +1,37 @@
 #!/bin/bash
-# Mint a sign-in link for a local account and print it.
+# Show where to sign in, and which addresses the app will recognise.
 #
-# The mailer is the console one in local development, so the link goes to
-# server.log rather than to an inbox. Usage:
+# There is no link to mint any more: sign-in is an address, so the useful thing to
+# print is the list of addresses that will actually work. Usage:
 #
-#   bash scripts/dev-login.sh                 # uses the bootstrapped admin
-#   bash scripts/dev-login.sh someone@x.test
+#   bash scripts/dev-login.sh              # list the known addresses
 set -eu
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 DATA="${RGM_LOCAL_DIR:-$HOME/.rgm-local}"
 PORT="${PORT:-3000}"
-EMAIL="${1:-yuen.chan@gmail.com}"
-LOG="$DATA/server.log"
 
-if [ ! -f "$LOG" ]; then
-  echo "no server log at $LOG — run: bash scripts/dev-up.sh" >&2
-  exit 1
-fi
+echo "Open:  http://127.0.0.1:$PORT/login"
+echo "Sign in with any address below."
+echo
 
-# Note the line count first, so an older link earlier in the log cannot be
-# mistaken for the one we are about to request.
-BEFORE=$(wc -l < "$LOG" | tr -d ' ')
-
-curl -fsS -X POST "http://127.0.0.1:$PORT/api/auth/request-link" \
-  -H 'content-type: application/json' \
-  -d "{\"email\":\"$EMAIL\"}" > /dev/null
-
-for _ in $(seq 1 30); do
-  LINK=$(tail -n "+$((BEFORE + 1))" "$LOG" | grep -oE 'http://[^ ]*/login\?token=[A-Za-z0-9_-]+' | tail -1 || true)
-  if [ -n "$LINK" ]; then
-    echo "$LINK"
-    exit 0
-  fi
-  sleep 0.2
-done
-
-echo "no link appeared in $LOG — check that the server is running" >&2
-exit 1
+cd "$HERE"
+PGLITE_DIR="$DATA/pg" node --input-type=module -e '
+import { createDb } from "./src/db.js";
+const db = await createDb({ dataDir: process.env.PGLITE_DIR });
+const { rows } = await db.query(
+  `SELECT u.email, u.display_name,
+          string_agg(DISTINCT m.role, $$/$$ ORDER BY m.role) AS roles
+     FROM users u
+     LEFT JOIN memberships m ON m.user_id = u.id AND m.revoked_at IS NULL
+    GROUP BY u.email, u.display_name
+    ORDER BY u.email`);
+if (!rows.length) {
+  console.log("  (nobody yet — run: npm run bootstrap -- you@example.com)");
+}
+for (const r of rows) {
+  const who = r.display_name ? ` (${r.display_name})` : "";
+  console.log(`  ${r.email}${who}  ${r.roles ? "[" + r.roles + "]" : ""}`);
+}
+await db.close();
+'

@@ -40,11 +40,22 @@ const T = {
     noProjects: 'Chưa có dự án nào — hãy tạo dự án đầu tiên.', create: 'Tạo dự án',
     nameL: 'Tên dự án', envL: 'Môi trường',
     team: 'Nhóm', personL: 'Tên người', emailL: 'Email', roleL: 'Vai trò',
-    invite: 'Mời vào dự án', invited: 'Đã gửi lời mời', needNameEmail: 'Cần tên và email',
+    invite: 'Thêm người vào dự án', invited: 'Đã thêm vào dự án', needNameEmail: 'Cần tên và email',
     members: 'Thành viên', you: 'bạn', needName: 'Cần tên dự án',
     noMilestones: 'Chưa có cột mốc nào — hãy tạo cột mốc đầu tiên.',
     msCodeL: 'Mã cột mốc', msTitleL: 'Tên cột mốc', addMs: 'Tạo cột mốc',
-    needMs: 'Cần mã và tên cột mốc'
+    needMs: 'Cần mã và tên cột mốc',
+    edit: 'Sửa', remove: 'Xoá', restore: 'Khôi phục', save: 'Lưu',
+    showRemoved: 'Hiện mục đã xoá', removedL: 'Đã xoá',
+    renameProject: 'Đổi tên dự án', projectSettings: 'Cài đặt dự án',
+    confirmRemoveProject: 'Xoá dự án này? Dữ liệu vẫn được giữ và có thể khôi phục.',
+    confirmRemoveMilestone: 'Xoá cột mốc này? Các lỗi vẫn được giữ.',
+    confirmRemoveBug: 'Xoá lỗi này? Bằng chứng vẫn được giữ và có thể khôi phục.',
+    renamed: 'Đã đổi tên', removed: 'Đã xoá — có thể khôi phục', restored: 'Đã khôi phục',
+    editBug: 'Sửa báo cáo này',
+    editHint: 'Sửa phần tiếng Việt sẽ đưa bản dịch vào hàng đợi dịch lại.',
+    needBugText: 'Cần cả tiêu đề và nội dung',
+    confirmRemoveMember: 'Xoá người này khỏi dự án?'
   },
   zh: {
     projects: '專案', ms: '里程碑', bugs: 'Bug 列表', nav: '導覽', lang: '語言',
@@ -72,11 +83,22 @@ const T = {
     noProjects: '尚無專案——先建立第一個專案。', create: '建立專案',
     nameL: '專案名稱', envL: '環境',
     team: '團隊', personL: '姓名', emailL: '電子郵件', roleL: '角色',
-    invite: '邀請加入專案', invited: '邀請已寄出', needNameEmail: '需要姓名和電子郵件',
+    invite: '新增成員', invited: '已加入專案', needNameEmail: '需要姓名和電子郵件',
     members: '成員', you: '你', needName: '需要專案名稱',
     noMilestones: '尚無里程碑——先建立第一個。',
     msCodeL: '里程碑代碼', msTitleL: '里程碑名稱', addMs: '建立里程碑',
-    needMs: '需要代碼和名稱'
+    needMs: '需要代碼和名稱',
+    edit: '編輯', remove: '刪除', restore: '還原', save: '儲存',
+    showRemoved: '顯示已刪除', removedL: '已刪除',
+    renameProject: '更改專案名稱', projectSettings: '專案設定',
+    confirmRemoveProject: '刪除此專案？資料會保留，可以還原。',
+    confirmRemoveMilestone: '刪除此里程碑？其錯誤報告會保留。',
+    confirmRemoveBug: '刪除此錯誤報告？證據會保留，可以還原。',
+    renamed: '名稱已更新', removed: '已刪除——可以還原', restored: '已還原',
+    editBug: '編輯此報告',
+    editHint: '修改越南文內容後，翻譯會重新排入佇列。',
+    needBugText: '標題和內容都必須填寫',
+    confirmRemoveMember: '將此人從專案移除？'
   },
   en: {
     projects: 'Projects', ms: 'Milestones', bugs: 'Bug reports', nav: 'Navigation',
@@ -104,15 +126,27 @@ const T = {
     noProjects: 'No projects yet — create the first one.', create: 'Create project',
     nameL: 'Project name', envL: 'Environment',
     team: 'Team', personL: 'Name', emailL: 'Email', roleL: 'Role',
-    invite: 'Invite to project', invited: 'Invitation sent', needNameEmail: 'A name and an email are required',
+    invite: 'Add someone to the project', invited: 'Added to the project', needNameEmail: 'A name and an email are required',
     members: 'Members', you: 'you', needName: 'A project name is required',
     noMilestones: 'No milestones yet — create the first one.',
     msCodeL: 'Milestone code', msTitleL: 'Milestone name', addMs: 'Add milestone',
-    needMs: 'A code and a name are required'
+    needMs: 'A code and a name are required',
+    edit: 'Edit', remove: 'Remove', restore: 'Restore', save: 'Save',
+    showRemoved: 'Show removed', removedL: 'Removed',
+    renameProject: 'Rename project', projectSettings: 'Project settings',
+    confirmRemoveProject: 'Remove this project? The data is kept and can be restored.',
+    confirmRemoveMilestone: 'Remove this milestone? Its bug reports are kept.',
+    confirmRemoveBug: 'Remove this bug? The evidence is kept and can be restored.',
+    renamed: 'Name updated', removed: 'Removed — it can be restored', restored: 'Restored',
+    editBug: 'Edit this report',
+    editHint: 'Changing the Vietnamese text puts its translation back in the queue.',
+    needBugText: 'A title and a description are both required',
+    confirmRemoveMember: 'Remove this person from the project?'
   }
 };
 
 const SEV = { high: { vi: 'Cao', zh: '高', en: 'High' }, medium: { vi: 'Trung bình', zh: '中', en: 'Medium' }, low: { vi: 'Thấp', zh: '低', en: 'Low' } };
+const ROLES = ['admin', 'developer', 'tester'];
 const SEV_CLASS = { high: 'high', medium: 'med', low: 'low' };
 const MS_CLASS = { planned: 'plan', in_progress: 'wip', ready: 'ready', done: 'done' };
 const BUG_CLASS = { new: 'plan', fixing: 'wip', retest: 'ready', closed: 'done' };
@@ -146,7 +180,12 @@ const S = {
   // here from further down the file throws a temporal-dead-zone error.
   view: 'milestones', lang: initialLang(), bug: null, prompt: null,
   milestones: null, bugs: null, busy: false, notice: null,
-  members: []
+  members: [],
+  // What has been removed from this project. Fetched alongside the live lists for the
+  // roles that may put something back, so removal is reversible from the app rather
+  // than only from SQL.
+  removedMilestones: [], removedBugs: [], removedProjects: [],
+  showRemoved: false, editing: false
 };
 
 // ───────────────────────── helpers ─────────────────────────
@@ -256,6 +295,33 @@ async function loadBugs() {
   S.bugs = bugs;
 }
 
+/**
+ * Load what has been removed, for the roles that can put it back.
+ *
+ * A tester gets 403 from these routes, which is expected and must not surface as an
+ * error notice — they simply never see the removed sections.
+ */
+async function loadRemoved() {
+  S.removedMilestones = []; S.removedBugs = []; S.removedProjects = [];
+  if (!['admin', 'developer'].includes(myRole())) return;
+
+  try {
+    if (S.view === 'milestones') {
+      S.removedMilestones = (await api('GET',
+        `/api/projects/${S.projectId}/milestones/removed`)).milestones ?? [];
+    } else if (S.view === 'bugs') {
+      S.removedBugs = (await api('GET',
+        `/api/projects/${S.projectId}/bugs/removed`)).bugs ?? [];
+    }
+    if (myRole() === 'admin') {
+      S.removedProjects = (await api('GET', '/api/projects/removed')).projects ?? [];
+    }
+  } catch (err) {
+    // A failure to list removed rows must not break the screen that is working.
+    console.error(err);
+  }
+}
+
 async function openBug(id) {
   S.bug = await api('GET', `/api/bugs/${id}`);
   S.prompt = null;
@@ -279,6 +345,7 @@ async function refresh() {
     else if (S.view === 'team') await loadMembers();
     else await loadBugs();
     await loadProjects();
+    await loadRemoved();
     if (S.bug) S.bug = await api('GET', `/api/bugs/${S.bug.id}`);
     render();
   } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
@@ -304,6 +371,24 @@ function sidebar() {
           </div>`).join('') || `<div class="hint" style="background:none;border:0;color:#64748b">${t('loading')}</div>`}
       </div>
     </div>
+
+    ${myRole() === 'admin' && S.projectId ? `
+    <div class="padmin">
+      <span class="mini" data-action="renameproject">✎ ${t('renameProject')}</span>
+      <span class="mini bad" data-action="removeproject">🗑 ${t('remove')}</span>
+    </div>` : ''}
+
+    ${myRole() === 'admin' && S.removedProjects.length ? `
+    <div>
+      <h4>${t('removedL')}</h4>
+      <div class="plist">
+        ${S.removedProjects.map((p) => `
+          <div class="proj gone" title="${esc(p.name)}">
+            <span class="nm">${esc(p.name)}</span>
+            <span class="mini go" data-action="restoreproject" data-id="${esc(p.id)}">${t('restore')}</span>
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
 
     <div>
       <h4>${t('nav')}</h4>
@@ -374,7 +459,7 @@ function milestoneCards() {
           <button class="btn" data-action="addmilestone">${t('addMs')}</button>
         </div>
       ` : `<p class="rel">${t('noReady')}</p>`}
-    </div>`;
+    </div>` + removedMilestones();
   }
 
   const ready = S.milestones.filter((m) => m.status === 'ready');
@@ -398,7 +483,33 @@ function milestoneCards() {
         ? `<div class="foot" style="margin-top:12px">
              <button class="btn pri" data-action="report" data-ms="${esc(m.id)}">🐞 ${t('report')}</button>
            </div>` : ''}
-    </div>`).join('')}</div>`;
+      ${canDevelop() ? `
+        <div class="foot" style="margin-top:12px;gap:8px">
+          <span class="mini" data-action="renamemilestone" data-id="${esc(m.id)}">✎ ${t('edit')}</span>
+          <span class="mini bad" data-action="removemilestone" data-id="${esc(m.id)}">🗑 ${t('remove')}</span>
+        </div>` : ''}
+    </div>`).join('')}</div>` + removedMilestones();
+}
+
+/**
+ * Milestones that were removed, with a way back.
+ *
+ * Removal hides a milestone from the list, so without this the only route back would
+ * be hand-written SQL — which is not a thing a developer should have to do.
+ */
+function removedMilestones() {
+  if (!canDevelop() || !S.removedMilestones.length) return '';
+  return `
+  <div class="removed-group">
+    <h4 style="font-size:12px;color:#64748b;margin:0 0 8px">${t('removedL')}</h4>
+    ${S.removedMilestones.map((m) => `
+      <div class="card removed" style="margin-bottom:8px">
+        <div class="meta">${esc(m.code)} · ${esc(titleFor(m))}</div>
+        <div class="foot" style="margin-top:10px">
+          <span class="mini go" data-action="restoremilestone" data-id="${esc(m.id)}">↩ ${t('restore')}</span>
+        </div>
+      </div>`).join('')}
+  </div>`;
 }
 
 /**
@@ -440,6 +551,13 @@ function teamPanel() {
         <div class="body">
           <div class="id">${esc(m.display_name)}${m.id === S.me?.userId ? ` · ${t('you')}` : ''}</div>
           <div class="sub rel">${esc(m.email)}</div>
+          ${isAdmin ? `
+          <div class="foot" style="margin-top:8px;gap:6px;flex-wrap:wrap">
+            ${ROLES.map((r) => r === m.role ? '' : `
+              <span class="mini" data-action="setrole" data-id="${esc(m.id)}"
+                    data-role="${r}">${t('roleL')}: ${esc(t(ROLE_KEY[r] ?? r))}</span>`).join('')}
+            <span class="mini bad" data-action="removemember" data-id="${esc(m.id)}">🗑 ${t('remove')}</span>
+          </div>` : ''}
         </div>
       </div>`).join('')}
   </div>`;
@@ -447,10 +565,8 @@ function teamPanel() {
 
 function bugRows() {
   if (S.bugs === null) return `<div class="empty">${t('loading')}</div>`;
-  if (!S.bugs.length) return `<div class="empty">${t('noBugs')}</div>`;
-  return S.bugs.map((b) => {
-    const tr = b.id === S.bug?.id ? null : null; // row shows the Vietnamese title; detail shows translations
-    return `
+  if (!S.bugs.length) return `<div class="empty">${t('noBugs')}</div>` + removedBugs();
+  const rows = S.bugs.map((b) => `
     <div class="row" data-action="openbug" data-id="${esc(b.id)}">
       <span class="sev ${SEV_CLASS[b.severity]}">${esc(SEV[b.severity][S.lang])}</span>
       <div class="body">
@@ -462,8 +578,28 @@ function bugRows() {
           <span class="tag">${rel(b.updated_at)}</span>
         </div>
       </div>
-    </div>`;
-  }).join('');
+    </div>`).join('');
+  return rows + removedBugs();
+}
+
+/** Bugs that were removed, with a way back. Removal must not be a one-way door. */
+function removedBugs() {
+  if (!canDevelop() || !S.removedBugs.length) return '';
+  return `
+  <div class="removed-group">
+    <h4 style="font-size:12px;color:#64748b;margin:0 0 8px">${t('removedL')}</h4>
+    ${S.removedBugs.map((b) => `
+      <div class="row removed" style="cursor:default">
+        <span class="sev ${SEV_CLASS[b.severity]}">${esc(SEV[b.severity][S.lang])}</span>
+        <div class="body">
+          <div class="id">${esc(b.code)} · ${esc(b.reporter)}</div>
+          <div class="ttl">${esc(b.title_vi)}</div>
+          <div class="foot" style="margin-top:8px">
+            <span class="mini go" data-action="restorebug" data-id="${esc(b.id)}">↩ ${t('restore')}</span>
+          </div>
+        </div>
+      </div>`).join('')}
+  </div>`;
 }
 
 function translationBlock(field) {
@@ -519,6 +655,8 @@ function bugDetail() {
       </div>
     </div>
 
+    ${S.editing ? editForm() : ''}
+
     <div class="grid2">
       <div class="card">
         <h3 style="font-size:13px;color:var(--muted)">${t('original')}</h3>
@@ -569,6 +707,52 @@ function bugDetail() {
         <input id="commentnote" placeholder="${t('addNote')}" style="flex:1">
         <button class="btn" data-action="comment" data-id="${esc(b.id)}">${t('addNote')}</button>
       </div>
+
+      ${canEditBug() || myRole() === 'admin' ? `
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line,#e2e8f0);display:flex;gap:8px;flex-wrap:wrap">
+        ${canEditBug()
+          ? `<span class="mini" data-action="editbug">✎ ${t('editBug')}</span>` : ''}
+        ${myRole() === 'admin'
+          ? `<span class="mini bad" data-action="removebug" data-id="${esc(b.id)}">🗑 ${t('remove')}</span>` : ''}
+      </div>` : ''}
+    </div>
+  </div>`;
+}
+
+/** Who may correct a report: whoever filed it, or an admin, and only while it is open. */
+function canEditBug() {
+  const b = S.bug;
+  if (!b || b.status === 'closed') return false;
+  return myRole() === 'admin' || b.reporter?.id === S.me?.userId;
+}
+
+/**
+ * The inline editor for a report.
+ *
+ * The Vietnamese is what gets translated, so the note says what saving will do: the
+ * translation for whichever field changed is regenerated, and the developers stop
+ * reading a translation of the sentence that was just corrected.
+ */
+function editForm() {
+  const b = S.bug;
+  return `
+  <div class="card" style="margin-top:14px">
+    <h3 style="margin:0 0 4px;font-size:14px">✎ ${t('editBug')}</h3>
+    <p class="rel" style="margin:0 0 8px">${t('editHint')}</p>
+    <div class="editform">
+      <label for="f-etitle">${t('titleL')}</label>
+      <textarea id="f-etitle" rows="2">${esc(b.titleVi)}</textarea>
+      <label for="f-ebody">${t('bodyL')}</label>
+      <textarea id="f-ebody" rows="6">${esc(b.bodyVi)}</textarea>
+      <label for="f-eseverity">${t('sevL')}</label>
+      <select id="f-eseverity">
+        ${['high', 'medium', 'low'].map((s) =>
+          `<option value="${s}"${s === b.severity ? ' selected' : ''}>${esc(SEV[s][S.lang])}</option>`).join('')}
+      </select>
+    </div>
+    <div class="foot" style="gap:8px">
+      <button class="btn pri" data-action="savebug" data-id="${esc(b.id)}">${t('save')}</button>
+      <button class="btn" data-action="canceledit">${t('cancel')}</button>
     </div>
   </div>`;
 }
@@ -684,6 +868,125 @@ document.getElementById('app').addEventListener('click', async (event) => {
 
   try {
     switch (action) {
+      // ── editing and removing ──
+      // Each of these does the thing and then reloads, so what is on screen is what
+      // the server now holds rather than what was hoped for.
+      case 'renameproject': {
+        const name = (window.prompt(t('renameProject')) ?? '').trim();
+        if (!name) break;
+        try {
+          await api('PATCH', `/api/projects/${S.projectId}`, { name });
+          notice(t('renamed'));
+          await boot();
+        } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
+        break;
+      }
+      case 'removeproject': {
+        if (!window.confirm(t('confirmRemoveProject'))) break;
+        try {
+          await api('DELETE', `/api/projects/${S.projectId}`);
+          S.projectId = null; S.bug = null;
+          notice(t('removed'));
+          await boot();
+        } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
+        break;
+      }
+      case 'restoreproject': {
+        try {
+          await api('POST', `/api/projects/${el.dataset.id}/restore`, {});
+          notice(t('restored'));
+          await boot();
+        } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
+        break;
+      }
+      case 'renamemilestone': {
+        const current = S.milestones.find((m) => m.id === el.dataset.id);
+        const titleEn = (window.prompt(t('msTitleL'), current?.title_en ?? '') ?? '').trim();
+        if (!titleEn) break;
+        try {
+          await api('PATCH', `/api/milestones/${el.dataset.id}`, { titleEn });
+          notice(t('renamed'));
+          await refresh();
+        } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
+        break;
+      }
+      case 'removemilestone': {
+        if (!window.confirm(t('confirmRemoveMilestone'))) break;
+        try {
+          await api('DELETE', `/api/milestones/${el.dataset.id}`);
+          notice(t('removed'));
+          await refresh();
+        } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
+        break;
+      }
+      case 'restoremilestone': {
+        try {
+          await api('POST', `/api/milestones/${el.dataset.id}/restore`, {});
+          notice(t('restored'));
+          await refresh();
+        } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
+        break;
+      }
+      case 'editbug':
+        S.editing = true;
+        render();
+        break;
+      case 'canceledit':
+        S.editing = false;
+        render();
+        break;
+      case 'savebug': {
+        const titleVi = document.getElementById('f-etitle').value.trim();
+        const bodyVi = document.getElementById('f-ebody').value.trim();
+        const severity = document.getElementById('f-eseverity').value;
+        if (!titleVi || !bodyVi) {
+          notice(t('needBugText'), 'bad');
+          break;
+        }
+        try {
+          await api('PATCH', `/api/bugs/${el.dataset.id}`, { titleVi, bodyVi, severity });
+          S.editing = false;
+          notice(t('saved'));
+          await refresh();
+        } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
+        break;
+      }
+      case 'removebug': {
+        if (!window.confirm(t('confirmRemoveBug'))) break;
+        try {
+          await api('DELETE', `/api/bugs/${el.dataset.id}`);
+          S.bug = null; S.editing = false;
+          notice(t('removed'));
+          await refresh();
+        } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
+        break;
+      }
+      case 'restorebug': {
+        try {
+          await api('POST', `/api/bugs/${el.dataset.id}/restore`, {});
+          notice(t('restored'));
+          await refresh();
+        } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
+        break;
+      }
+      case 'setrole': {
+        try {
+          await api('PATCH', `/api/projects/${S.projectId}/members/${el.dataset.id}`,
+            { role: el.dataset.role });
+          notice(t('saved'));
+          await refresh();
+        } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
+        break;
+      }
+      case 'removemember': {
+        if (!window.confirm(t('confirmRemoveMember'))) break;
+        try {
+          await api('DELETE', `/api/projects/${S.projectId}/members/${el.dataset.id}`);
+          notice(t('removed'));
+          await refresh();
+        } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
+        break;
+      }
       case 'project':
         S.projectId = el.dataset.id; S.bug = null; S.prompt = null;
         await refresh();
@@ -743,7 +1046,9 @@ document.getElementById('app').addEventListener('click', async (event) => {
           break;
         }
         try {
-          await api('POST', `/api/projects/${S.projectId}/invites`, { name, email, role });
+          // Applied immediately: no invite token to deliver and no mailer to deliver
+          // it with. The person can sign in with this address straight away.
+          await api('POST', `/api/projects/${S.projectId}/members`, { name, email, role });
           notice(t('invited'));
           await refresh();
         } catch (err) { console.error(err); notice(String(err.message), 'bad'); }

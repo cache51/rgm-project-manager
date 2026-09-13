@@ -1,11 +1,9 @@
 /**
  * The sign-in page, executed.
  *
- * This is the first screen anyone meets, and it had no test at all: the payload
- * tests never load it, so a broken sign-in or an open redirect would have shipped.
- *
- * Loads the real `public/login.js` in a stub DOM and drives both halves of the flow
- * plus both failure paths.
+ * There is no password and no emailed link: the page posts an address and, if an admin
+ * has added it, gets a session back. This loads the real `public/login.js` in a stub DOM
+ * and drives the flow plus the two failure paths.
  */
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,7 +19,6 @@ async function settle(times = 40) {
   for (let i = 0; i < times; i++) await new Promise((r) => setTimeout(r, 0));
 }
 
-/** Load login.js as the page would, with `search` as the query string. */
 function loadPage({ search = '', routes = {} } = {}) {
   const calls = [];
   const redirects = [];
@@ -56,16 +53,10 @@ function loadPage({ search = '', routes = {} } = {}) {
   const ctx = {
     console,
     setTimeout, clearTimeout,
-    // A fresh vm context has the language built-ins but not the WHATWG ones the page
-    // uses; a browser would have both.
-    URLSearchParams,
-    URL,
+    URLSearchParams, URL,
     document,
-    location: {
-      search,
-      replace: (u) => redirects.push(u),
-      href: `http://127.0.0.1:3000/login${search}`
-    },
+    location: { search, replace: (u) => redirects.push(u),
+                href: `http://127.0.0.1:3000/login${search}` },
     fetch: async (path, opts = {}) => {
       const method = (opts.method ?? 'GET').toUpperCase();
       calls.push({ method, path, body: opts.body ? JSON.parse(opts.body) : null });
@@ -98,139 +89,91 @@ function loadPage({ search = '', routes = {} } = {}) {
   };
 }
 
-describe('login page: requesting a link', () => {
-  test('submitting an address asks for a link without revealing whether it exists', async () => {
-    const page = loadPage({ routes: { 'POST /api/auth/request-link': () => ({ body: { ok: true } }) } });
+describe('login page: an address in, a session out', () => {
+  test('a known address is signed in and sent to the app', async () => {
+    const page = loadPage({ routes: { 'POST /api/auth/direct': () => ({ body: { ok: true } }) } });
     await settle();
-    await page.submit('someone@rgm.example');
+    await page.submit('linh@rgm.example');
 
-    const post = page.calls.find((c) => c.path === '/api/auth/request-link');
-    assert.ok(post, 'the request is posted');
-    assert.deepEqual(post.body, { email: 'someone@rgm.example' });
-
-    const { heading, note } = page.text();
-    assert.match(heading, /inbox/i);
-    assert.match(note, /If .* has access/, 'phrased so it cannot be used to probe for accounts');
-    assert.doesNotMatch(note, /sent to|delivered/i);
+    const post = page.calls.find((c) => c.path === '/api/auth/direct');
+    assert.ok(post, 'the address is posted');
+    assert.deepEqual(post.body, { email: 'linh@rgm.example' });
+    assert.deepEqual(page.redirects, ['/'], 'and the browser goes to the app');
   });
 
-  test('the local-development hint says where the link actually goes', async () => {
-    const page = loadPage({ routes: { 'POST /api/auth/request-link': () => ({ body: { ok: true } }) } });
+  test('the address is trimmed, so a trailing space is not a different person', async () => {
+    const page = loadPage({ routes: { 'POST /api/auth/direct': () => ({ body: { ok: true } }) } });
     await settle();
+    await page.submit('  linh@rgm.example  ');
+
+    assert.deepEqual(page.calls.find((c) => c.path === '/api/auth/direct').body,
+      { email: 'linh@rgm.example' });
+  });
+
+  test('an unknown address is told what to do, and nobody is let in', async () => {
+    const page = loadPage({
+      routes: {
+        'POST /api/auth/direct': () => ({
+          body: { message: 'that address is not on any project yet — ask an admin to add you' },
+          status: 404
+        })
+      }
+    });
+    await settle();
+    await page.submit('stranger@example.com');
+
+    const { heading, note, hint } = page.text();
+    assert.match(heading, /did not work/i);
+    assert.match(note, /ask an admin to add you/, 'the server reason, not just "failed"');
+    assert.match(hint, /ask an admin/i);
+    assert.deepEqual(page.redirects, [], 'and nobody is let in');
+  });
+
+  test('a request that fails outright is reported, and the button is usable again', async () => {
+    const page = loadPage({
+      routes: { 'POST /api/auth/direct': () => { throw new Error('boom'); } }
+    });
+    await settle();
+
+    // The old page let this escape as an unhandled rejection, leaving a dead button
+    // and no explanation. It is caught, shown, and the form stays usable.
     await page.submit('a@b.test');
 
-    assert.match(page.text().hint, /server console|\[mail\]/,
-      'in development the mailer prints to the log, and the page must say so');
+    assert.match(page.text().heading, /did not work/i);
+    assert.match(page.text().note, /boom/, 'the failure is visible, not swallowed');
+    assert.equal(page.el('submit').disabled, false);
+    assert.deepEqual(page.redirects, [], 'and nobody is let in');
   });
 
-  test('the submit button is re-enabled after a failed request', async () => {
-    const page = loadPage({
-      routes: { 'POST /api/auth/request-link': () => { throw new Error('boom'); } }
-    });
+  test('a blank address is not sent anywhere', async () => {
+    const page = loadPage({ routes: { 'POST /api/auth/direct': () => ({ body: { ok: true } }) } });
     await settle();
+    await page.submit('   ');
 
-    await assert.rejects(() => page.submit('a@b.test'));
-    assert.equal(page.el('submit').disabled, false,
-      'a thrown request must not leave the form permanently disabled');
-  });
-});
-
-describe('login page: consuming a sign-in link', () => {
-  test('a valid token signs in and lands on the app', async () => {
-    const page = loadPage({
-      search: '?token=tok-123',
-      routes: { 'POST /api/auth/consume': () => ({ body: { ok: true } }) }
-    });
-    await settle();
-
-    const post = page.calls.find((c) => c.path === '/api/auth/consume');
-    assert.ok(post, 'the token is exchanged');
-    assert.deepEqual(post.body, { token: 'tok-123' });
-    assert.deepEqual(page.redirects, ['/'], 'and the browser goes to the app');
-    assert.equal(page.el('field').style.display, 'none', 'the form is out of the way');
+    assert.equal(page.calls.length, 0, 'nothing to look up');
+    assert.deepEqual(page.redirects, []);
   });
 
-  test('a local next path is honoured', async () => {
-    const page = loadPage({
-      search: '?token=tok-123&next=/bugs',
-      routes: { 'POST /api/auth/consume': () => ({ body: { ok: true } }) }
-    });
-    await settle();
-
-    assert.deepEqual(page.redirects, ['/bugs']);
-  });
-
-  test('an off-site next is refused, so a link cannot be used as an open redirect', async () => {
-    // The security-relevant branch: `next` must be a local path.
-    for (const hostile of ['https://evil.test/', '//evil.test', 'javascript:alert(1)']) {
+  test('sign-in never navigates anywhere but the app', async () => {
+    // No redirect parameter is read at all, so there is no target to aim elsewhere —
+    // which is why the previous open-redirect guard has no job here any more.
+    for (const search of ['?next=https://evil.test/', '?next=//evil.test', '?token=stale']) {
       const page = loadPage({
-        search: `?token=tok-123&next=${encodeURIComponent(hostile)}`,
-        routes: { 'POST /api/auth/consume': () => ({ body: { ok: true } }) }
+        search,
+        routes: { 'POST /api/auth/direct': () => ({ body: { ok: true } }) }
       });
       await settle();
+      await page.submit('linh@rgm.example');
 
       assert.deepEqual(page.redirects, ['/'],
-        `next=${hostile} must not be followed`);
+        `${search} must not change where sign-in lands`);
     }
   });
 
-  test('a rejected token explains itself and offers a new link', async () => {
-    const page = loadPage({
-      search: '?token=stale',
-      routes: { 'POST /api/auth/consume': () => ({ body: { message: 'link expired' }, status: 400 }) }
-    });
-    await settle();
-
-    const { heading, note, hint } = page.text();
-    assert.match(heading, /did not work/i);
-    assert.match(note, /link expired/, 'the server reason is shown, not just "failed"');
-    assert.match(hint, /single-use|expire/i);
-    assert.equal(page.el('submit').textContent, 'Send a new link');
-    assert.deepEqual(page.redirects, [], 'and nobody is sent anywhere');
-  });
-});
-
-describe('login page: an invitation', () => {
-  test('redeeming an invitation grants membership and then asks for the email', async () => {
-    const page = loadPage({
-      search: '?invite=inv-9',
-      routes: { 'POST /api/invites/redeem': () => ({ body: { ok: true } }) }
-    });
-    await settle();
-
-    const post = page.calls.find((c) => c.path === '/api/invites/redeem');
-    assert.ok(post, 'the invitation is redeemed');
-    assert.deepEqual(post.body, { token: 'inv-9' });
-
-    const { heading, note } = page.text();
-    assert.match(heading, /joined/i);
-    assert.match(note, /email/i, 'joining is not signing in — it asks for the address next');
-    assert.equal(page.el('field').style.display, '', 'the email field comes back');
-  });
-
-  test('a rejected invitation explains the rules', async () => {
-    const page = loadPage({
-      search: '?invite=used',
-      routes: { 'POST /api/invites/redeem': () => ({ body: { message: 'invitation already used' }, status: 400 }) }
-    });
-    await settle();
-
-    const { heading, note, hint } = page.text();
-    assert.match(heading, /did not work/i);
-    assert.match(note, /already used/);
-    assert.match(hint, /single-use|expire|cancelled/i,
-      'the page explains why an invitation can stop working');
-  });
-
-  test('an invitation does not sign anyone in by itself', async () => {
-    const page = loadPage({
-      search: '?invite=inv-9',
-      routes: { 'POST /api/invites/redeem': () => ({ body: { ok: true } }) }
-    });
-    await settle();
-
-    assert.equal(page.calls.filter((c) => c.path === '/api/auth/consume').length, 0,
-      'redemption is not a sign-in');
-    assert.deepEqual(page.redirects, [], 'so it must not navigate to the app');
+  test('the page does not mention links, passwords or tokens', async () => {
+    // The copy is part of the change: no promise of an emailed link.
+    const html = readFileSync(join(here, '..', 'public', 'login.html'), 'utf8');
+    assert.match(html, /an admin added you with/);
+    assert.doesNotMatch(html, /send a one-time|\bpassword\b|\btoken\b/i);
   });
 });

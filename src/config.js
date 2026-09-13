@@ -177,6 +177,11 @@ export function loadConfig(env = process.env) {
     deliver: makeDeliver(mailer, publicUrl),
     translationProvider: chooseTranslationProvider(env),
     glossary: DEFAULT_GLOSSARY,
+    // Who drains the queue. The embedded database takes a single process, so a
+    // separate worker cannot share it: without this the queue never drains locally
+    // and tester notes are never translated. A real Postgres keeps its own worker
+    // process; RGM_INLINE_WORKER overrides either way.
+    inlineWorker: bool(env.RGM_INLINE_WORKER, !env.DATABASE_URL),
     // Surfaced so a startup log can state what was chosen, rather than leaving
     // "which mailer is this using?" to be discovered in production.
     describe() {
@@ -186,7 +191,8 @@ export function loadConfig(env = process.env) {
         mailer: mailer.name,
         translation: this.translationProvider.name,
         publicUrl,
-        secureCookies: this.secureCookies
+        secureCookies: this.secureCookies,
+        queue: this.inlineWorker ? 'in the server process' : 'a separate worker (npm run worker)'
       };
     }
   };

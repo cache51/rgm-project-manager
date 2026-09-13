@@ -5,10 +5,12 @@
 import { createRouter, readJson, readBytes, sendJson, sendBytes, redirect,
          resolveActor, handle, parseCookies, serializeCookie } from './http.js';
 import {
-  HttpError, authorize, authorizeBug, authorizeMilestone, activeMembership,
+  HttpError, authorize, authorizeBug, authorizeMilestone, authorizeRemovedProject,
+  requireLiveProject, activeMembership, ROLES,
   requestLoginLink, consumeLoginToken, resolveSession, revokeSession,
   mintApiToken, resolveApiToken, revokeApiToken,
-  createInvite, redeemInvite, removeMember, setMemberRole, bootstrap, createProject,
+  createInvite, redeemInvite, removeMember, setMemberRole, addMember, directSignIn,
+  bootstrap, createProject,
   normalizeEmail
 } from './auth.js';
 import { withTransaction } from './db.js';
@@ -58,6 +60,11 @@ export const SCOPE_POLICY = {
 
   // Reading the product.
   'GET /api/projects': 'bug:read',
+  // Reading what was removed is a read; bringing it back is an admin act, enforced on
+  // the restore routes themselves.
+  'GET /api/projects/removed': 'bug:read',
+  'GET /api/projects/:id/milestones/removed': 'bug:read',
+  'GET /api/projects/:id/bugs/removed': 'bug:read',
   'GET /api/projects/:id/milestones': 'bug:read',
   'GET /api/projects/:id/bugs': 'bug:read',
   'GET /api/projects/:id/bugs/by-number/:n': 'bug:read',
@@ -76,12 +83,26 @@ export const SCOPE_POLICY = {
   'POST /api/bugs/:id/attachments/complete': 'bug:write',
   'POST /api/projects/:id/milestones': 'bug:write',
   'POST /api/milestones/:id/status': 'bug:write',
+  // A milestone is a developer's to define, so editing and removing one rides on the
+  // same scope that creating one needs.
+  'PATCH /api/milestones/:id': 'bug:write',
+  'DELETE /api/milestones/:id': 'bug:write',
+  'POST /api/milestones/:id/restore': 'bug:write',
+  // Correcting what you reported is part of reporting it.
+  'PATCH /api/bugs/:id': 'bug:write',
 
   // Administration: membership, invitations, tokens, and the route inventory.
   'POST /api/projects': 'admin',
+  'PATCH /api/projects/:id': 'admin',
+  'DELETE /api/projects/:id': 'admin',
+  'POST /api/projects/:id/restore': 'admin',
   'GET /api/projects/:id/members': 'admin',
   'POST /api/projects/:id/invites': 'admin',
+  'POST /api/projects/:id/members': 'admin',
   'DELETE /api/projects/:id/members/:userId': 'admin',
+  // Removing a bug removes evidence, so it is an admin act, not a reporter's.
+  'DELETE /api/bugs/:id': 'admin',
+  'POST /api/bugs/:id/restore': 'admin',
   'PATCH /api/projects/:id/members/:userId': 'admin',
   'GET /api/tokens': 'admin',
   'POST /api/tokens': 'admin',
@@ -93,6 +114,8 @@ export const PUBLIC_ROUTES = new Set([
   'GET /api/health',
   'POST /api/auth/request-link',
   'POST /api/auth/consume',
+  // No link, no password: this IS the sign-in, so it cannot require a token scope.
+  'POST /api/auth/direct',
   // Logout only revokes the caller's own session, so there is nothing to escalate.
   'POST /api/auth/logout',
   // Capability-addressed: the token in the URL is the credential.
@@ -280,6 +303,46 @@ export function buildRoutes() {
     });
   }));
 
+  /**
+   * Sign in with an email address — no link, no password.
+   *
+   * The deployment has no mailer, so the link flow needed someone to read a URL out of
+   * the server console for every sign-in. This opens a session for an address an admin
+   * has already added; the role comes from the membership. See `directSignIn` for what
+   * this deliberately does not prove.
+   */
+  r.post('/api/auth/direct', handle(async (req, res, ctx) => {
+    const { email } = await readJson(req);
+    if (!email) throw new HttpError(400, 'email_required', 'an email address is required');
+
+    // Rate limited like the other unauthenticated endpoint, so the address list cannot
+    // be probed at speed.
+    const ip = req.socket?.remoteAddress ?? 'unknown';
+    const limits = ctx.limits ?? LIMITS;
+    const gate = await hit(ctx.db, `direct:ip:${ip}`, limits.consumePerIp);
+    if (!gate.allowed) {
+      throw new HttpError(429, 'rate_limited',
+        `too many sign-in attempts; retry in ${gate.retryAfter}s`,
+        { retryAfter: gate.retryAfter });
+    }
+
+    const session = await directSignIn(ctx.db, email);
+    if (!session) {
+      throw new HttpError(404, 'no_such_user',
+        'that address is not on any project yet — ask an admin to add you');
+    }
+
+    const maxAge = 30 * 24 * 3600;
+    sendJson(res, 200, { ok: true }, {
+      'set-cookie': [
+        serializeCookie('session', session.sessionToken,
+          { maxAge, secure: ctx.secureCookies }),
+        serializeCookie('csrf', session.csrfToken,
+          { maxAge, httpOnly: false, secure: ctx.secureCookies })
+      ]
+    });
+  }));
+
   r.post('/api/auth/logout', handle(async (req, res, ctx) => {
     const cookies = parseCookies(req.headers.cookie);
     if (cookies.session) await revokeSession(ctx.db, cookies.session);
@@ -296,7 +359,7 @@ export function buildRoutes() {
     const projects = await ctx.db.query(
       `SELECT p.id, p.name, p.client, p.env, m.role
          FROM active_memberships m JOIN projects p ON p.id = m.project_id
-        WHERE m.user_id = $1 ORDER BY p.name`, [ctx.actor.userId]);
+        WHERE m.user_id = $1 AND p.deleted_at IS NULL ORDER BY p.name`, [ctx.actor.userId]);
     sendJson(res, 200, {
       userId: ctx.actor.userId, email: ctx.actor.email,
       isSiteAdmin: !!ctx.actor.isSiteAdmin, via: ctx.actor.via,
@@ -354,7 +417,7 @@ export function buildRoutes() {
     const rows = await ctx.db.query(
       `SELECT p.id, p.name, p.client, p.env, p.timezone, m.role
          FROM active_memberships m JOIN projects p ON p.id = m.project_id
-        WHERE m.user_id = $1 ORDER BY p.name`, [ctx.actor.userId]);
+        WHERE m.user_id = $1 AND p.deleted_at IS NULL ORDER BY p.name`, [ctx.actor.userId]);
     sendJson(res, 200, { projects: rows.rows });
   }));
 
@@ -365,6 +428,180 @@ export function buildRoutes() {
          FROM active_memberships m JOIN users u ON u.id = m.user_id
         WHERE m.project_id = $1 ORDER BY m.role, u.email`, [ctx.params.id]);
     sendJson(res, 200, { members: rows.rows });
+  }));
+
+  /**
+   * Add someone to the project: email, name, role — applied immediately.
+   *
+   * The no-secret counterpart of an invitation. An admin states the mapping and it
+   * exists; nothing has to be delivered, so nothing has to be read out of a console.
+   */
+  r.post('/api/projects/:id/members', handle(async (req, res, ctx) => {
+    await authorize(ctx.db, ctx.actor, ctx.params.id, ['admin']);
+    const { email, name, role } = await readJson(req);
+    if (!email || !role) throw new HttpError(400, 'missing_fields', 'email and role required');
+
+    const member = await addMember(ctx.db, {
+      projectId: ctx.params.id, email, name, role, actor: ctx.actor
+    });
+    sendJson(res, 201, member);
+  }));
+
+  // ───────────────── editing and removing ─────────────────
+  //
+  // Until now a project, a milestone or a bug could be created and moved through its
+  // lifecycle, but never corrected and never taken back. Removal is a soft delete —
+  // the same `deleted_at` bugs have had since 001_init — because a bug is evidence and
+  // a project holds that history. Nothing here destroys a row.
+
+  /** Edit a project: its name, environment or timezone. */
+  r.patch('/api/projects/:id', handle(async (req, res, ctx) => {
+    await authorize(ctx.db, ctx.actor, ctx.params.id, ['admin']);
+    const { name, env, timezone } = await readJson(req);
+    const trimmed = name === undefined ? null : String(name).trim();
+    if (name !== undefined && !trimmed) {
+      throw new HttpError(400, 'bad_name', 'a project name cannot be empty');
+    }
+
+    const updated = await withTransaction(ctx.db, async (tx) => {
+      const r = await tx.query(
+        `UPDATE projects
+            SET name = COALESCE($2, name), env = COALESCE($3, env),
+                timezone = COALESCE($4, timezone)
+          WHERE id = $1 AND deleted_at IS NULL
+          RETURNING id, name, client, env, timezone`,
+        [ctx.params.id, trimmed, env ?? null, timezone ?? null]);
+      await tx.query(
+        `INSERT INTO events (project_id, actor_id, kind, payload)
+         VALUES ($1,$2,'project.updated',$3)`,
+        [ctx.params.id, ctx.actor.userId,
+         JSON.stringify({ name: trimmed, env: env ?? null, timezone: timezone ?? null })]);
+      return r.rows[0];
+    });
+    sendJson(res, 200, updated);
+  }));
+
+  /** Remove a project. The data stays; it stops being listed and stops accepting writes. */
+  r.del('/api/projects/:id', handle(async (req, res, ctx) => {
+    await authorize(ctx.db, ctx.actor, ctx.params.id, ['admin']);
+    const removed = await withTransaction(ctx.db, async (tx) => {
+      const r = await tx.query(
+        `UPDATE projects SET deleted_at = now()
+          WHERE id = $1 AND deleted_at IS NULL
+          RETURNING id, name`, [ctx.params.id]);
+      await tx.query(
+        `INSERT INTO events (project_id, actor_id, kind, payload)
+         VALUES ($1,$2,'project.removed',$3)`,
+        [ctx.params.id, ctx.actor.userId, JSON.stringify({ name: r.rows[0]?.name ?? null })]);
+      return r.rows[0];
+    });
+    sendJson(res, 200, { ok: true, ...removed });
+  }));
+
+  /** Bring a removed project back. */
+  r.post('/api/projects/:id/restore', handle(async (req, res, ctx) => {
+    await authorizeRemovedProject(ctx.db, ctx.actor, ctx.params.id, ['admin']);
+    const restored = await withTransaction(ctx.db, async (tx) => {
+      const r = await tx.query(
+        `UPDATE projects SET deleted_at = NULL WHERE id = $1 RETURNING id, name`,
+        [ctx.params.id]);
+      if (!r.rows.length) throw new HttpError(404, 'not_found', 'project not found');
+      await tx.query(
+        `INSERT INTO events (project_id, actor_id, kind, payload)
+         VALUES ($1,$2,'project.restored',$3)`,
+        [ctx.params.id, ctx.actor.userId, JSON.stringify({ name: r.rows[0].name })]);
+      return r.rows[0];
+    });
+    sendJson(res, 200, { ok: true, ...restored });
+  }));
+
+  /**
+   * Edit a milestone: its titles or its due date.
+   *
+   * Only the fields actually sent are touched, so clearing a Vietnamese title is
+   * possible without accidentally clearing the one in English.
+   */
+  r.patch('/api/milestones/:id', handle(async (req, res, ctx) => {
+    const { projectId } = await authorizeMilestone(ctx.db, ctx.actor, ctx.params.id,
+      ['admin', 'developer']);
+    const { titleEn, titleVi, titleZh, dueAt } = await readJson(req);
+    if (titleEn !== undefined && !String(titleEn).trim()) {
+      throw new HttpError(400, 'bad_title', 'a milestone name cannot be empty');
+    }
+
+    const values = [ctx.params.id];
+    const sets = [];
+    const set = (col, value) => {
+      if (value === undefined) return;
+      values.push(value);
+      sets.push(`${col} = $${values.length}`);
+    };
+    set('title_en', titleEn === undefined ? undefined : String(titleEn).trim());
+    set('title_vi', titleVi);
+    set('title_zh', titleZh);
+    set('due_at', dueAt);
+
+    if (!sets.length) throw new HttpError(400, 'nothing_to_change', 'no fields were given');
+
+    const updated = await withTransaction(ctx.db, async (tx) => {
+      const r = await tx.query(
+        `UPDATE milestones SET ${sets.join(', ')}
+          WHERE id = $1 AND deleted_at IS NULL
+          RETURNING id, code, title_en, title_vi, title_zh, status, due_at, completed_at`,
+        values);
+      await tx.query(
+        `INSERT INTO events (project_id, milestone_id, actor_id, kind, payload)
+         VALUES ($1,$2,$3,'milestone.updated',$4)`,
+        [projectId, ctx.params.id, ctx.actor.userId,
+         JSON.stringify({ fields: sets.map(s => s.split(' =')[0]) })]);
+      return r.rows[0];
+    });
+    sendJson(res, 200, updated);
+  }));
+
+  /** Remove a milestone. Its bugs stay, and stay attached to it. */
+  r.del('/api/milestones/:id', handle(async (req, res, ctx) => {
+    const { projectId } = await authorizeMilestone(ctx.db, ctx.actor, ctx.params.id,
+      ['admin', 'developer']);
+    const removed = await withTransaction(ctx.db, async (tx) => {
+      const r = await tx.query(
+        `UPDATE milestones SET deleted_at = now()
+          WHERE id = $1 AND deleted_at IS NULL
+          RETURNING id, code, title_en`, [ctx.params.id]);
+      await tx.query(
+        `INSERT INTO events (project_id, milestone_id, actor_id, kind, payload)
+         VALUES ($1,$2,$3,'milestone.removed',$4)`,
+        [projectId, ctx.params.id, ctx.actor.userId,
+         JSON.stringify({ code: r.rows[0]?.code ?? null })]);
+      return r.rows[0];
+    });
+    sendJson(res, 200, { ok: true, ...removed });
+  }));
+
+  /** Bring a removed milestone back. */
+  r.post('/api/milestones/:id/restore', handle(async (req, res, ctx) => {
+    const row = await ctx.db.query('SELECT project_id FROM milestones WHERE id = $1',
+      [ctx.params.id]);
+    if (!row.rows.length) throw new HttpError(404, 'not_found', 'milestone not found');
+    const projectId = row.rows[0].project_id;
+    // authorizeMilestone would refuse a removed milestone, and restoring is exactly the
+    // act of handling one — so authorize against the project, which must itself be live:
+    // a milestone cannot come back into a project that is still removed.
+    await requireLiveProject(ctx.db, projectId);
+    await authorize(ctx.db, ctx.actor, projectId, ['admin', 'developer']);
+
+    const restored = await withTransaction(ctx.db, async (tx) => {
+      const r = await tx.query(
+        `UPDATE milestones SET deleted_at = NULL WHERE id = $1
+          RETURNING id, code, title_en, status`, [ctx.params.id]);
+      await tx.query(
+        `INSERT INTO events (project_id, milestone_id, actor_id, kind, payload)
+         VALUES ($1,$2,$3,'milestone.restored',$4)`,
+        [projectId, ctx.params.id, ctx.actor.userId,
+         JSON.stringify({ code: r.rows[0].code })]);
+      return r.rows[0];
+    });
+    sendJson(res, 200, { ok: true, ...restored });
   }));
 
   r.post('/api/projects/:id/invites', handle(async (req, res, ctx) => {
@@ -424,12 +661,32 @@ export function buildRoutes() {
     sendJson(res, 201, ins.rows[0]);
   }));
 
+  /**
+   * The projects this actor can bring back.
+   *
+   * Removal hides a project from every list — which would make it unrecoverable from
+   * the app, leaving hand-written SQL as the only way back. This is what the sidebar's
+   * "removed" section reads.
+   */
+  r.get('/api/projects/removed', handle(async (req, res, ctx) => {
+    if (!ctx.actor) throw new HttpError(401, 'unauthenticated', 'sign in required');
+    // Only admins can restore, so only admins are shown what can be restored.
+    const rows = await ctx.db.query(
+      `SELECT p.id, p.name, p.env, p.deleted_at
+         FROM active_memberships m JOIN projects p ON p.id = m.project_id
+        WHERE p.deleted_at IS NOT NULL
+          AND (m.user_id = $1 AND (m.role = 'admin' OR $2::bool))
+        ORDER BY p.deleted_at DESC`, [ctx.actor.userId, !!ctx.actor.isSiteAdmin]);
+    sendJson(res, 200, { projects: rows.rows });
+  }));
+
   r.get('/api/projects/:id/milestones', handle(async (req, res, ctx) => {
     await authorize(ctx.db, ctx.actor, ctx.params.id);
     const rows = await ctx.db.query(
       `SELECT id, code, title_en, title_vi, title_zh, status, due_at, completed_at,
               ready_count, updated_at
-         FROM milestones WHERE project_id = $1 ORDER BY code`, [ctx.params.id]);
+         FROM milestones WHERE project_id = $1 AND deleted_at IS NULL ORDER BY code`,
+      [ctx.params.id]);
     sendJson(res, 200, { milestones: rows.rows });
   }));
 
@@ -487,7 +744,7 @@ export function buildRoutes() {
     // The composite FK would reject this anyway; checking first turns an opaque
     // 500 into a clear 400 and avoids a pointless transaction.
     const ms = await ctx.db.query(
-      'SELECT id FROM milestones WHERE id = $1 AND project_id = $2',
+      'SELECT id FROM milestones WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL',
       [milestoneId, ctx.params.id]);
     if (!ms.rows.length) {
       throw new HttpError(400, 'bad_milestone', 'milestone does not belong to this project');
@@ -546,6 +803,30 @@ export function buildRoutes() {
     sendJson(res, 200, {
       bugs: rows.rows.map(b => ({ ...b, code: `BUG-${b.bug_number}`, isOpen: isOpenBug(b.status) })),
       openCount: rows.rows.filter(b => isOpenBug(b.status)).length
+    });
+  }));
+
+  /** Removed milestones, so removal is not a one-way door in the UI. */
+  r.get('/api/projects/:id/milestones/removed', handle(async (req, res, ctx) => {
+    await authorize(ctx.db, ctx.actor, ctx.params.id, ['admin', 'developer']);
+    const rows = await ctx.db.query(
+      `SELECT id, code, title_en, title_vi, title_zh, status, deleted_at
+         FROM milestones WHERE project_id = $1 AND deleted_at IS NOT NULL
+        ORDER BY deleted_at DESC`, [ctx.params.id]);
+    sendJson(res, 200, { milestones: rows.rows });
+  }));
+
+  /** Removed bugs, for the same reason. */
+  r.get('/api/projects/:id/bugs/removed', handle(async (req, res, ctx) => {
+    await authorize(ctx.db, ctx.actor, ctx.params.id, ['admin', 'developer']);
+    const rows = await ctx.db.query(
+      `SELECT b.id, b.bug_number, b.title_vi, b.severity, b.status, b.deleted_at,
+              u.display_name AS reporter
+         FROM bugs b JOIN users u ON u.id = b.reporter_id
+        WHERE b.project_id = $1 AND b.deleted_at IS NOT NULL
+        ORDER BY b.deleted_at DESC`, [ctx.params.id]);
+    sendJson(res, 200, {
+      bugs: rows.rows.map((b) => ({ ...b, code: `BUG-${b.bug_number}` }))
     });
   }));
 
@@ -672,6 +953,113 @@ export function buildRoutes() {
     });
 
     sendJson(res, 200, out);
+  }));
+
+  /**
+   * Correct a bug you filed: its Vietnamese title, body or severity.
+   *
+   * The reporter or an admin, and only while it is open — a closed bug describes a fix
+   * that shipped, so changing what it says afterwards would misrepresent that.
+   *
+   * The important part is what happens to the translations: they are derived from the
+   * Vietnamese, so editing the Vietnamese makes them wrong. Any field whose text
+   * actually changed is put back to `pending`, which is what makes the worker redo it.
+   * Without this the developers would keep reading a translation of a sentence the
+   * tester had already corrected.
+   */
+  r.patch('/api/bugs/:id', handle(async (req, res, ctx) => {
+    const { projectId, role } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id, ROLES);
+    const { titleVi, bodyVi, severity } = await readJson(req);
+    if (severity !== undefined && !['high', 'medium', 'low'].includes(severity)) {
+      throw new HttpError(400, 'bad_severity', 'severity must be high, medium or low');
+    }
+
+    const current = await ctx.db.query(
+      `SELECT reporter_id, status, title_vi, body_vi, severity FROM bugs WHERE id = $1`,
+      [ctx.params.id]);
+    const before = current.rows[0];
+    if (role !== 'admin' && before.reporter_id !== ctx.actor.userId) {
+      throw new HttpError(403, 'forbidden',
+        'only the person who reported it, or an admin, may edit it');
+    }
+    if (before.status === 'closed') {
+      throw new HttpError(409, 'bug_closed', 'a closed bug cannot be edited — reopen it first');
+    }
+
+    const updates = [['title_vi', titleVi], ['body_vi', bodyVi], ['severity', severity]]
+      .filter(([, value]) => value !== undefined);
+    if (!updates.length) throw new HttpError(400, 'nothing_to_change', 'no fields were given');
+
+    // The Vietnamese fields whose text actually changed, so only those get retranslated.
+    const staleFields = [['title', titleVi], ['body', bodyVi]]
+      .filter(([field, value]) => value !== undefined && value !== before[`${field}_vi`])
+      .map(([field]) => field);
+
+    const updated = await withTransaction(ctx.db, async (tx) => {
+      const values = [ctx.params.id, ...updates.map(([, value]) => value)];
+      const sets = updates.map(([col], i) => `${col} = $${i + 2}`);
+      const r = await tx.query(
+        `UPDATE bugs SET ${sets.join(', ')}
+          WHERE id = $1 AND deleted_at IS NULL
+          RETURNING id, bug_number, severity, title_vi, body_vi, status`,
+        values);
+
+      for (const field of staleFields) {
+        await tx.query(
+          `UPDATE bug_translations
+              SET status = 'pending', text = NULL, error = NULL, attempts = 0,
+                  lease_until = NULL, claimed_by = NULL
+            WHERE bug_id = $1 AND field = $2`, [ctx.params.id, field]);
+      }
+
+      await tx.query(
+        `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
+         VALUES ($1,$2,$3,'bug.edited',$4)`,
+        [projectId, ctx.params.id, ctx.actor.userId,
+         JSON.stringify({ changed: updates.map(([col]) => col), retranslating: staleFields })]);
+      return r.rows[0];
+    });
+    sendJson(res, 200, { ...updated, code: `BUG-${updated.bug_number}` });
+  }));
+
+  /** Remove a bug. The evidence stays; the bug stops being listed. */
+  r.del('/api/bugs/:id', handle(async (req, res, ctx) => {
+    const { projectId } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id, ['admin']);
+    const removed = await withTransaction(ctx.db, async (tx) => {
+      const r = await tx.query(
+        `UPDATE bugs SET deleted_at = now()
+          WHERE id = $1 AND deleted_at IS NULL
+          RETURNING id, bug_number, reporter_id`, [ctx.params.id]);
+      await tx.query(
+        `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
+         VALUES ($1,$2,$3,'bug.removed',$4)`,
+        [projectId, ctx.params.id, ctx.actor.userId,
+         JSON.stringify({ code: `BUG-${r.rows[0]?.bug_number}`, reportedBy: r.rows[0]?.reporter_id })]);
+      return r.rows[0];
+    });
+    sendJson(res, 200, { ok: true, id: removed.id, code: `BUG-${removed.bug_number}` });
+  }));
+
+  /** Bring a removed bug back. */
+  r.post('/api/bugs/:id/restore', handle(async (req, res, ctx) => {
+    const row = await ctx.db.query('SELECT project_id FROM bugs WHERE id = $1', [ctx.params.id]);
+    if (!row.rows.length) throw new HttpError(404, 'not_found', 'bug not found');
+    const projectId = row.rows[0].project_id;
+    await requireLiveProject(ctx.db, projectId);
+    await authorize(ctx.db, ctx.actor, projectId, ['admin']);
+
+    const restored = await withTransaction(ctx.db, async (tx) => {
+      const r = await tx.query(
+        `UPDATE bugs SET deleted_at = NULL WHERE id = $1 RETURNING id, bug_number, status`,
+        [ctx.params.id]);
+      await tx.query(
+        `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
+         VALUES ($1,$2,$3,'bug.restored',$4)`,
+        [projectId, ctx.params.id, ctx.actor.userId,
+         JSON.stringify({ code: `BUG-${r.rows[0].bug_number}` })]);
+      return r.rows[0];
+    });
+    sendJson(res, 200, { ok: true, ...restored, code: `BUG-${restored.bug_number}` });
   }));
 
   r.post('/api/bugs/:id/comments', handle(async (req, res, ctx) => {

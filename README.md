@@ -18,16 +18,87 @@ origin, and no bundler to keep in sync. Plain ES modules calling the real API.
 npm start          # then open http://127.0.0.1:3000
 ```
 
-Sign-in is the real magic-link flow: `/login` requests a link, and the dev mailer
-prints it to the server console as `[mail] … token=…`. Open `/login?token=…` (or use
-the printed URL) to get a session.
+Sign-in is an email address and nothing else — no password, no emailed link. `/login`
+takes the address an admin added you with, matches it against the people on the
+project, and opens a session; the role comes from that membership.
+
+```bash
+npm run bootstrap -- you@example.com   # creates the site admin, then:
+bash scripts/dev-login.sh              # prints the sign-in URL to open
+```
+
+To put someone on a project, an admin uses **Team → Add someone to the project**
+(name, email, role). It applies immediately: there is no invitation to deliver and no
+mailer to deliver it with. Ask an admin if your address is not recognised.
+
+> **What this does not prove.** Anyone who can reach the URL can sign in as any address
+> an admin has added, including an admin's. The audit trail therefore records the
+> address someone *claimed*, not one they proved. That is a deliberate trade for an
+> internal tool on a private network; it would not be acceptable on the public
+> internet. The magic-link and API-token endpoints still exist in the API
+> (`POST /api/auth/request-link`, `POST /api/auth/consume`) if that changes.
 
 | Screen | What it does |
 |---|---|
-| Milestones | Cards per milestone; a tester only sees **Report bug** on a `ready` milestone |
-| Bugs | Rows with severity, status, milestone, attachment count and timestamps |
+| Milestones | Cards per milestone; a tester only sees **Report bug** on a `ready` milestone. Developers get **Add milestone** when the project has none |
+| Bugs | Rows with severity, status, reporter, milestone, attachment count and timestamps |
 | Bug detail | Vietnamese original beside the translation, the activity timeline with translated notes, real screenshot downloads, the server-built prompt for the AI agent, and role-appropriate actions |
+| Team | Who is on the project, and (admins) a form to add someone by name, email and role |
 | Report | Vietnamese title/body + screenshots, uploaded through the real two-phase flow |
+
+## Managing the data: add, change, remove
+
+| What | In the UI | Who |
+|---|---|---|
+| Create a project | **Create project** (first-run screen) | site admin |
+| Rename / re-environment a project | Sidebar → **✎ Rename project** | project admin |
+| Remove a project | Sidebar → **🗑 Remove** | project admin |
+| Restore a removed project | Sidebar → **Removed** → **Restore** | project admin |
+| Create a milestone | Milestones → **Add milestone** | admin, developer |
+| Rename a milestone | Milestone card → **✎ Edit** | admin, developer |
+| Move a milestone along | Milestone card → lifecycle buttons | admin, developer |
+| Remove / restore a milestone | Card → **🗑 Remove** / **Removed** section → **Restore** | admin, developer |
+| Report a bug | Milestones → **🐞 Report bug** (on a `ready` milestone) | tester |
+| Correct a report | Bug detail → **✎ Edit this report** | the reporter, or an admin, while it is open |
+| Move a bug along / retest | Bug detail → the action buttons | by role and state |
+| Comment | Bug detail → **Add comment** | any member |
+| Remove / restore a bug | Bug detail → **🗑 Remove** / Bugs → **Removed** → **Restore** | project admin |
+| Add a person | Team → **Add someone to the project** | project admin |
+| Change someone's role | Team → a **Role: …** chip on their row | project admin |
+| Remove a person | Team → **🗑 Remove** | project admin |
+
+**Removal is always a soft delete.** The row and its history stay in the database — a
+bug is evidence, and a project holds that history — so the thing stops being listed and
+stops accepting writes, and restoring is an `UPDATE`. Nothing in the app destroys a row.
+A write to something removed answers **410 Gone** rather than 403: it was removed, which
+is not a permissions problem, and "forbidden" would send someone hunting for a
+permissions issue that is not there.
+
+**Correcting a report re-queues its translation.** The translations are derived from the
+Vietnamese, so editing it makes them wrong; the field whose text actually changed goes
+back to `pending` and the worker redoes it. Without that, the developers would keep
+reading a translation of the sentence the tester had already corrected.
+
+The same operations over HTTP, and the token scope each needs:
+
+| Method and path | Does | Scope |
+|---|---|---|
+| `POST /api/projects` | create | `admin` |
+| `PATCH /api/projects/:id` | rename, change env or timezone | `admin` |
+| `DELETE /api/projects/:id` | remove (soft) | `admin` |
+| `POST /api/projects/:id/restore` | bring back | `admin` |
+| `GET /api/projects/removed` | what you can bring back | `bug:read` |
+| `POST /api/projects/:id/milestones` | create | `bug:write` |
+| `PATCH /api/milestones/:id` | rename, set or clear a due date | `bug:write` |
+| `POST /api/milestones/:id/status` | `start` / `ready` / `finish` / `reset` | `bug:write` |
+| `DELETE /api/milestones/:id` · `POST …/restore` | remove, bring back | `bug:write` |
+| `POST /api/projects/:id/bugs` | report | `bug:write` |
+| `PATCH /api/bugs/:id` | correct title, body or severity | `bug:write` |
+| `POST /api/bugs/:id/status` | the lifecycle transitions | `bug:write` |
+| `DELETE /api/bugs/:id` · `POST …/restore` | remove, bring back | `admin` |
+| `POST /api/projects/:id/members` | add someone (email → role, immediately) | `admin` |
+| `PATCH /api/projects/:id/members/:userId` | change a role | `admin` |
+| `DELETE /api/projects/:id/members/:userId` | remove from the project | `admin` |
 
 Two things the UI deliberately does **not** do:
 
@@ -135,10 +206,12 @@ The **build** is a working, tested server + worker + CLI.
 
 ```bash
 npm install
-npm test          # 130 tests against a real Postgres (WASM) over real HTTP
+npm test          # 389 tests against a real Postgres (WASM) over real HTTP
 npm run migrate
 npm start         # http://127.0.0.1:3000
-npm run worker    # drains the translation queue and the notification outbox
+npm run worker    # drains the translation queue and the notification outbox — for a
+                  # real Postgres. With the embedded database this cannot start (PGlite
+                  # takes a single process), so the server runs the same loop in-process
 npx rgm login --url http://127.0.0.1:3000 --token <api-token>
 npx rgm pull 1    # write .rgm/BUG-1/{bug.md,meta.json,screenshot_01.png}
 ```
@@ -160,7 +233,8 @@ npx rgm pull 1    # write .rgm/BUG-1/{bug.md,meta.json,screenshot_01.png}
 | `src/storage.js` | Screenshot storage behind an S3-shaped interface; HMAC-signed upload capabilities |
 | `src/zip.js` / `src/unzip.js` | Dependency-free ZIP writer and reader (STORE + DEFLATE) |
 | `src/cli.js` | `rgm` — the developer handoff CLI (§10) |
-| `src/worker.js` | Background loop for translations + notifications |
+| `src/worker.js` | Background loop for translations + notifications (separate process, real Postgres) |
+| `src/worker-loop.js` | The same loop as a function, so the server can run it when the database is embedded |
 
 ### Deliberate deviations from PLAN.md
 

@@ -37,17 +37,14 @@ for _ in $(seq 1 40); do
 done
 curl -sf "$BASE/api/health"; echo
 
-step "request a login link (the token is delivered by the default mailer)"
-curl -sf -X POST "$BASE/api/auth/request-link" \
+step "sign in with an address (no link, no password)"
+curl -sf -c "$RUN/cookies" -X POST "$BASE/api/auth/direct" \
   -H 'content-type: application/json' -d '{"email":"yuen@example.com"}'; echo
 
-TOKEN="$(grep -o 'token=[A-Za-z0-9_-]*' "$RUN/server.log" | tail -1 | cut -d= -f2)"
-[[ -n "$TOKEN" ]] || { echo "no login token in the server log"; exit 1; }
-echo "token: ${TOKEN:0:12}…"
-
-step "consume it and obtain a session"
-curl -sf -c "$RUN/cookies" -X POST "$BASE/api/auth/consume" \
-  -H 'content-type: application/json' -d "{\"token\":\"$TOKEN\"}"; echo
+step "an address nobody added is refused"
+curl -s -o /dev/null -w 'status for a stranger: %{http_code}\n' \
+  -X POST "$BASE/api/auth/direct" \
+  -H 'content-type: application/json' -d '{"email":"nobody@example.com"}'
 
 # Cookie-authenticated writes now need the CSRF token echoed back in a header —
 # this is exactly what public/app.js does. A curl-based script has to do it too.
