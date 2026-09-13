@@ -1,0 +1,98 @@
+# CI: run the suite on both database drivers, plus a real smoke run.
+#
+# The driver matrix is the point. `src/db.js` claims PGlite and node-postgres are
+# interchangeable; running the same tests through both is what makes that a fact
+# rather than an assertion in a comment.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # node 20 is the floor declared in package.json engines.
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - name: Tests on the embedded driver
+        run: npm test
+      - name: Tests through the node-postgres driver
+        run: npm run test:pg
+
+  smoke:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Start the server against a file-backed database and drive the CLI
+        run: bash scripts/smoke.sh
+
+  # A real Postgres, to check the migrations against the server the product is
+  # actually deployed on — PGlite is Postgres, but it is not the whole story
+  # (roles, extensions and the client protocol are the server's).
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rgm
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Apply every migration to a real Postgres and verify the grants
+        env:
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/rgm
+        run: |
+          node -e '
+            import("./src/db.js").then(async ({ createDb, migrate, migrationFiles }) => {
+              const db = await createDb();
+              const { applied } = await migrate(db, { log: console.log });
+              const files = migrationFiles();
+              if (applied.length !== files.length) {
+                throw new Error(`applied ${applied.length} of ${files.length} migrations`);
+              }
+              const roles = await db.query(
+                "SELECT rolname FROM pg_roles WHERE rolname LIKE $$rgm_%$$");
+              if (roles.rows.length !== 2) {
+                throw new Error("expected rgm_app and rgm_auditor, got " + roles.rows.length);
+              }
+              const users = await db.query("SELECT to_regclass($$public.users$$) AS t");
+              if (!users.rows[0].t) throw new Error("users table missing");
+              console.log("migrations and roles verified against real Postgres");
+              await db.close();
+            }).catch((e) => { console.error(e); process.exit(1); });
+          '
+      - name: The app suite runs against real Postgres too
+        env:
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/rgm
+          RGM_TEST_DRIVER: pg
+        run: node --test --test-concurrency=1 test/

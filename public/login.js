@@ -9,12 +9,40 @@
  */
 const params = new URLSearchParams(location.search);
 const token = params.get('token');
+const invite = params.get('invite');
 const heading = document.getElementById('heading');
 const note = document.getElementById('note');
 const field = document.getElementById('field');
 const submit = document.getElementById('submit');
 const hint = document.getElementById('hint');
 const form = document.getElementById('form');
+
+/** An invitation grants membership; it does not sign anyone in. */
+async function acceptInvite(value) {
+  heading.textContent = 'Joining the project…';
+  note.textContent = '';
+  field.style.display = 'none';
+  submit.style.display = 'none';
+  try {
+    const res = await fetch('/api/invites/redeem', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: value })
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.message ?? `could not join (${res.status})`);
+    heading.textContent = 'You have joined';
+    note.textContent = 'Now enter your email address to sign in.';
+    field.style.display = '';
+    submit.style.display = '';
+    submit.textContent = 'Send a sign-in link';
+  } catch (err) {
+    heading.textContent = 'That invitation did not work';
+    note.textContent = err.message;
+    hint.textContent = 'Invitations are single-use, expire after 72 hours, and are cancelled if '
+      + 'the person is removed from the project.';
+  }
+}
 
 async function consume(value) {
   heading.textContent = 'Signing you in…';
@@ -67,3 +95,4 @@ form.addEventListener('submit', async (event) => {
 });
 
 if (token) consume(token);
+else if (invite) acceptInvite(invite);

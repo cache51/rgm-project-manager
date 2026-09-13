@@ -127,10 +127,24 @@ function rel(iso) {
   return Math.round(mins / 1440) + suffix[3];
 }
 
+/** Read a non-HttpOnly cookie — the CSRF token lives here. */
+function readCookie(name) {
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 async function api(method, path, body) {
+  const headers = body === undefined ? {} : { 'content-type': 'application/json' };
+
+  // Echo the CSRF cookie back in a header. A cross-site page can cause the
+  // browser to send the session cookie, but it cannot read this value, so it
+  // cannot forge the header.
+  const csrf = readCookie('csrf');
+  if (csrf) headers['x-csrf-token'] = csrf;
+
   const res = await fetch(path, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body)
   });
   if (res.status === 401) { location.replace('/login'); throw new Error('signed out'); }
@@ -556,17 +570,27 @@ async function submitReport() {
     const bug = await api('POST', `/api/projects/${S.projectId}/bugs`,
       { milestoneId, severity, titleVi, bodyVi });
 
-    // Two-phase upload, exactly as the API specifies: presign, PUT raw bytes,
-    // then complete. The server assigns the storage key.
+    // Two-phase upload: presign, PUT the bytes, then complete. The server chooses
+    // the key and, for the proxying driver, hands back a signed upload URL; for a
+    // bucket-backed deployment it hands back a presigned URL straight to storage.
     for (const file of files) {
-      const { storageKey, uploadToken, uploadUrl } = await api('POST',
-        `/api/bugs/${bug.id}/attachments/presign`,
+      const signed = await api('POST', `/api/bugs/${bug.id}/attachments/presign`,
         { contentType: file.type || 'image/png', byteSize: file.size });
-      const put = await fetch(uploadUrl, { method: 'PUT', body: file,
-        headers: { 'content-type': file.type || 'image/png' } });
+
+      const put = await fetch(signed.uploadUrl, {
+        method: 'PUT',
+        body: file,
+        // The signed headers must be sent verbatim, or the signature will not match.
+        headers: signed.uploadHeaders ?? { 'content-type': file.type || 'image/png' }
+      });
       if (!put.ok) throw new Error(`upload failed for ${file.name}`);
-      await api('POST', `/api/bugs/${bug.id}/attachments/complete`,
-        { storageKey, uploadToken, filename: file.name });
+
+      await api('POST', `/api/bugs/${bug.id}/attachments/complete`, {
+        storageKey: signed.storageKey,
+        uploadToken: signed.uploadToken ?? undefined,
+        filename: file.name,
+        contentType: file.type || 'image/png'
+      });
     }
 
     S.reporting = false;

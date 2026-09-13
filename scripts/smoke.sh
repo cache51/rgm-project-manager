@@ -49,15 +49,26 @@ step "consume it and obtain a session"
 curl -sf -c "$RUN/cookies" -X POST "$BASE/api/auth/consume" \
   -H 'content-type: application/json' -d "{\"token\":\"$TOKEN\"}"; echo
 
+# Cookie-authenticated writes now need the CSRF token echoed back in a header —
+# this is exactly what public/app.js does. A curl-based script has to do it too.
+CSRF="$(grep -w csrf "$RUN/cookies" | awk '{print $7}')"
+[[ -n "$CSRF" ]] || { echo "no csrf cookie in the jar"; exit 1; }
+echo "csrf token: ${CSRF:0:12}…"
+
+step "a write without the CSRF token is refused"
+curl -s -o /dev/null -w 'status without header: %{http_code}\n' \
+  -b "$RUN/cookies" -X POST "$BASE/api/projects" \
+  -H 'content-type: application/json' -d '{"name":"Nope","client":"X"}'
+
 step "create a project"
-PROJECT="$(curl -sf -b "$RUN/cookies" -X POST "$BASE/api/projects" \
+PROJECT="$(curl -sf -b "$RUN/cookies" -H "x-csrf-token: $CSRF" -X POST "$BASE/api/projects" \
   -H 'content-type: application/json' \
   -d '{"name":"Packing Line","client":"LWMS"}')"
 echo "$PROJECT"
 PROJECT_ID="$(printf '%s' "$PROJECT" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
 
 step "mint an API token for the CLI"
-APITOKEN="$(curl -sf -b "$RUN/cookies" -X POST "$BASE/api/tokens" \
+APITOKEN="$(curl -sf -b "$RUN/cookies" -H "x-csrf-token: $CSRF" -X POST "$BASE/api/tokens" \
   -H 'content-type: application/json' \
   -d '{"name":"cli","scopes":["bug:read","bug:write"]}' \
   | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"

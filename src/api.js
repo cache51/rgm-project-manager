@@ -21,6 +21,7 @@ import {
   enqueueBugTranslations, enqueueEventTranslation, retryTranslation
 } from './translate.js';
 import { enqueueReadyNotifications } from './notify.js';
+import { enforce, hit, LIMITS } from './ratelimit.js';
 
 const iso = (v) => (v instanceof Date ? v.toISOString() : v);
 const MAX_ATTACHMENTS_PER_BUG = 12;
@@ -145,21 +146,52 @@ export function buildRoutes() {
   r.post('/api/auth/request-link', handle(async (req, res, ctx) => {
     const { email } = await readJson(req);
     if (!email) throw new HttpError(400, 'email_required', 'email is required');
+
+    const ip = req.socket?.remoteAddress ?? 'unknown';
+    const limits = ctx.limits ?? LIMITS;
+    const gate = await enforce(ctx.db, [
+      [`login:email:${normalizeEmail(email)}`, limits.loginLinkPerEmail],
+      [`login:ip:${ip}`, limits.loginLinkPerIp]
+    ]);
+    if (!gate.allowed) {
+      // Note this is the same shape for a known and an unknown address, so the
+      // limiter cannot be used to probe which addresses exist.
+      throw new HttpError(429, 'rate_limited',
+        `too many sign-in links requested; retry in ${gate.failed.retryAfter}s`,
+        { retryAfter: gate.failed.retryAfter });
+    }
+
     // Always the same response, so this cannot be used to enumerate accounts.
-    await requestLoginLink(ctx.db, email, {
-      deliver: ctx.deliver, ip: req.socket?.remoteAddress ?? null
-    });
+    await requestLoginLink(ctx.db, email, { deliver: ctx.deliver, ip });
     sendJson(res, 200, { ok: true });
   }));
 
   r.post('/api/auth/consume', handle(async (req, res, ctx) => {
     const { token } = await readJson(req);
     if (!token) throw new HttpError(400, 'token_required', 'token is required');
+
+    const ip = req.socket?.remoteAddress ?? 'unknown';
+    const limits = ctx.limits ?? LIMITS;
+    const gate = await hit(ctx.db, `consume:ip:${ip}`, limits.consumePerIp);
+    if (!gate.allowed) {
+      throw new HttpError(429, 'rate_limited',
+        `too many sign-in attempts; retry in ${gate.retryAfter}s`,
+        { retryAfter: gate.retryAfter });
+    }
+
     const session = await consumeLoginToken(ctx.db, token);
     if (!session) throw new HttpError(400, 'bad_token', 'link is invalid or expired');
+    const maxAge = 30 * 24 * 3600;
     sendJson(res, 200, { ok: true }, {
-      'set-cookie': serializeCookie('session', session.sessionToken,
-        { maxAge: 30 * 24 * 3600, secure: ctx.secureCookies })
+      // The session cookie is HttpOnly; the CSRF cookie must be readable by the
+      // app so it can echo it back in a header. It is not a secret on its own —
+      // it is only valid together with this session's cookie.
+      'set-cookie': [
+        serializeCookie('session', session.sessionToken,
+          { maxAge, secure: ctx.secureCookies }),
+        serializeCookie('csrf', session.csrfToken,
+          { maxAge, httpOnly: false, secure: ctx.secureCookies })
+      ]
     });
   }));
 
@@ -167,7 +199,10 @@ export function buildRoutes() {
     const cookies = parseCookies(req.headers.cookie);
     if (cookies.session) await revokeSession(ctx.db, cookies.session);
     sendJson(res, 200, { ok: true }, {
-      'set-cookie': serializeCookie('session', '', { maxAge: 0 })
+      'set-cookie': [
+        serializeCookie('session', '', { maxAge: 0 }),
+        serializeCookie('csrf', '', { maxAge: 0, httpOnly: false })
+      ]
     });
   }));
 
@@ -574,57 +609,78 @@ export function buildRoutes() {
     const key = ctx.storage.keyFor(projectId, ctx.params.id);
     const signed = ctx.storage.presignUpload({ key, contentType });
     sendJson(res, 201, {
-      storageKey: key,
-      uploadToken: signed.token,
-      uploadUrl: `/api/uploads/${encodeURIComponent(signed.token)}`,
+      storageKey: signed.key,
+      uploadUrl: signed.url,
+      // Absent when the bucket validates the signature itself (S3 driver).
+      uploadToken: signed.token ?? null,
+      uploadHeaders: signed.headers ?? null,
       expiresAt: new Date(signed.expiresAt * 1000).toISOString()
     });
   }));
 
   r.put('/api/uploads/:token', handle(async (req, res, ctx) => {
+    // Only the proxying driver has anything to verify here; the S3 driver hands
+    // the browser a direct-to-bucket URL and this route is never used.
+    if (typeof ctx.storage.verifyUpload !== 'function') {
+      throw new HttpError(404, 'no_upload_proxy',
+        'this deployment uploads directly to object storage');
+    }
     const bytes = await readBytes(req, { limit: 8_000_000 });
     const claims = ctx.storage.verifyUpload(ctx.params.token);
-    await ctx.storage.put(claims.key, bytes);
+    await ctx.storage.put(claims.key, bytes, { contentType: claims.ct });
     sendJson(res, 201, { storageKey: claims.key, byteSize: bytes.length });
   }));
 
   r.post('/api/bugs/:id/attachments/complete', handle(async (req, res, ctx) => {
     const { projectId } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
     requireScope(ctx.actor, 'bug:write');
-    const { storageKey, uploadToken, filename } = await readJson(req);
-    if (!storageKey || !uploadToken) {
-      throw new HttpError(400, 'missing_fields', 'storageKey and uploadToken are required');
-    }
+    const { storageKey, uploadToken, filename, contentType } = await readJson(req);
+    if (!storageKey) throw new HttpError(400, 'missing_fields', 'storageKey is required');
 
-    // The capability must have been issued for exactly this key...
-    const claims = ctx.storage.verifyUpload(uploadToken);
-    if (claims.key !== storageKey) {
+    // 1. If the driver issues a local capability, it must have been issued for
+    //    exactly this key.
+    const claims = (uploadToken && typeof ctx.storage.verifyUpload === 'function')
+      ? ctx.storage.verifyUpload(uploadToken)
+      : null;
+    if (claims && claims.key !== storageKey) {
       throw new HttpError(400, 'key_mismatch', 'upload token does not match the storage key');
     }
-    // ...and the key must belong to THIS project and THIS bug, so a key retained
-    // from another bug cannot be attached here (RGM3-004).
+
+    // 2. The key must belong to THIS project and THIS bug, so a key retained from
+    //    another bug cannot be attached here (RGM3-004). This holds for both
+    //    drivers, which is why it is not folded into the capability check.
     const expectedPrefix = `${projectId}/${ctx.params.id}/`;
     if (!storageKey.startsWith(expectedPrefix)) {
       throw new HttpError(403, 'key_mismatch', 'storage key does not belong to this bug');
     }
 
+    // 3. The object must actually exist — `complete` must not create a row for an
+    //    upload that never happened.
     const head = await ctx.storage.head(storageKey);
-    if (!head || head.byteSize === 0) {
+    if (!head || !head.byteSize) {
       throw new HttpError(400, 'upload_missing', 'object was never uploaded');
     }
     if (head.byteSize > 8_000_000) {
       throw new HttpError(400, 'too_large', 'uploaded object exceeds the size limit');
     }
+
+    // 4. The content type has three possible sources, in order of trust: the
+    //    capability we signed, the bucket's own metadata, then the client's claim.
+    const declared = String(claims?.ct ?? head.contentType ?? contentType ?? '').split(';')[0].trim();
+    if (!ALLOWED_IMAGE_TYPES.includes(declared)) {
+      throw new HttpError(400, 'bad_type', `unsupported image type: ${declared || '(none)'}`);
+    }
+    // Proves it maps to a packet entry extension before we store it.
+    extensionFor(declared);
+
     // A tester-supplied filename is stored as data; the extension is derived from
     // the validated content type, never from the name (RGM-S1-008).
-    extensionFor(claims.ct);
-
     const ins = await ctx.db.query(
       `INSERT INTO bug_attachments
          (project_id, bug_id, storage_key, filename, byte_size, content_type)
        VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, filename, content_type, byte_size`,
       [projectId, ctx.params.id, storageKey, String(filename ?? 'screenshot').slice(0, 200),
-        head.byteSize, claims.ct]);
+        head.byteSize, declared]);
 
     await ctx.db.query(
       `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
@@ -733,8 +789,18 @@ export async function buildPromptFor(db, bug) {
     const t = translations[field]?.[lang];
     return t?.status === 'done' ? t.text : null;
   };
-  const body = { zh: pick('body', 'zh'), en: pick('body', 'en') };
-  const overall = translations.body?.zh?.status ?? 'pending';
+
+  // Build the per-field, per-language view the prompt reports on.
+  const snapshot = {};
+  for (const field of ['title', 'body']) {
+    snapshot[field] = { text: {}, status: {}, error: {} };
+    for (const lang of ['zh', 'en']) {
+      const row = translations[field]?.[lang];
+      snapshot[field].status[lang] = row?.status ?? 'missing';
+      if (row?.status === 'done') snapshot[field].text[lang] = row.text;
+      if (row?.error) snapshot[field].error[lang] = row.error;
+    }
+  }
 
   return buildPrompt({
     bug: {
@@ -746,7 +812,13 @@ export async function buildPromptFor(db, bug) {
     project: projectRef(bug),
     milestone: { code: bug.milestone_code, title: bug.milestone_title },
     reporter: bug.reporter_name,
-    translations: { body, state: overall },
+    translations: {
+      title: snapshot.title.text,
+      body: snapshot.body.text,
+      availability: { title: snapshot.title.status, body: snapshot.body.status },
+      errors: { title: snapshot.title.error, body: snapshot.body.error },
+      state: snapshot.body.status.zh
+    },
     timeline: timeline.map(e => ({
       at: stampIn(e.at, tz), actor: e.actor, kind: e.kind, note: e.note ?? e.reason
     })),

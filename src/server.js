@@ -10,11 +10,28 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve, extname, sep, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createDb, migrate } from './db.js';
-import { FsStorage } from './storage.js';
 import { buildRoutes } from './api.js';
-import { resolveActor, sendJson, sendBytes, redirect, parseCookies,
-         serializeCookie } from './http.js';
-import { resolveSession, resolveApiToken } from './auth.js';
+import { resolveActor, sendJson, sendBytes } from './http.js';
+import { resolveSession, resolveApiToken, verifyCsrfToken, HttpError } from './auth.js';
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Routes where the session cookie is not the source of authority, so a CSRF
+ * token cannot be required:
+ *   - the two sign-in endpoints run before a session exists
+ *   - upload URLs carry a signed capability, which a cross-site page cannot guess
+ */
+const CSRF_EXEMPT = [
+  /^\/api\/auth\/request-link$/,
+  /^\/api\/auth\/consume$/,
+  /^\/api\/uploads\//
+];
+
+export function csrfRequired(method, pathname) {
+  if (SAFE_METHODS.has(method)) return false;
+  return !CSRF_EXEMPT.some((re) => re.test(pathname));
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const PUBLIC_DIR = join(here, '..', 'public');
@@ -73,6 +90,7 @@ export function createApp({
   storage,
   deliver = null,
   secureCookies = false,
+  limits = null,
   onError = null
 }) {
   const router = buildRoutes();
@@ -113,7 +131,7 @@ export function createApp({
     }
 
     const ctx = {
-      db, storage, deliver, secureCookies, onError, url,
+      db, storage, deliver, secureCookies, limits, onError, url,
       params: match.params,
       actor: null
     };
@@ -122,14 +140,24 @@ export function createApp({
     resolveActor(req, { db, resolveSession, resolveApiToken })
       .then((actor) => {
         ctx.actor = actor;
+
+        // A cookie-authenticated write must prove it read the CSRF cookie. This
+        // is the one place it is checked, so no route can forget it. Bearer
+        // tokens are exempt: they are not attached automatically by a browser.
+        if (csrfRequired(req.method, url.pathname) && actor?.via === 'session'
+            && !verifyCsrfToken(actor, req.headers['x-csrf-token'])) {
+          throw new HttpError(403, 'csrf_failed',
+            'missing or invalid CSRF token; send x-csrf-token from the csrf cookie');
+        }
         return match.handler(req, res, ctx);
       })
       .catch((err) => {
-        if (!res.headersSent) {
-          sendJson(res, 500, { error: 'internal_error', message: 'unexpected server error' });
-        } else {
-          res.end();
+        if (res.headersSent) { res.end(); return; }
+        if (err instanceof HttpError) {
+          sendJson(res, err.status, { error: err.code, message: err.message });
+          return;
         }
+        sendJson(res, 500, { error: 'internal_error', message: 'unexpected server error' });
         if (onError) onError(err);
       });
   });
@@ -137,24 +165,22 @@ export function createApp({
   return { server, router };
 }
 
-/** Build a fully-wired app backed by a real (PGlite) database. */
+/** Build a fully-wired app from the environment. */
 export async function createAppFromEnv(env = process.env) {
-  const db = env.PGLITE_DIR
-    ? await createDb({ dataDir: env.PGLITE_DIR })
-    : await createDb();
+  const { loadConfig } = await import('./config.js');
+  const config = loadConfig(env);
+
+  const db = await createDb({ dataDir: config.dataDir, url: config.databaseUrl });
   await migrate(db);
 
-  const storage = new FsStorage({
-    root: env.STORAGE_DIR ?? './.rgm/storage',
-    secret: env.STORAGE_SECRET ?? 'dev-secret-change-me'
+  const app = createApp({
+    db,
+    storage: config.storage,
+    deliver: config.deliver,
+    secureCookies: config.secureCookies
   });
 
-  // Default mailer: log the link. Production replaces this with an SMTP client.
-  const deliver = async (msg) => {
-    process.stdout.write(`[mail] to=${msg.to} kind=${msg.kind} token=${msg.token}\n`);
-  };
-
-  return { ...createApp({ db, storage, deliver }), db, storage };
+  return { ...app, db, config };
 }
 
 /** Start listening; resolves once the socket is open. */
@@ -170,8 +196,15 @@ export async function listen(app, { port = 3000, host = '127.0.0.1' } = {}) {
 // Run directly: `npm start`
 if (import.meta.url === `file://${process.argv[1]}`) {
   const app = await createAppFromEnv();
-  const { url } = await listen(app, { port: Number(process.env.PORT ?? 3000) });
+  const { url } = await listen(app, { port: app.config.port, host: app.config.host });
+
   process.stdout.write(`RGM Project Manager listening on ${url}\n`);
+  // State what was chosen, so "which mailer is this using?" is answered at boot
+  // rather than discovered in production.
+  for (const [key, value] of Object.entries(app.config.describe())) {
+    process.stdout.write(`  ${key}: ${value}\n`);
+  }
+
   const shutdown = () => app.server.close(() => process.exit(0));
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

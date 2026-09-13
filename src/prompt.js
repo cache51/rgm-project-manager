@@ -65,11 +65,56 @@ export const PREAMBLE = [
 ].join('\n');
 
 /**
+ * One line describing translation coverage, or null when there is nothing to say.
+ *
+ * Deliberately reports EACH language separately: a prompt that quietly contains
+ * zh-only is indistinguishable from one where en was never requested, and the
+ * developer cannot tell whether they are missing a language.
+ */
+export function translationAvailability(translations = {}) {
+  const title = translations.title ?? {};
+  const body = translations.body ?? {};
+  const gotAnything = Boolean(title.zh || title.en || body.zh || body.en);
+  const availability = translations.availability;
+
+  // No per-language information at all: nothing to add beyond the legacy line.
+  if (!availability) {
+    return gotAnything
+      ? null
+      : `Translation: unavailable (${translations.state ?? 'pending'}) — original only.`;
+  }
+
+  const gaps = [];
+  for (const field of ['title', 'body']) {
+    for (const lang of ['zh', 'en']) {
+      const status = availability[field]?.[lang];
+      if (!status || status === 'done') continue;
+      const reason = translations.errors?.[field]?.[lang];
+      gaps.push(`${field}/${lang} ${status}${reason ? ` (${sanitizeInline(reason)})` : ''}`);
+    }
+  }
+
+  if (!gaps.length) {
+    return gotAnything
+      ? '- Translation coverage: complete (title and body, zh and en).'
+      : `Translation: unavailable (${translations.state ?? 'pending'}) — original only.`;
+  }
+
+  // A total failure is still reported per language: "unavailable (failed)" alone
+  // would not say which language failed or why, which is the whole point.
+  return `- Translation coverage: ${gotAnything ? 'INCOMPLETE' : 'NONE'} — ${gaps.join('; ')}. `
+    + 'A language marked failed or pending has no translation; do not treat it as '
+    + 'equivalent to the original text above.';
+}
+
+/**
  * @param {object} input
  * @param {object} input.bug            id, severity, status, createdAt, updatedAt
  * @param {object} input.project        id, name, client, env
  * @param {object} [input.milestone]    code, title, status
- * @param {object} [input.translations] { title?: {zh,en}, body?: {zh,en} }
+ * @param {object} [input.translations] { title?: {zh,en}, body?: {zh,en},
+ *                                        availability?: {field:{lang:status}},
+ *                                        errors?: {field:{lang:message}} }
  * @param {Array}  [input.timeline]     [{ at, actor, kind, note }]
  * @param {Array}  [input.attachments]  [{ name, originalFilename }]
  */
@@ -109,15 +154,30 @@ export function buildPrompt({
 
   const zhBody = translations.body?.zh;
   const enBody = translations.body?.en;
-  if (zhBody || enBody) {
+  const zhTitle = translations.title?.zh;
+  const enTitle = translations.title?.en;
+
+  if (zhBody || enBody || zhTitle || enTitle) {
     out.push('');
     out.push('--- Machine translations (also derived from the untrusted report) ---');
+    // The title is translated too: a developer scanning the prompt reads it first,
+    // and omitting it meant the one line they actually look at stayed Vietnamese.
+    if (zhTitle) out.push(fencedBlock('BUG_TITLE_ZH', zhTitle));
+    if (enTitle) out.push(fencedBlock('BUG_TITLE_EN', enTitle));
     if (zhBody) out.push(fencedBlock('BUG_BODY_ZH', zhBody));
     if (enBody) out.push(fencedBlock('BUG_BODY_EN', enBody));
   }
-  if (!zhBody && !enBody) {
-    out.push('');
-    out.push(`Translation: unavailable (${translations.state ?? 'pending'}) — original only.`);
+
+  // State per language, so a partial success is reported rather than silently
+  // omitted. The first revision said nothing whenever ANY language succeeded, so
+  // a developer reading a zh-only prompt had no way to know the English one had
+  // failed (RGM-S1-006).
+  {
+    const summary = translationAvailability(translations);
+    if (summary) {
+      out.push('');
+      out.push(summary);
+    }
   }
 
   if (timeline.length) {

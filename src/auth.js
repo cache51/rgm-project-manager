@@ -13,7 +13,7 @@
  *                 membership; it never creates a session. Redemption does not log
  *                 anyone in — the invitee then requests a login link.
  */
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { withTransaction } from './db.js';
 
 export const newToken = () => randomBytes(32).toString('base64url');
@@ -111,18 +111,22 @@ export async function consumeLoginToken(db, token, { absoluteDays = 30 } = {}) {
 
   const userId = claimed.rows[0].user_id;
   const sessionToken = newToken();
+  const csrfToken = newToken();
   await db.query(
-    `INSERT INTO sessions (user_id, token_hash, absolute_expires_at)
-     VALUES ($1, $2, now() + make_interval(days => $3::int))`,
-    [userId, hashToken(sessionToken), absoluteDays]);
-  return { userId, sessionToken };
+    `INSERT INTO sessions (user_id, token_hash, csrf_hash, absolute_expires_at)
+     VALUES ($1, $2, $3, now() + make_interval(days => $4::int))`,
+    [userId, hashToken(sessionToken), hashToken(csrfToken), absoluteDays]);
+
+  // The CSRF secret is returned once, to be set as a readable cookie. Only its
+  // hash is stored, and it is bound to this session.
+  return { userId, sessionToken, csrfToken };
 }
 
 /** Resolve a session cookie. Idle timeout is enforced here, not by a cron. */
 export async function resolveSession(db, sessionToken, { idleHours = 12 } = {}) {
   if (!sessionToken) return null;
   const r = await db.query(
-    `SELECT s.id, s.user_id, u.email, u.is_site_admin
+    `SELECT s.id, s.user_id, s.csrf_hash, u.email, u.is_site_admin
        FROM sessions s JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = $1
         AND s.revoked_at IS NULL
@@ -134,7 +138,25 @@ export async function resolveSession(db, sessionToken, { idleHours = 12 } = {}) 
   const row = r.rows[0];
   await db.query('UPDATE sessions SET last_seen_at = now() WHERE id = $1', [row.id]);
   return { sessionId: row.id, userId: row.user_id, email: row.email,
-           isSiteAdmin: row.is_site_admin, via: 'session' };
+           isSiteAdmin: row.is_site_admin, via: 'session',
+           csrfHash: row.csrf_hash ?? null };
+}
+
+/**
+ * Verify a double-submit CSRF token against the session it must belong to.
+ *
+ * Two things have to hold, and neither is sufficient alone: the caller must have
+ * read the cookie (so it is not a cross-site request), and the token must be the
+ * one issued to THIS session (so a leaked token from another session is useless).
+ * A session with no recorded hash — one predating the migration — fails closed.
+ */
+export function verifyCsrfToken(actor, presented) {
+  if (actor?.via !== 'session') return true;   // bearer tokens are not ambient
+  if (!actor.csrfHash) return false;           // fails closed
+  if (typeof presented !== 'string' || !presented) return false;
+  const a = Buffer.from(hashToken(presented));
+  const b = Buffer.from(actor.csrfHash);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 export async function revokeSession(db, sessionToken) {

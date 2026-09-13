@@ -1,10 +1,17 @@
 /**
  * Database access.
  *
- * The driver here is PGlite (Postgres compiled to WASM) so the whole product runs
- * and is tested with no database server. The surface is deliberately `pg`-shaped
- * (`query(sql, params) -> { rows }`), so swapping in `node-postgres` against a
- * real cluster means changing `createDb` only.
+ * Two drivers sit behind one surface:
+ *
+ *   PGlite   Postgres compiled to WASM — the default, so the product runs and is
+ *            tested with no database server installed
+ *   pg       node-postgres, used when DATABASE_URL (or an injected pool) is set
+ *
+ * The surface is deliberately `pg`-shaped — `query(text, params) -> { rows }` —
+ * so nothing above this file needs to know which one is in play. See db-pg.js for
+ * why `transaction` is part of the contract rather than a raw BEGIN/COMMIT
+ * helper: on a pooled driver those two statements can land on different
+ * connections.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -13,14 +20,54 @@ import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 export const MIGRATIONS_DIR = join(here, '..', 'db', 'migrations');
 
-/** Migrations that need a real cluster (role creation) are skipped in-process. */
-const SKIP_MARKER = '-- @skip-when: no-roles';
+/**
+ * @param {object} [options]
+ * @param {string} [options.dataDir]        PGlite data directory ('' = in-memory)
+ * @param {string} [options.url]            connection string; implies the pg driver
+ * @param {object} [options.pool]           an existing pg Pool or test double
+ */
+export async function createDb({ dataDir, url = null, pool = null } = {}) {
+  const connectionString = url ?? process.env.DATABASE_URL ?? null;
 
-export async function createDb({ dataDir } = {}) {
+  if (pool || connectionString) {
+    const { createPgDb } = await import('./db-pg.js');
+    return createPgDb({ connectionString, pool });
+  }
+
   const { PGlite } = await import('@electric-sql/pglite');
-  const db = new PGlite(dataDir);
-  await db.waitReady;
-  return db;
+  const pglite = new PGlite(dataDir);
+  await pglite.waitReady;
+
+  return {
+    driver: 'pglite',
+    raw: pglite,
+
+    async query(text, params) {
+      const res = await pglite.query(text, params);
+      return { rows: res.rows ?? [], rowCount: res.affectedRows ?? null };
+    },
+
+    async exec(sql) {
+      await pglite.exec(sql);
+    },
+
+    // PGlite is a single connection, so BEGIN/COMMIT on the handle is correct.
+    async transaction(fn) {
+      await pglite.exec('BEGIN');
+      try {
+        const out = await fn(this);
+        await pglite.exec('COMMIT');
+        return out;
+      } catch (err) {
+        try { await pglite.exec('ROLLBACK'); } catch { /* already unwound */ }
+        throw err;
+      }
+    },
+
+    async close() {
+      await pglite.close();
+    }
+  };
 }
 
 export function migrationFiles() {
@@ -39,25 +86,23 @@ export async function migrate(db, { log = () => {} } = {}) {
     (await db.query('SELECT filename FROM schema_migrations')).rows.map(r => r.filename));
 
   const applied = [];
-  const skipped = [];
 
   for (const filename of migrationFiles()) {
     if (done.has(filename)) continue;
     const sql = readFileSync(join(MIGRATIONS_DIR, filename), 'utf8');
 
-    if (sql.includes(SKIP_MARKER)) {
-      skipped.push(filename);
-      log(`skip ${filename} (needs role creation — apply manually against a real cluster)`);
-      continue;
-    }
-
+    // Migrations are self-contained and environment-tolerant: a step that needs
+    // privileges the current role lacks degrades with a NOTICE instead of
+    // failing. There is deliberately no "skip this here" convention — a skipped
+    // migration is a schema difference between environments that nobody
+    // remembers, which is how "it works on staging" happens.
     await db.exec(sql);
     await db.query('INSERT INTO schema_migrations (filename) VALUES ($1)', [filename]);
     applied.push(filename);
     log(`apply ${filename}`);
   }
 
-  return { applied, skipped };
+  return { applied };
 }
 
 /** Convenience for tests: a fresh, fully migrated in-memory database. */
@@ -68,11 +113,15 @@ export async function freshDb() {
 }
 
 /**
- * Run `fn` inside a transaction, rolling back on any throw. Written against plain
- * BEGIN/COMMIT rather than a driver-specific helper so it works identically on
- * PGlite and node-postgres.
+ * Run `fn` inside a transaction, rolling back on any throw.
+ *
+ * Delegates to the driver's own `transaction`, because only the driver knows how
+ * to pin a connection. The fallback exists for a bare `pg`-shaped object that
+ * predates this contract.
  */
 export async function withTransaction(db, fn) {
+  if (typeof db.transaction === 'function') return db.transaction(fn);
+
   await db.exec('BEGIN');
   try {
     const out = await fn(db);

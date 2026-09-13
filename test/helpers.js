@@ -7,26 +7,112 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { freshDb } from '../src/db.js';
+import { freshDb as freshPgliteDb, migrate } from '../src/db.js';
+import { createPgDb } from '../src/db-pg.js';
 import { FsStorage } from '../src/storage.js';
 import { createApp, listen } from '../src/server.js';
 import { bootstrap, createProject, requestLoginLink, createInvite,
          redeemInvite } from '../src/auth.js';
 
+/**
+ * The whole suite runs twice in CI: once on the PGlite driver, once on the pg
+ * driver. `RGM_TEST_DRIVER=pg` selects the latter, which is what proves the two
+ * drivers are actually interchangeable rather than merely similar.
+ */
+export const testDriver = () =>
+  (process.env.RGM_TEST_DRIVER === 'pg' ? 'pg' : 'pglite');
+
+/**
+ * A `pg.Pool`-shaped double backed by one PGlite instance.
+ *
+ * It emulates a pool of size one: `connect()` hands out a handle over the same
+ * connection. That is enough to exercise the part of the pg driver that matters —
+ * that a transaction pins a client and issues BEGIN/COMMIT on it — without
+ * needing a Postgres server.
+ *
+ * The subtlety: node-postgres uses the SIMPLE query protocol when there are no
+ * parameters, which executes several statements AND returns the rows of the last
+ * one. So "no parameters" does not mean "not a query". A paramless SELECT must
+ * still return rows, while a multi-statement migration must not be fed to
+ * PGlite's `query()` (which rejects more than one statement).
+ */
+function looksMultiStatement(sql) {
+  const stripped = String(sql)
+    .replace(/--[^\n]*/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  return /;[\s\S]*\S/.test(stripped);
+}
+
+function pgliteAsPgPool(pglite) {
+  const query = async (text, params) => {
+    const hasParams = params !== undefined && params !== null;
+    if (!hasParams && looksMultiStatement(text)) {
+      await pglite.exec(text);
+      return { rows: [], rowCount: null };
+    }
+    const res = hasParams ? await pglite.query(text, params) : await pglite.query(text);
+    return { rows: res.rows ?? [], rowCount: res.affectedRows ?? null };
+  };
+
+  return {
+    query,
+    async connect() {
+      return { query, release() { /* nothing to return to a pool of one */ } };
+    },
+    async end() { /* the caller owns the PGlite instance */ }
+  };
+}
+
+/** A fresh, migrated database on whichever driver the environment selects. */
+export async function freshDb() {
+  if (testDriver() === 'pg') {
+    const { PGlite } = await import('@electric-sql/pglite');
+    const pglite = new PGlite();
+    await pglite.waitReady;
+    const db = await createPgDb({ pool: pgliteAsPgPool(pglite) });
+    await migrate(db);
+    return db;
+  }
+  return freshPgliteDb();
+}
+
 function makeClient(baseUrl) {
-  let cookie = null;
+  let sessionToken = null;
+  let csrfToken = null;
 
   const request = async (method, path, { body, headers = {}, raw = false } = {}) => {
     const h = { ...headers };
-    if (cookie) h.cookie = cookie;
+    const cookies = [];
+    if (sessionToken !== null) cookies.push(`session=${sessionToken}`);
+    if (csrfToken !== null) cookies.push(`csrf=${encodeURIComponent(csrfToken)}`);
+    if (cookies.length) h.cookie = cookies.join('; ');
+
+    // What the browser app does: read the csrf cookie, echo it in a header.
+    // Tests that want to simulate a cross-site request call dropCsrf() first.
+    const safe = ['GET', 'HEAD', 'OPTIONS'].includes(method);
+    if (csrfToken && !safe && h['x-csrf-token'] === undefined) {
+      h['x-csrf-token'] = csrfToken;
+    }
+
     let payload = body;
     if (body !== undefined && !raw) {
       h['content-type'] = 'application/json';
       payload = JSON.stringify(body);
     }
     const res = await fetch(baseUrl + path, { method, headers: h, body: payload });
-    const setCookie = res.headers.get('set-cookie');
-    if (setCookie) cookie = setCookie.split(';')[0];
+
+    const setCookies = typeof res.headers.getSetCookie === 'function'
+      ? res.headers.getSetCookie()
+      : [res.headers.get('set-cookie')].filter(Boolean);
+    for (const raw of setCookies) {
+      const pair = raw.split(';')[0];
+      const eq = pair.indexOf('=');
+      if (eq < 0) continue;
+      const name = pair.slice(0, eq).trim();
+      const value = pair.slice(eq + 1);
+      if (name === 'session') sessionToken = value === '' ? null : value;
+      if (name === 'csrf') csrfToken = value === '' ? null : decodeURIComponent(value);
+    }
 
     const buf = Buffer.from(await res.arrayBuffer());
     const contentType = res.headers.get('content-type') ?? '';
@@ -44,23 +130,29 @@ function makeClient(baseUrl) {
     put: (p, b, o) => request('PUT', p, { ...o, body: b, raw: true }),
     del: (p, o) => request('DELETE', p, o),
     request,
-    get cookie() { return cookie; },
-    set cookie(v) { cookie = v; }
+    get cookie() { return sessionToken === null ? '' : `session=${sessionToken}`; },
+    set cookie(v) { sessionToken = v === null ? null : String(v).replace(/^session=/, ''); },
+    get csrf() { return csrfToken; },
+    // Simulate a request a browser sends without the app's help.
+    dropCsrf() { csrfToken = null; },
+    dropSession() { sessionToken = null; }
   };
 }
 
-export async function makeWorld() {
+export async function makeWorld({ limits = null, storage = null } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'rgm-test-'));
   const db = await freshDb();
   const mails = [];
   const deliver = async (msg) => { mails.push(msg); };
-  const storage = new FsStorage({ root: join(dir, 'storage'), secret: 'test-secret' });
-  const app = createApp({ db, storage, deliver,
+  const storageImpl = storage ?? new FsStorage({
+    root: join(dir, 'storage'), secret: 'test-secret'
+  });
+  const app = createApp({ db, storage: storageImpl, deliver, limits,
     onError: (err) => console.error('[server error]', err) });
   const { url } = await listen(app, { port: 0 });
 
   const world = {
-    db, app, storage, mails, url, dir, deliver,
+    db, app, storage: storageImpl, mails, url, dir, deliver,
 
     newClient: () => makeClient(url),
 

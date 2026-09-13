@@ -59,6 +59,40 @@ export async function enqueueReadyNotifications(db, {
 const backoffSeconds = (attempts) => Math.min(300, 2 ** Math.min(attempts, 8));
 
 /**
+ * Compose the human-facing message.
+ *
+ * This belongs here rather than in the mailer: what a notification says is a
+ * product decision, and every transport (SMTP, an HTTP provider, the console)
+ * should send the same words. The first revision passed only ids to the mailer,
+ * so a real transport had a recipient and no message.
+ *
+ * Vietnamese first, because the recipient of a readiness notice is the tester.
+ */
+export function composeNotification(n) {
+  const payload = n.payload ?? {};
+  if (n.kind === 'milestone.ready') {
+    const code = payload.milestoneCode ?? 'milestone';
+    return {
+      subject: `[RGM] ${code} sẵn sàng kiểm thử`,
+      body: [
+        `Cột mốc ${code} đã sẵn sàng để kiểm thử.`,
+        '',
+        'Mở ứng dụng để xem các cột mốc và gửi lỗi kèm ảnh chụp màn hình:',
+        n.baseUrl ?? '(chưa cấu hình địa chỉ ứng dụng)',
+        '',
+        `-- `,
+        `Thông báo: ${n.kind}`,
+        `Mã: ${n.dedupe_key}`
+      ].join('\n')
+    };
+  }
+  return {
+    subject: `[RGM] ${n.kind}`,
+    body: JSON.stringify(payload, null, 2)
+  };
+}
+
+/**
  * Drain the outbox. A send failure is recorded and retried with backoff; it never
  * reverts the milestone transition.
  */
@@ -89,6 +123,7 @@ export async function runOutbox(db, sender, { workerId, max = 50,
     }
 
     try {
+      const message = composeNotification(n);
       const res = await sender.send({
         to: n.email,
         kind: n.kind,
@@ -97,7 +132,9 @@ export async function runOutbox(db, sender, { workerId, max = 50,
         idempotencyKey: n.dedupe_key,
         dedupeKey: n.dedupe_key,
         payload: n.payload,
-        baseUrl
+        baseUrl,
+        subject: message.subject,
+        body: message.body
       });
       await db.query(
         `UPDATE notifications_outbox

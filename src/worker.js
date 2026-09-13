@@ -5,34 +5,33 @@
  * Every job is claimed under a lease, so several workers can run concurrently and
  * a worker that dies mid-job has its work reclaimed rather than lost. Exhausted
  * jobs are parked so they stop being retried forever but remain visible.
+ *
+ * The database, translation provider and mailer all come from the same
+ * configuration the server uses — otherwise a worker can quietly write to a
+ * different bucket or translate through a different provider than the API
+ * advertises.
  */
 import { randomUUID } from 'node:crypto';
 import { createDb } from './db.js';
-import { claimTranslation, claimOutbox, parkExhaustedTranslations,
-         parkExhaustedOutbox, ClaimPolicy } from './claim.js';
-import { runBugTranslations, runEventTranslations, StubProvider } from './translate.js';
+import { loadConfig } from './config.js';
+import { parkExhaustedTranslations, parkExhaustedOutbox, ClaimPolicy } from './claim.js';
+import { runBugTranslations, runEventTranslations } from './translate.js';
 import { runOutbox } from './notify.js';
 
+const config = loadConfig();
 const IDLE_MS = Number(process.env.WORKER_IDLE_MS ?? 2000);
 const workerId = process.env.WORKER_ID ?? randomUUID();
 
-/**
- * The translation provider. The stub is clearly marked: a real deployment must
- * supply a provider (the glossary handling lives in translate.js).
- */
-const provider = StubProvider('stub');
+const provider = config.translationProvider;
+const sender = config.mailer;
 
-const sender = {
-  name: 'stdout',
-  async send(msg) {
-    process.stdout.write(`[notify] to=${msg.to} kind=${msg.kind} key=${msg.dedupeKey}\n`);
-    return { messageId: `local-${msg.dedupeKey}` };
-  }
-};
+const db = await createDb({ dataDir: config.dataDir, url: config.databaseUrl });
 
-const db = await createDb({ dataDir: process.env.PGLITE_DIR });
-process.stdout.write(`worker ${workerId} starting (lease ${ClaimPolicy.leaseSeconds}s, ` +
-  `max ${ClaimPolicy.maxAttempts} attempts)\n`);
+process.stdout.write(`worker ${workerId} starting\n`);
+for (const [key, value] of Object.entries(config.describe())) {
+  process.stdout.write(`  ${key}: ${value}\n`);
+}
+process.stdout.write(`  lease: ${ClaimPolicy.leaseSeconds}s, max attempts: ${ClaimPolicy.maxAttempts}\n`);
 
 let stopping = false;
 const stop = () => { stopping = true; };
@@ -41,9 +40,9 @@ process.on('SIGTERM', stop);
 
 while (!stopping) {
   const [bugs, events, outbox] = await Promise.all([
-    runBugTranslations(db, provider, { workerId }),
-    runEventTranslations(db, provider, { workerId }),
-    runOutbox(db, sender, { workerId })
+    runBugTranslations(db, provider, { workerId, glossary: config.glossary }),
+    runEventTranslations(db, provider, { workerId, glossary: config.glossary }),
+    runOutbox(db, sender, { workerId, baseUrl: config.publicUrl })
   ]);
 
   for (const r of [...bugs, ...events]) {

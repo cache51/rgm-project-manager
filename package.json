@@ -12,10 +12,14 @@
     "worker": "node src/worker.js",
     "migrate": "node src/migrate.js",
     "bootstrap": "node src/bootstrap.js",
-    "test": "node --test --test-concurrency=1 test/"
+    "test": "node --test --test-concurrency=1 test/",
+    "test:pg": "RGM_TEST_DRIVER=pg node --test --test-concurrency=1 test/",
+    "test:all": "npm test && npm run test:pg",
+    "smoke": "bash scripts/smoke.sh"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.5.8"
+    "@electric-sql/pglite": "^0.5.8",
+    "pg": "^8.23.0"
   },
   "engines": {
     "node": ">=20"

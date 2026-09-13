@@ -136,6 +136,61 @@ test('output is deterministic, so bug.md and the clipboard payload cannot drift'
   assert.ok(a.endsWith('\n'));
 });
 
+test('RGM-S1-006: the title is translated too, not only the body', () => {
+  const out = buildPrompt({
+    ...base,
+    translations: {
+      title: { zh: '當我匯出裝箱單時…', en: 'When exporting the packing list…' },
+      body: { zh: '當我為 Lucky Brand 匯出裝箱單時…' },
+      availability: { title: { zh: 'done', en: 'done' }, body: { zh: 'done', en: 'done' } }
+    }
+  });
+  assert.match(out, /<<<RGM-UNTRUSTED:BUG_TITLE_ZH>>>/);
+  assert.match(out, /<<<RGM-UNTRUSTED:BUG_TITLE_EN>>>/);
+  assert.match(out, /Translation coverage: complete/);
+  // the body had no English translation but availability says done, so no gap line
+  assert.equal(count(out, 'BUG_TITLE_ZH'), 2, 'open and close fence');
+});
+
+test('RGM-S1-006: a language that failed is reported, not silently omitted', () => {
+  const out = buildPrompt({
+    ...base,
+    translations: {
+      title: { zh: '當我匯出…' },
+      body: { zh: '當我為 Lucky Brand 匯出…' },
+      availability: { title: { zh: 'done', en: 'failed' }, body: { zh: 'done', en: 'failed' } },
+      errors: { title: { en: 'provider 503' }, body: { en: 'provider 503' } }
+    }
+  });
+  // The English block is absent because that translation genuinely does not exist...
+  assert.equal(count(out, 'BUG_BODY_EN'), 0);
+  assert.equal(count(out, 'BUG_TITLE_EN'), 0);
+  // ...and the prompt SAYS so, which is the whole point of the fix.
+  assert.match(out, /Translation coverage: INCOMPLETE/);
+  assert.match(out, /body\/en failed \(provider 503\)/);
+  assert.match(out, /title\/en failed/);
+});
+
+test('RGM-S1-006: a pending language is distinguished from a failed one', () => {
+  const out = buildPrompt({
+    ...base,
+    translations: {
+      title: {}, body: { zh: '當我為…' },
+      availability: { title: { zh: 'pending', en: 'pending' }, body: { zh: 'done', en: 'pending' } }
+    }
+  });
+  assert.match(out, /title\/zh pending/);
+  assert.match(out, /body\/en pending/);
+
+  // The enumerated gaps must say `pending`, never `failed`. (The sentence after
+  // the list mentions both words generically, so only the list is inspected.)
+  const coverage = out.split('\n').find((line) => line.includes('Translation coverage:'));
+  assert.ok(coverage, 'a coverage line must be present');
+  const gapList = (coverage.split('—')[1] ?? '').split('.')[0];
+  assert.match(gapList, /title\/zh pending/);
+  assert.ok(!gapList.includes('failed'), `pending reported as failed: ${gapList}`);
+});
+
 test('a missing translation degrades to original-only instead of blocking', () => {
   const out = buildPrompt({ ...base, translations: { state: 'pending' } });
   assert.match(out, /Translation: unavailable \(pending\)/);

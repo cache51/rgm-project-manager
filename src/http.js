@@ -138,7 +138,14 @@ export function handle(fn) {
     } catch (err) {
       if (res.headersSent) { res.end(); return; }
       if (err instanceof HttpError) {
-        sendJson(res, err.status, { error: err.code, message: err.message });
+        const body = { error: err.code, message: err.message };
+        const headers = {};
+        if (err.retryAfter) {
+          body.retryAfter = err.retryAfter;
+          headers['retry-after'] = String(err.retryAfter);
+        }
+        if (err.details) body.details = err.details;
+        sendJson(res, err.status, body, headers);
         return;
       }
       // Domain errors carry a stable code; map them onto status codes rather than

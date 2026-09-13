@@ -291,6 +291,27 @@ describe('bugs: translation', () => {
       'the raw UTC instant must not be what the agent is handed — the UI shows local time');
   });
 
+  test('the prompt carries title translations and reports a partial failure', async () => {
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await runBugTranslations(w.db, StubProvider(), { workerId: randomUUID() });
+
+    const full = await w.devClient.get(`/api/bugs/${bug.id}/prompt`);
+    assert.match(full.text, /BUG_TITLE_ZH/, 'the title must be translated in the prompt');
+    assert.match(full.text, /Translation coverage: complete/);
+
+    // Now make one language fail and re-request: the prompt must say so rather
+    // than quietly showing a zh-only report (RGM-S1-006).
+    await w.db.query(
+      `UPDATE bug_translations SET status = 'failed', error = 'upstream 503'
+        WHERE bug_id = $1 AND field = 'body' AND lang = 'en'`, [bug.id]);
+
+    const partial = await w.devClient.get(`/api/bugs/${bug.id}/prompt`);
+    assert.equal((partial.text.match(/BUG_BODY_EN/g) ?? []).length, 0,
+      'the missing translation has no block');
+    assert.match(partial.text, /Translation coverage: INCOMPLETE/);
+    assert.match(partial.text, /body\/en failed \(upstream 503\)/);
+  });
+
   test('the handoff prompt carries the timeline note inside an untrusted fence', async () => {
     const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
     await w.devClient.post(`/api/bugs/${bug.id}/comments`, { note: 'Đã kiểm tra lại máy' });

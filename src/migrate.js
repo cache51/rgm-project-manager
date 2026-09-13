@@ -8,17 +8,10 @@
 import { createDb, migrate } from './db.js';
 
 const db = await createDb({ dataDir: process.env.PGLITE_DIR });
-const { applied, skipped } = await migrate(db, {
+const { applied } = await migrate(db, {
   log: (line) => process.stdout.write(`  ${line}\n`)
 });
 
-process.stdout.write(
-  `migrations: ${applied.length} applied` +
-  `${skipped.length ? `, ${skipped.length} skipped` : ''}\n`);
-
-for (const filename of skipped) {
-  process.stdout.write(`  skipped ${filename} — needs role creation; ` +
-    `apply it manually against a real cluster\n`);
-}
+process.stdout.write(`migrations: ${applied.length} applied\n`);
 
 if (db.close) await db.close();

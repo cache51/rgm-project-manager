@@ -1,0 +1,178 @@
+/**
+ * Environment configuration.
+ *
+ * Untested configuration is where deployments break, so each choice is asserted
+ * against the env var that triggers it, and `describe()` is checked to report what
+ * was actually selected.
+ */
+import { describe, test } from 'node:test';
+import assert from 'node:assert/strict';
+import { loadConfig, chooseStorage, chooseMailer, chooseTranslationProvider,
+         makeDeliver } from '../src/config.js';
+import { FsStorage } from '../src/storage.js';
+import { S3Storage } from '../src/storage-s3.js';
+
+describe('config: storage', () => {
+  test('defaults to the filesystem, so local development needs no setup', () => {
+    assert.ok(chooseStorage({}) instanceof FsStorage);
+  });
+
+  test('S3_BUCKET switches to bucket storage', () => {
+    const storage = chooseStorage({
+      S3_BUCKET: 'rgm-attachments',
+      S3_ENDPOINT: 'http://127.0.0.1:9000',
+      S3_ACCESS_KEY_ID: 'key',
+      S3_SECRET_ACCESS_KEY: 'secret'
+    });
+    assert.ok(storage instanceof S3Storage);
+    assert.equal(storage.bucket, 'rgm-attachments');
+    assert.equal(storage.forcePathStyle, true, 'path style suits MinIO, the common case');
+  });
+
+  test('virtual-host addressing can be requested', () => {
+    const storage = chooseStorage({
+      S3_BUCKET: 'b', S3_ENDPOINT: 'https://s3.example', S3_ACCESS_KEY_ID: 'k',
+      S3_SECRET_ACCESS_KEY: 's', S3_FORCE_PATH_STYLE: 'false'
+    });
+    assert.equal(storage.forcePathStyle, false);
+  });
+});
+
+describe('config: mailer', () => {
+  test('defaults to the console, which is obviously not a delivery mechanism', () => {
+    assert.equal(chooseMailer({}).name, 'console');
+  });
+
+  test('SMTP_HOST selects SMTP, and port 465 implies implicit TLS', () => {
+    const mailer = chooseMailer({ SMTP_HOST: 'smtp.example', SMTP_PORT: '465', SMTP_USER: 'u' });
+    assert.equal(mailer.name, 'smtp');
+
+    // 587 must NOT default to implicit TLS — it is the STARTTLS port.
+    assert.equal(chooseMailer({ SMTP_HOST: 'x', SMTP_PORT: '587' }).name, 'smtp');
+  });
+
+  test('an HTTP provider wins over SMTP when both are configured', () => {
+    assert.equal(chooseMailer({ EMAIL_API_ENDPOINT: 'https://api.mail/v1',
+                                EMAIL_API_KEY: 'k', SMTP_HOST: 'smtp.example' }).name, 'http');
+  });
+
+  test('requireTls can be demanded explicitly', () => {
+    const mailer = chooseMailer({ SMTP_HOST: 'x', SMTP_REQUIRE_TLS: 'true' });
+    assert.equal(mailer.name, 'smtp');
+  });
+});
+
+describe('config: translation provider', () => {
+  test('defaults to the stub, and the stub says so', () => {
+    assert.equal(chooseTranslationProvider({}).name, 'stub');
+  });
+
+  test('an API key implies the OpenAI-compatible provider', () => {
+    assert.equal(chooseTranslationProvider({ TRANSLATE_API_KEY: 'sk-x' }).name,
+      'openai-compatible');
+  });
+
+  test('deepl is selected explicitly and keeps its own key', () => {
+    const provider = chooseTranslationProvider({ TRANSLATE_PROVIDER: 'deepl',
+                                                 DEEPL_API_KEY: 'dl' });
+    assert.equal(provider.name, 'deepl');
+  });
+
+  test('an explicit provider beats the inferred one', () => {
+    assert.equal(chooseTranslationProvider({ TRANSLATE_API_KEY: 'sk', TRANSLATE_PROVIDER: 'stub' })
+      .name, 'stub');
+  });
+});
+
+describe('config: the deliver adapter', () => {
+  const capture = () => {
+    const sent = [];
+    return {
+      name: 'capture',
+      sent,
+      async send(msg) { sent.push(msg); return { messageId: 'x' }; }
+    };
+  };
+
+  test('a sign-in link points at /login and carries the token', async () => {
+    const mailer = capture();
+    await makeDeliver(mailer, 'http://localhost:3000')({
+      to: 'linh@rgm.example', token: 'tok+with/special=chars', kind: 'login'
+    });
+
+    const [msg] = mailer.sent;
+    assert.equal(msg.to, 'linh@rgm.example');
+    assert.match(msg.body, /http:\/\/localhost:3000\/login\?token=/);
+    // The token must be url-encoded, or a '+' in it would arrive as a space.
+    assert.ok(msg.body.includes(encodeURIComponent('tok+with/special=chars')));
+    assert.match(msg.subject, /đăng nhập/);
+  });
+
+  test('an invitation points at the invite flow, not sign-in', async () => {
+    const mailer = capture();
+    await makeDeliver(mailer, 'https://rgm.example')({
+      to: 'new@rgm.example', token: 'abc', kind: 'invite'
+    });
+    assert.match(mailer.sent[0].body, /https:\/\/rgm\.example\/login\?invite=abc/);
+    assert.ok(!mailer.sent[0].body.includes('?token='), 'an invitation is not a session');
+  });
+
+  test('a trailing slash on the public URL does not produce a double slash', async () => {
+    const mailer = capture();
+    await makeDeliver(mailer, 'https://rgm.example/')({ to: 'a@b.c', token: 't', kind: 'login' });
+    assert.match(mailer.sent[0].body, /https:\/\/rgm\.example\/login/);
+    assert.ok(!mailer.sent[0].body.includes('example//login'));
+  });
+});
+
+describe('config: loadConfig', () => {
+  test('a bare environment is coherent and self-describing', () => {
+    const config = loadConfig({});
+    const described = config.describe();
+
+    assert.equal(described.database, 'pglite (in-memory)');
+    assert.equal(described.mailer, 'console');
+    assert.equal(described.translation, 'stub');
+    assert.equal(described.secureCookies, false);
+    assert.equal(config.publicUrl, 'http://127.0.0.1:3000');
+    assert.equal(config.port, 3000);
+  });
+
+  test('a production-shaped environment reports what it selected', () => {
+    const config = loadConfig({
+      DATABASE_URL: 'postgres://u:p@db:5432/rgm',
+      S3_BUCKET: 'rgm',
+      S3_ENDPOINT: 'https://s3.example',
+      S3_ACCESS_KEY_ID: 'k',
+      S3_SECRET_ACCESS_KEY: 's',
+      SMTP_HOST: 'smtp.example',
+      TRANSLATE_PROVIDER: 'deepl',
+      DEEPL_API_KEY: 'dl',
+      PUBLIC_URL: 'https://rgm.example',
+      SECURE_COOKIES: 'true',
+      PORT: '8080'
+    });
+    const described = config.describe();
+
+    assert.equal(described.database, 'postgres (DATABASE_URL)');
+    assert.equal(described.storage, 's3 (rgm)');
+    assert.equal(described.mailer, 'smtp');
+    assert.equal(described.translation, 'deepl');
+    assert.equal(described.publicUrl, 'https://rgm.example');
+    assert.equal(described.secureCookies, true);
+    assert.equal(config.port, 8080);
+    // Cookies must be Secure in production, or the session cookie leaks over http.
+    assert.equal(config.secureCookies, true);
+  });
+
+  test('PUBLIC_URL is normalised so links are not malformed', () => {
+    assert.equal(loadConfig({ PUBLIC_URL: 'https://rgm.example///' }).publicUrl,
+      'https://rgm.example');
+  });
+
+  test('databases are chosen exclusively, never both', () => {
+    const both = loadConfig({ DATABASE_URL: 'postgres://x', PGLITE_DIR: '/tmp/pg' });
+    assert.equal(both.describe().database, 'postgres (DATABASE_URL)',
+      'a connection string must win, or a deployment silently uses a local file');
+  });
+});

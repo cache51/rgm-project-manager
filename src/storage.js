@@ -52,7 +52,15 @@ export class FsStorage {
   presignUpload({ key, contentType, expiresInSeconds = 300 }) {
     const exp = Math.floor(Date.now() / 1000) + expiresInSeconds;
     const body = Buffer.from(JSON.stringify({ key, ct: contentType, exp })).toString('base64url');
-    return { token: `${body}.${this.#sign(body)}`, key, expiresAt: exp };
+    const token = `${body}.${this.#sign(body)}`;
+    return {
+      key,
+      // This driver proxies the upload, so the URL points back at our own API.
+      url: `/api/uploads/${encodeURIComponent(token)}`,
+      token,
+      headers: { 'content-type': contentType },
+      expiresAt: exp
+    };
   }
 
   /** Verify a PUT capability. Throws rather than returning a falsy value. */
