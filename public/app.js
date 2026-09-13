@@ -99,9 +99,34 @@ const SEV_CLASS = { high: 'high', medium: 'med', low: 'low' };
 const MS_CLASS = { planned: 'plan', in_progress: 'wip', ready: 'ready', done: 'done' };
 const BUG_CLASS = { new: 'plan', fixing: 'wip', retest: 'ready', closed: 'done' };
 
+const LANGS = ['vi', 'zh', 'en'];
+
+/**
+ * Which language to open in: an explicit earlier choice, else the browser's, else
+ * Vietnamese (the testers' language, and the one the reports are written in).
+ *
+ * Storage can throw — Safari private mode, or a user with site data blocked — so it
+ * is wrapped rather than assumed.
+ */
+function initialLang() {
+  try {
+    const stored = localStorage.getItem('rgm.lang');
+    if (LANGS.includes(stored)) return stored;
+  } catch { /* no storage; fall back to the browser's preference */ }
+
+  const fromBrowser = String(globalThis.navigator?.language ?? '').slice(0, 2).toLowerCase();
+  return LANGS.includes(fromBrowser) ? fromBrowser : 'vi';
+}
+
+function rememberLang(lang) {
+  try { localStorage.setItem('rgm.lang', lang); } catch { /* nothing to do about it */ }
+}
+
 const S = {
   me: null, projects: [], counts: {}, projectId: null,
-  view: 'milestones', lang: 'vi', bug: null, prompt: null,
+  // Declared above this object on purpose: `initialLang` reads LANGS, and using it
+  // here from further down the file throws a temporal-dead-zone error.
+  view: 'milestones', lang: initialLang(), bug: null, prompt: null,
   milestones: [], bugs: [], busy: false, notice: null
 };
 
@@ -484,8 +509,65 @@ function reportForm() {
   </div>`;
 }
 
+/**
+ * The screen a signed-in user sees before any project exists.
+ *
+ * A site admin gets a working create form: the API has always allowed
+ * POST /api/projects for them, but the screen offered no way to do it, so a fresh
+ * install was a dead end whose own sentence promised a capability it did not
+ * provide. Everyone else is told what to wait for.
+ */
+function firstRun() {
+  const me = S.me;
+  return `
+      <main style="margin:auto;padding:60px">
+        ${S.notice ? `<div class="toast ${S.notice.kind}">${esc(S.notice.text)}</div>` : ''}
+        <div class="card" style="max-width:520px;margin:auto">
+          <h2 style="margin-top:0">${t('projects')}</h2>
+          ${me.isSiteAdmin ? `
+            <p class="rel">${t('noProjects')}</p>
+            <label>${t('nameL')}</label>
+            <input id="f-pname" placeholder="Packing List Automation">
+            <label>${t('client')}</label>
+            <input id="f-pclient" placeholder="Lucky Brand">
+            <label>${t('envL')}</label>
+            <select id="f-penv">
+              <option value="staging" selected>staging</option>
+              <option value="production">production</option>
+            </select>
+            <div style="margin-top:14px">
+              <button class="btn" data-action="createproject">${t('create')}</button>
+            </div>
+          ` : `
+            <p>${esc(me.email)} is not a member of any project yet.</p>
+            <p class="rel">An admin must invite you.</p>
+          `}
+          <div style="margin-top:16px">
+            <button class="btn" data-action="signout">${t('signOut')}</button>
+          </div>
+          <!-- The switcher belongs here too: this screen renders before any sidebar,
+               so without it a first-run operator cannot change the language at all. -->
+          <div class="langbox" style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px">
+            <h4>${t('lang')}</h4>
+            <div class="langrow">
+              ${LANGS.map((l) => `<div class="lang ${l === S.lang ? 'on' : ''}" data-action="lang" data-lang="${l}">${langName(l)}</div>`).join('')}
+            </div>
+          </div>
+        </div>
+      </main>`;
+}
+
 function render() {
   const app = document.getElementById('app');
+
+  // A signed-in user with no project gets the first-run screen — through here, not
+  // painted once by boot(). Otherwise any later render (changing the language, say)
+  // replaced it with a shell containing no project, losing the create form.
+  if (!S.me?.projects.length) {
+    app.innerHTML = firstRun();
+    return;
+  }
+
   const body = S.bug ? bugDetail()
     : S.reporting ? reportForm()
     : S.view === 'milestones' ? milestoneCards()
@@ -519,7 +601,9 @@ document.getElementById('app').addEventListener('click', async (event) => {
         await refresh();
         break;
       case 'lang':
-        S.lang = el.dataset.lang; render();
+        S.lang = el.dataset.lang;
+        rememberLang(S.lang);
+        render();
         break;
       case 'signout':
         await api('POST', '/api/auth/logout');
@@ -713,44 +797,16 @@ async function boot() {
   if (!me) { location.replace('/login'); return; }
 
   S.me = me;
-  S.lang = me.projects.length ? S.lang : 'vi';
+  // No longer forced to Vietnamese when there are no projects: the language an
+  // operator chose (or their browser's) is what they get. Forcing it meant the only
+  // language switcher — in the sidebar — was hidden on the very screen that was
+  // stuck in a language they could not read.
 
   if (!me.projects.length) {
-    // A signed-in user with no membership.
-    //
-    // A site admin gets a working create form: the API has always allowed
-    // POST /api/projects for them, but the screen offered no way to do it, so a
-    // fresh install was a dead end whose own sentence promised a capability it did
-    // not provide. This is the first thing anyone sees, and no test covered it —
-    // test/ui.test.js checks the payloads the UI renders, never the DOM.
-    document.getElementById('app').innerHTML = `
-      <main style="margin:auto;padding:60px">
-        ${S.notice ? `<div class="toast ${S.notice.kind}">${esc(S.notice.text)}</div>` : ''}
-        <div class="card" style="max-width:520px;margin:auto">
-          <h2 style="margin-top:0">${t('projects')}</h2>
-          ${me.isSiteAdmin ? `
-            <p class="rel">${t('noProjects')}</p>
-            <label>${t('nameL')}</label>
-            <input id="f-pname" placeholder="Packing List Automation">
-            <label>${t('client')}</label>
-            <input id="f-pclient" placeholder="Lucky Brand">
-            <label>${t('envL')}</label>
-            <select id="f-penv">
-              <option value="staging" selected>staging</option>
-              <option value="production">production</option>
-            </select>
-            <div style="margin-top:14px">
-              <button class="btn" data-action="createproject">${t('create')}</button>
-            </div>
-          ` : `
-            <p>${esc(me.email)} is not a member of any project yet.</p>
-            <p class="rel">An admin must invite you.</p>
-          `}
-          <div style="margin-top:16px">
-            <button class="btn" data-action="signout">${t('signOut')}</button>
-          </div>
-        </div>
-      </main>`;
+    // One definition of this screen, in firstRun(). It used to live here as well, and
+    // a second copy is a copy that can drift — this one had already lost the language
+    // switcher and the create form's neighbours.
+    render();
     return;
   }
 

@@ -33,7 +33,7 @@ async function settle(times = 60) {
  * `routes` maps "METHOD /path" to either a payload, or a function receiving the
  * recorded call and returning { body, status, headers }.
  */
-function loadApp({ routes = {} } = {}) {
+function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
   const calls = [];
   const fields = new Map();
   const copied = [];
@@ -41,6 +41,15 @@ function loadApp({ routes = {} } = {}) {
   const listeners = {};
   const redirects = [];
   const promptAnswer = { value: '' };
+
+  // A tiny localStorage: the app remembers the language choice, and that has to be
+  // assertable without a browser.
+  const store = new Map(Object.entries(stored));
+  const localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k)
+  };
 
   const field = (id) => {
     if (!fields.has(id)) fields.set(id, { id, value: '', files: [] });
@@ -80,7 +89,8 @@ function loadApp({ routes = {} } = {}) {
     setTimeout, clearTimeout, setInterval, clearInterval,
     document,
     location: { replace: (u) => redirects.push(u), href: 'http://127.0.0.1:3000/' },
-    navigator: { clipboard: { writeText: async (t) => { copied.push(t); } } },
+    navigator: { clipboard: { writeText: async (t) => { copied.push(t); } }, language: browserLang },
+    localStorage,
     URL: { createObjectURL: () => 'blob:stub', revokeObjectURL() {} },
     getSelection: () => ({ removeAllRanges() {}, addRange() {} }),
     // The status-change reason comes from a window.prompt dialog — see transition()
@@ -111,7 +121,7 @@ function loadApp({ routes = {} } = {}) {
   vm.runInContext(SOURCE, ctx, { filename: 'public/app.js' });
 
   return {
-    calls, copied, downloads, listeners, fields, redirects, promptAnswer,
+    calls, copied, downloads, listeners, fields, redirects, promptAnswer, store,
     ctx,
     html: () => appEl.innerHTML,
     field: (id) => field(id),
@@ -341,6 +351,73 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
     assert.equal(selected.length, 1, 'exactly one option is preselected');
     assert.equal(selected[0][1], msB,
       'the milestone that was clicked is the one selected, not simply the first');
+  });
+});
+
+describe('ui (dom): the language', () => {
+  const noProjects = { userId: 'u1', email: 'a@b.test', isSiteAdmin: true, projects: [] };
+
+  test('a first-run screen offers the switcher, so it cannot be stuck in one language', async () => {
+    // The switcher lived only in the sidebar, which does not render until you have a
+    // project — so the screen furthest from any project was the one where a language
+    // could not be changed.
+    const app = loadApp({ routes: { 'GET /api/me': noProjects } });
+    await settle();
+
+    const html = app.html();
+    for (const lang of ['vi', 'zh', 'en']) {
+      assert.match(html, new RegExp(`data-action="lang" data-lang="${lang}"`),
+        `the empty state offers ${lang}`);
+    }
+  });
+
+  test('choosing English renders English', async () => {
+    const app = loadApp({ routes: { 'GET /api/me': noProjects } });
+    await settle();
+    await app.click('lang', { lang: 'en' });
+
+    const html = app.html();
+    assert.match(html, /No projects yet/, 'the body is English');
+    assert.match(html, /Create project/, 'including the button');
+    assert.doesNotMatch(html, /Chưa có dự án nào/, 'and no Vietnamese is left behind');
+  });
+
+  test('the choice is remembered for next time', async () => {
+    const app = loadApp({ routes: { 'GET /api/me': noProjects } });
+    await settle();
+    await app.click('lang', { lang: 'en' });
+
+    assert.equal(app.store.get('rgm.lang'), 'en', 'the choice is persisted');
+  });
+
+  test('a remembered choice wins over the browser language', async () => {
+    const app = loadApp({
+      routes: { 'GET /api/me': noProjects },
+      stored: { 'rgm.lang': 'zh' },
+      browserLang: 'en-GB'
+    });
+    await settle();
+
+    assert.match(app.html(), /[\u4e00-\u9fff]/, 'Chinese, as chosen earlier');
+    assert.doesNotMatch(app.html(), /No projects yet/);
+  });
+
+  test("the browser's language is used when nothing was chosen", async () => {
+    // An English browser opens in English without anyone having to find a switcher.
+    const app = loadApp({ routes: { 'GET /api/me': noProjects }, browserLang: 'en-GB' });
+    await settle();
+    assert.match(app.html(), /No projects yet/);
+
+    const vi = loadApp({ routes: { 'GET /api/me': noProjects }, browserLang: 'vi-VN' });
+    await settle();
+    assert.match(vi.html(), /Chưa có dự án nào/);
+  });
+
+  test('an unknown browser language falls back to Vietnamese', async () => {
+    const app = loadApp({ routes: { 'GET /api/me': noProjects }, browserLang: 'fr-FR' });
+    await settle();
+    assert.match(app.html(), /Chưa có dự án nào/,
+      'the testers read Vietnamese, so it is the safe default');
   });
 });
 
