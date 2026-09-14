@@ -129,6 +129,9 @@ export function packetPathFor(baseDir, entryName) {
 export function buildPacketMeta({ bug, project, milestone, attachments = [] }) {
   return {
     id: bug.id,
+    // Bug or feature request. The fields below are picked explicitly, so anything added
+    // to the caller's object has to be added here too or it silently disappears.
+    kind: bug.kind ?? 'bug',
     project: { id: project.id, name: project.name, client: project.client, env: project.env },
     milestone: bug.milestoneCode ?? milestone?.code ?? null,
     severity: bug.severity,

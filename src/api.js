@@ -39,6 +39,13 @@ const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif
  */
 const AUDIT_ONLY_KINDS = new Set(['attachment.downloaded', 'packet.downloaded']);
 
+// A report is a bug or a feature request. The workflow is the same for both, so they
+// share a table and one state machine; what differs is what the work is called and how
+// the report is labelled. A feature request numbered BUG-7 — in the list, in the prompt
+// handed to an AI agent, and in the packet filename a developer pulls — is wrong.
+const REPORT_KINDS = ['bug', 'feature'];
+const reportCode = (kind, number) => `${kind === 'feature' ? 'REQ' : 'BUG'}-${number}`;
+
 // ───────────────────── token scope policy (IR-001) ─────────────────────
 //
 // Scopes narrow an API token; a signed-in browser is the user's full authority
@@ -212,7 +219,8 @@ async function bugPayload(db, bug, role = 'developer') {
   ]);
   return {
     id: bug.id,
-    code: `BUG-${bug.bug_number}`,
+    code: reportCode(bug.kind, bug.bug_number),
+    kind: bug.kind,
     number: bug.bug_number,
     projectId: bug.project_id,
     milestone: { id: bug.milestone_id, code: bug.milestone_code, title: bug.milestone_title },
@@ -742,10 +750,15 @@ export function buildRoutes() {
   r.post('/api/projects/:id/bugs', handle(async (req, res, ctx) => {
     const role = await authorize(ctx.db, ctx.actor, ctx.params.id);
 
-    const { milestoneId, severity, titleVi, bodyVi } = await readJson(req);
+    const { milestoneId, severity, titleVi, bodyVi, kind = 'bug' } = await readJson(req);
+    // The kind defaults to a bug: every report before this existed was one, and a
+    // caller that knows nothing about kinds keeps working.
     if (!milestoneId || !severity || !titleVi || !bodyVi) {
       throw new HttpError(400, 'missing_fields',
         'milestoneId, severity, titleVi and bodyVi are required');
+    }
+    if (!REPORT_KINDS.includes(kind)) {
+      throw new HttpError(400, 'bad_kind', `kind must be one of ${REPORT_KINDS.join(', ')}`);
     }
     if (!['high', 'medium', 'low'].includes(severity)) {
       throw new HttpError(400, 'bad_severity', 'severity must be high, medium or low');
@@ -771,9 +784,10 @@ export function buildRoutes() {
       // The composite FK makes a cross-project milestone impossible to store.
       const ins = await tx.query(
         `INSERT INTO bugs (project_id, milestone_id, bug_number, reporter_id, severity,
-                           title_vi, body_vi)
-         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, bug_number`,
-        [ctx.params.id, milestoneId, number, ctx.actor.userId, severity, titleVi, bodyVi]);
+                           title_vi, body_vi, kind)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, bug_number`,
+        [ctx.params.id, milestoneId, number, ctx.actor.userId, severity, titleVi, bodyVi,
+         kind]);
 
       const bugId = ins.rows[0].id;
       await enqueueBugTranslations(tx, { bugId });
@@ -789,13 +803,13 @@ export function buildRoutes() {
       return { id: bugId, number };
     });
 
-    sendJson(res, 201, { id: bug.id, code: `BUG-${bug.number}` });
+    sendJson(res, 201, { id: bug.id, code: reportCode(kind, bug.number), kind });
   }));
 
   r.get('/api/projects/:id/bugs', handle(async (req, res, ctx) => {
     await authorize(ctx.db, ctx.actor, ctx.params.id);
     const rows = await ctx.db.query(
-      `SELECT b.id, b.bug_number, b.severity, b.status, b.title_vi, b.milestone_id,
+      `SELECT b.id, b.bug_number, b.kind, b.severity, b.status, b.title_vi, b.milestone_id,
               b.updated_at, m.code AS milestone_code,
               -- Who reported it, so a list row answers "who found this?" without
               -- opening every bug.
@@ -810,7 +824,8 @@ export function buildRoutes() {
         WHERE b.project_id = $1 AND b.deleted_at IS NULL
         ORDER BY b.bug_number DESC`, [ctx.params.id]);
     sendJson(res, 200, {
-      bugs: rows.rows.map(b => ({ ...b, code: `BUG-${b.bug_number}`, isOpen: isOpenBug(b.status) })),
+      bugs: rows.rows.map(b => ({ ...b, code: reportCode(b.kind, b.bug_number),
+                                  isOpen: isOpenBug(b.status) })),
       openCount: rows.rows.filter(b => isOpenBug(b.status)).length
     });
   }));
@@ -829,13 +844,13 @@ export function buildRoutes() {
   r.get('/api/projects/:id/bugs/removed', handle(async (req, res, ctx) => {
     await authorize(ctx.db, ctx.actor, ctx.params.id, ['admin', 'developer']);
     const rows = await ctx.db.query(
-      `SELECT b.id, b.bug_number, b.title_vi, b.severity, b.status, b.deleted_at,
+      `SELECT b.id, b.bug_number, b.kind, b.title_vi, b.severity, b.status, b.deleted_at,
               u.display_name AS reporter
          FROM bugs b JOIN users u ON u.id = b.reporter_id
         WHERE b.project_id = $1 AND b.deleted_at IS NOT NULL
         ORDER BY b.deleted_at DESC`, [ctx.params.id]);
     sendJson(res, 200, {
-      bugs: rows.rows.map((b) => ({ ...b, code: `BUG-${b.bug_number}` }))
+      bugs: rows.rows.map((b) => ({ ...b, code: reportCode(b.kind, b.bug_number) }))
     });
   }));
 
@@ -844,10 +859,11 @@ export function buildRoutes() {
     const n = Number(ctx.params.n);
     if (!Number.isInteger(n)) throw new HttpError(400, 'bad_number', 'not a number');
     const found = await ctx.db.query(
-      `SELECT id FROM bugs WHERE project_id = $1 AND bug_number = $2 AND deleted_at IS NULL`,
+      `SELECT id, kind FROM bugs
+        WHERE project_id = $1 AND bug_number = $2 AND deleted_at IS NULL`,
       [ctx.params.id, n]);
     if (!found.rows.length) throw new HttpError(404, 'not_found', 'no such bug in this project');
-    sendJson(res, 200, { id: found.rows[0].id, code: `BUG-${n}` });
+    sendJson(res, 200, { id: found.rows[0].id, code: reportCode(found.rows[0].kind, n) });
   }));
 
   r.get('/api/bugs/:id', handle(async (req, res, ctx) => {
@@ -1010,7 +1026,7 @@ export function buildRoutes() {
       const r = await tx.query(
         `UPDATE bugs SET ${sets.join(', ')}
           WHERE id = $1 AND deleted_at IS NULL
-          RETURNING id, bug_number, severity, title_vi, body_vi, status`,
+          RETURNING id, bug_number, kind, severity, title_vi, body_vi, status`,
         values);
 
       for (const field of staleFields) {
@@ -1028,7 +1044,7 @@ export function buildRoutes() {
          JSON.stringify({ changed: updates.map(([col]) => col), retranslating: staleFields })]);
       return r.rows[0];
     });
-    sendJson(res, 200, { ...updated, code: `BUG-${updated.bug_number}` });
+    sendJson(res, 200, { ...updated, code: reportCode(updated.kind, updated.bug_number) });
   }));
 
   /** Remove a bug. The evidence stays; the bug stops being listed. */
@@ -1038,15 +1054,17 @@ export function buildRoutes() {
       const r = await tx.query(
         `UPDATE bugs SET deleted_at = now()
           WHERE id = $1 AND deleted_at IS NULL
-          RETURNING id, bug_number, reporter_id`, [ctx.params.id]);
+          RETURNING id, bug_number, kind, reporter_id`, [ctx.params.id]);
       await tx.query(
         `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
          VALUES ($1,$2,$3,'bug.removed',$4)`,
         [projectId, ctx.params.id, ctx.actor.userId,
-         JSON.stringify({ code: `BUG-${r.rows[0]?.bug_number}`, reportedBy: r.rows[0]?.reporter_id })]);
+         JSON.stringify({ code: reportCode(r.rows[0]?.kind, r.rows[0]?.bug_number),
+                          reportedBy: r.rows[0]?.reporter_id })]);
       return r.rows[0];
     });
-    sendJson(res, 200, { ok: true, id: removed.id, code: `BUG-${removed.bug_number}` });
+    sendJson(res, 200, { ok: true, id: removed.id,
+                         code: reportCode(removed.kind, removed.bug_number) });
   }));
 
   /** Bring a removed bug back. */
@@ -1059,16 +1077,18 @@ export function buildRoutes() {
 
     const restored = await withTransaction(ctx.db, async (tx) => {
       const r = await tx.query(
-        `UPDATE bugs SET deleted_at = NULL WHERE id = $1 RETURNING id, bug_number, status`,
+        `UPDATE bugs SET deleted_at = NULL WHERE id = $1
+          RETURNING id, bug_number, kind, status`,
         [ctx.params.id]);
       await tx.query(
         `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
          VALUES ($1,$2,$3,'bug.restored',$4)`,
         [projectId, ctx.params.id, ctx.actor.userId,
-         JSON.stringify({ code: `BUG-${r.rows[0].bug_number}` })]);
+         JSON.stringify({ code: reportCode(r.rows[0].kind, r.rows[0].bug_number) })]);
       return r.rows[0];
     });
-    sendJson(res, 200, { ok: true, ...restored, code: `BUG-${restored.bug_number}` });
+    sendJson(res, 200, { ok: true, ...restored,
+                         code: reportCode(restored.kind, restored.bug_number) });
   }));
 
   r.post('/api/bugs/:id/comments', handle(async (req, res, ctx) => {
@@ -1306,7 +1326,8 @@ export function buildRoutes() {
       { name: 'bug.md', data: Buffer.from(prompt, 'utf8') },
       { name: 'meta.json', data: Buffer.from(JSON.stringify(buildPacketMeta({
         bug: {
-          id: `BUG-${bug.bug_number}`, severity: bug.severity, status: bug.status,
+          id: reportCode(bug.kind, bug.bug_number), kind: bug.kind ?? 'bug',
+          severity: bug.severity, status: bug.status,
           tester: bug.reporter_name, createdAt: iso(bug.created_at),
           updatedAt: iso(bug.updated_at), milestoneCode: bug.milestone_code
         },
@@ -1323,7 +1344,7 @@ export function buildRoutes() {
     }
 
     const zip = makeZip(files);
-    const archive = packetArchiveName(`BUG-${bug.bug_number}`, bug.title_vi);
+    const archive = packetArchiveName(reportCode(bug.kind, bug.bug_number), bug.title_vi);
 
     // Pulling the handoff is a meaningful audit action, so it is recorded — and
     // because it is audit-only it is excluded from the prompt timeline, keeping
@@ -1335,8 +1356,11 @@ export function buildRoutes() {
         JSON.stringify({ entries: entries.length + 2, archive })]);
 
     sendBytes(res, 200, Buffer.from(zip), 'application/zip', {
-      // Non-ASCII names need the RFC 6266 form, with an ASCII fallback.
-      'content-disposition': contentDisposition(archive, `BUG-${bug.bug_number}.zip`),
+      // Non-ASCII names need the RFC 6266 form, with an ASCII fallback — and the
+      // fallback has to carry the same code, or a client that reads the plain filename
+      // downloads a feature request called BUG-4.
+      'content-disposition': contentDisposition(archive,
+        `${reportCode(bug.kind, bug.bug_number)}.zip`),
       'x-packet-entries': entries.length + 2
     });
   }));
@@ -1401,7 +1425,8 @@ export async function buildPromptFor(db, bug, { attachments: given = null } = {}
 
   return buildPrompt({
     bug: {
-      id: `BUG-${bug.bug_number}`, severity: bug.severity, status: bug.status,
+      id: reportCode(bug.kind, bug.bug_number), kind: bug.kind ?? 'bug',
+      severity: bug.severity, status: bug.status,
       titleVi: bug.title_vi, bodyVi: bug.body_vi,
       createdAt: stampIn(iso(bug.created_at), tz),
       updatedAt: stampIn(iso(bug.updated_at), tz)

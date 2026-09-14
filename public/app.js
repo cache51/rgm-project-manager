@@ -25,6 +25,10 @@ const T = {
     msL: 'Cột mốc', statusL: 'Trạng thái', client: 'Khách hàng', updatedL: 'Cập nhật lúc',
     createdL: 'Tạo lúc', timeline: 'Lịch sử hoạt động', openL: 'Đang mở',
     stNew: 'Mới báo', stFixing: 'Đang sửa', stRetest: 'Đã sửa — chờ xác nhận', stClosed: 'Đã đóng',
+    stRetestFeature: 'Đã làm — chờ xác nhận',
+    kindL: 'Loại', kindBug: 'Lỗi', kindFeature: 'Yêu cầu tính năng', requestFeature: 'Yêu cầu tính năng',
+    actStartWorking: 'Bắt đầu làm', actMarkImplemented: 'Đã làm xong',
+    featureVerified: 'Xác nhận tính năng', notDone: 'Chưa đạt — trả lại',
     actStartFixing: 'Bắt đầu sửa', actMarkFixed: 'Đã sửa xong', actVerified: 'Xác nhận đã sửa',
     actStillBroken: 'Vẫn còn lỗi — trả lại', actClose: 'Đóng', actReopen: 'Mở lại',
     noBugs: 'Chưa có lỗi nào cho dự án này 🎉', loading: 'Đang tải…',
@@ -70,6 +74,10 @@ const T = {
     msL: '所屬里程碑', statusL: '狀態', client: '客戶', updatedL: '最後更新',
     createdL: '建立時間', timeline: '活動時間軸', openL: '未關閉',
     stNew: '新回報', stFixing: '修復中', stRetest: '已修復——待確認', stClosed: '已關閉',
+    stRetestFeature: '已完成——待確認',
+    kindL: '類型', kindBug: 'Bug', kindFeature: '功能需求', requestFeature: '提出功能需求',
+    actStartWorking: '開始處理', actMarkImplemented: '已完成',
+    featureVerified: '功能已確認', notDone: '未完成——退回',
     actStartFixing: '開始修復', actMarkFixed: '已修好', actVerified: '確認修復',
     actStillBroken: '仍有問題——退回', actClose: '關閉', actReopen: '重新開啟',
     noBugs: '這個專案目前沒有 bug 🎉', loading: '載入中…',
@@ -115,6 +123,10 @@ const T = {
     msL: 'Milestone', statusL: 'Status', client: 'Client', updatedL: 'Last updated',
     createdL: 'Created', timeline: 'Activity timeline', openL: 'open',
     stNew: 'Open', stFixing: 'Being fixed', stRetest: 'Fixed — awaiting verification', stClosed: 'Closed',
+    stRetestFeature: 'Implemented — awaiting verification',
+    kindL: 'Kind', kindBug: 'Bug', kindFeature: 'Feature request', requestFeature: 'Request feature',
+    actStartWorking: 'Start working', actMarkImplemented: 'Mark as implemented',
+    featureVerified: 'Feature verified', notDone: 'Not done — send back',
     actStartFixing: 'Start fixing', actMarkFixed: 'Mark as fixed', actVerified: 'Fix verified',
     actStillBroken: 'Still broken — send back', actClose: 'Close', actReopen: 'Reopen',
     noBugs: 'No bugs in this project yet 🎉', loading: 'Loading…',
@@ -211,6 +223,8 @@ const S = {
   // the first-run screen, and the add-milestone form is no longer only the empty
   // list. Both were dead ends once you already had one of the thing.
   creatingProject: false, addingMilestone: false,
+  // What the next report will be, chosen at the entry point and changeable on the form.
+  reportKind: 'bug',
   // What has been removed from this project. Fetched alongside the live lists for the
   // roles that may put something back, so removal is reversible from the app rather
   // than only from SQL.
@@ -276,12 +290,30 @@ async function api(method, path, body) {
 const myRole = () => S.me?.projects.find((p) => p.id === S.projectId)?.role ?? null;
 const canDevelop = () => ['admin', 'developer'].includes(myRole());
 
-function statusLabel(kind, status) {
+function statusLabel(kind, status, reportKind = S.bug?.kind ?? S.reportKind) {
+  // The states are the same for both kinds of report; the work is not. "Fixed" over a
+  // request for something that never existed reads wrong.
+  if (reportKind === 'feature' && status === 'retest') return t('stRetestFeature');
   const map = {
     planned: 'plan', in_progress: 'wip', ready: 'ready', done: 'done',
     new: 'stNew', fixing: 'stFixing', retest: 'stRetest', closed: 'stClosed'
   };
   return t(map[status] ?? status);
+}
+
+/**
+ * What a move is called, for this kind of report.
+ *
+ * The actions are the same on the wire for both; only the words differ, so a feature
+ * request never says "Mark as fixed".
+ */
+function moveLabel(action, reportKind = S.bug?.kind ?? S.reportKind) {
+  const forFeature = {
+    start_fixing: 'actStartWorking', request_retest: 'actMarkImplemented',
+    retest_pass: 'featureVerified', retest_fail: 'notDone'
+  }[action];
+  const key = reportKind === 'feature' && forFeature ? forFeature : BUG_ACTION_LABEL[action];
+  return t(key ?? action);
 }
 
 /** The project's own language for a milestone title, falling back sensibly. */
@@ -552,8 +584,9 @@ function milestoneCards() {
             </button>`).join(' ')}
         </div>` : ''}
       ${m.status === 'ready' ? `
-        <div class="foot" style="margin-top:12px">
-          <button class="btn pri" data-action="report" data-ms="${esc(m.id)}">🐞 ${t('report')}</button>
+        <div class="foot" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+          <button class="btn pri" data-action="report" data-ms="${esc(m.id)}" data-kind="bug">🐞 ${t('report')}</button>
+          <button class="btn" data-action="report" data-ms="${esc(m.id)}" data-kind="feature">✨ ${t('requestFeature')}</button>
         </div>` : ''}
       ${canDevelop() ? `
         <div class="foot" style="margin-top:12px;gap:8px">
@@ -643,7 +676,7 @@ function bugRows() {
       <span class="sev ${SEV_CLASS[b.severity]}">${esc(SEV[b.severity][S.lang])}</span>
       <div class="body">
         <div class="id">${esc(b.code)} · ${esc(b.milestone_code)}</div>
-        <div class="ttl">${esc(b.title_vi)}</div>
+        <div class="ttl">${b.kind === 'feature' ? '✨' : '🐞'} ${esc(b.title_vi)}</div>
         <div class="sub">${esc(b.reporter)} · ${esc(b.attachments)} 📷</div>
         <div class="tags">
           <span class="tag">${t('whenL')} ${fmt(b.updated_at)}</span>
@@ -718,7 +751,8 @@ function bugDetail() {
 
     <div class="card" style="margin-top:14px">
       <span class="sev ${SEV_CLASS[b.severity]}">${esc(SEV[b.severity][S.lang])}</span>
-      <span class="st ${BUG_CLASS[b.status]}">${statusLabel('bug', b.status)}</span>
+      <span class="st ${BUG_CLASS[b.status]}">${statusLabel('bug', b.status, b.kind)}</span>
+      ${b.kind === 'feature' ? `<span class="st verified">✨ ${t('kindFeature')}</span>` : ''}
       <h2 style="margin:10px 0 4px;font-size:17px">${esc(b.code)} — ${esc(b.titleVi)}</h2>
       <div class="meta">${esc(b.projectId ? '' : '')}${t('testerL')}: ${esc(b.reporter.name)} ·
         ${t('msL')}: ${esc(b.milestone.code)} · ${t('whenL')} ${fmt(b.createdAt)}</div>
@@ -767,15 +801,15 @@ function bugDetail() {
       ${(b.availableActions ?? []).length ? b.availableActions.map((a) => `
         <button class="btn" data-action="transition" data-id="${esc(b.id)}"
                 data-move="${esc(a.action)}" data-reason="${a.requiresReason ? '1' : ''}">
-          ${esc(t(BUG_ACTION_LABEL[a.action] ?? a.action))} → ${statusLabel('bug', a.to)}
+          ${esc(moveLabel(a.action))} → ${statusLabel('bug', a.to, b.kind)}
         </button>`).join(' ') : `<div class="tag">—</div>`}
 
       ${['retest'].includes(b.status) ? `
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <input id="retestnote" placeholder="${t('noteL')} (${S.lang === 'vi' ? 'Tiếng Việt' : '…'})"
                  style="flex:1;min-width:220px">
-          <button class="btn pri" data-action="retest" data-id="${esc(b.id)}" data-result="pass">✅ ${t('actVerified')}</button>
-          <button class="btn" data-action="retest" data-id="${esc(b.id)}" data-result="fail">❌ ${t('actStillBroken')}</button>
+          <button class="btn pri" data-action="retest" data-id="${esc(b.id)}" data-result="pass">✅ ${esc(moveLabel('retest_pass', b.kind))}</button>
+          <button class="btn" data-action="retest" data-id="${esc(b.id)}" data-result="fail">❌ ${esc(moveLabel('retest_fail', b.kind))}</button>
         </div>` : ''}
 
       <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
@@ -839,6 +873,11 @@ function reportForm() {
     <a href="#" class="btn sm" data-action="cancelreport">${t('cancel')}</a>
     <div class="card" style="margin-top:14px;max-width:640px">
       <h2 style="margin:0 0 14px;font-size:16px">🐞 ${t('send')}</h2>
+      <label>${t('kindL')}</label>
+      <select id="f-kind">
+        <option value="bug"${S.reportKind === 'feature' ? '' : ' selected'}>🐞 ${t('kindBug')}</option>
+        <option value="feature"${S.reportKind === 'feature' ? ' selected' : ''}>✨ ${t('kindFeature')}</option>
+      </select>
       <label>${t('msL')}</label>
       <select id="f-ms">${ready.map((m) => `<option value="${esc(m.id)}"${m.id === S.reportFor ? ' selected' : ''}>${esc(m.code)} — ${esc(titleFor(m))}</option>`).join('')}</select>
       <label>${t('sevL')}</label>
@@ -1194,6 +1233,8 @@ document.getElementById('app').addEventListener('click', async (event) => {
       case 'cancelreport':
         S.bug = null; S.reporting = action === 'report';
         S.reportFor = action === 'report' ? el.dataset.ms : null;
+        // The button you pressed decides; the form lets you change your mind.
+        S.reportKind = action === 'report' ? (el.dataset.kind ?? 'bug') : 'bug';
         if (action === 'report') await loadMilestones();
         render();
         break;
@@ -1226,6 +1267,7 @@ document.getElementById('app').addEventListener('click', async (event) => {
 
 async function submitReport() {
   const milestoneId = document.getElementById('f-ms').value;
+  const kind = document.getElementById('f-kind')?.value ?? 'bug';
   const severity = document.getElementById('f-sev').value;
   const titleVi = document.getElementById('f-title').value.trim();
   const bodyVi = document.getElementById('f-body').value.trim();
@@ -1236,7 +1278,7 @@ async function submitReport() {
 
   try {
     const bug = await api('POST', `/api/projects/${S.projectId}/bugs`,
-      { milestoneId, severity, titleVi, bodyVi });
+      { milestoneId, severity, titleVi, bodyVi, kind });
 
     // Two-phase upload: presign, PUT the bytes, then complete. The server chooses
     // the key and, for the proxying driver, hands back a signed upload URL; for a

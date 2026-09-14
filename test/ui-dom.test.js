@@ -151,7 +151,7 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
       'the current project is named');
   });
 
-  test('a tester sees a report control on each reportable milestone', async () => {
+  test('a tester sees both report controls on each reportable milestone', async () => {
     const app = loadApp({ routes: routes(payloads.meTester) });
     await settle();
     await app.click('view', { view: 'milestones' });
@@ -159,9 +159,11 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
     const html = app.html();
     assert.match(html, /M-A/);
     assert.match(html, /M-B/);
-    const reportButtons = html.match(/data-action="report"/g) ?? [];
-    assert.equal(reportButtons.length, 2,
-      'each ready milestone gets its own report control');
+    const count = (kind) =>
+      (html.match(new RegExp(`data-action="report"[^>]*data-kind="${kind}"`, 'g')) ?? []).length;
+
+    assert.equal(count('bug'), 2, 'each ready milestone can be reported against as a bug');
+    assert.equal(count('feature'), 2, 'and asked about as a feature request');
   });
 
   test('anyone on the project can file a report on a ready milestone', async () => {
@@ -176,7 +178,7 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
       await app.click('view', { view: 'milestones' });
 
       const count = (app.html().match(/data-action="report"/g) ?? []).length;
-      assert.equal(count, 2, `a ${who} should be able to report on each ready milestone`);
+      assert.equal(count, 4, `a ${who} should be able to report on each ready milestone`);
     }
   });
 

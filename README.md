@@ -46,6 +46,33 @@ mailer to deliver it with. Ask an admin if your address is not recognised.
 | Team | Who is on the project, and (admins) a form to add someone by name, email and role |
 | Report | Vietnamese title/body + screenshots, uploaded through the real two-phase flow |
 
+## A report is a bug or a feature request
+
+Both are filed the same way, from a `ready` milestone: **🐞 Report bug** or
+**✨ Request feature**. The form opens on whichever you pressed and lets you change it.
+
+| | Bug | Feature request |
+|---|---|---|
+| Code | `BUG-4` | `REQ-4` |
+| Picked up | Start fixing | Start working |
+| Handed back | Mark as fixed | Mark as implemented |
+| State while waiting | Fixed — awaiting verification | Implemented — awaiting verification |
+| Checked by the tester | Fix verified | Feature verified |
+| Sent back | Still broken — send back | Not done — send back |
+
+One sequence per project, and the prefix says which kind it is — so a project can hold
+`BUG-1` and `REQ-4`. The code follows the report everywhere: the list, the detail, looking
+one up by its number, the packet filename a developer pulls (both the RFC 5987 form and
+the ASCII fallback), `meta.json` inside the packet, and the prompt an AI agent is handed.
+
+**The agent is told which it is.** A bug report's prompt says *"you can help fix it"*; a
+feature request's says *"you can implement it"*, and the metadata block carries
+`kind: feature request`. Asking an agent to fix a request for something that does not
+exist yet is how you get a workaround instead of the feature.
+
+The workflow itself is identical — one state machine, not two — because the steps are
+the same: someone reports it, someone does the work, someone checks it.
+
 ## The fix-and-verify loop
 
 ```

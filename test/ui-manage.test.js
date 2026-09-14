@@ -314,6 +314,103 @@ describe('ui (dom): editing and removing', () => {
     assert.match(html, /Fixed — awaiting verification/, 'and the state says what it wants');
   });
 
+  test('a ready milestone offers both a bug and a feature request', async () => {
+    const app = loadApp({ routes: projectRoutes(payloads.meTester), browserLang: 'en-GB' });
+    await settle();
+
+    const html = app.html();
+    assert.match(html, /data-action="report"[^>]*data-kind="bug"/, 'report a bug');
+    assert.match(html, /data-action="report"[^>]*data-kind="feature"/, 'or ask for a feature');
+    assert.match(html, /Request feature/);
+  });
+
+  test('asking for a feature opens the form on it, and files it as one', async () => {
+    const seen = [];
+    const app = loadApp({
+      routes: {
+        ...projectRoutes(payloads.meTester),
+        [`POST /api/projects/${w.project.id}/bugs`]: (c) => {
+          seen.push(c);
+          return { body: { id: 'r1', code: 'REQ-1', kind: 'feature' }, status: 201 };
+        }
+      },
+      browserLang: 'en-GB'
+    });
+    await settle();
+    await app.click('report', { ms: msId, kind: 'feature' });
+
+    assert.match(app.html(), /<option value="feature" selected>/,
+      'the form opens on what you pressed, without asking again');
+
+    // The harness stubs getElementById, so the submit path is driven by setting the
+    // fields — the assertion above is what covers the default.
+    app.field('f-ms').value = msId;
+    app.field('f-kind').value = 'feature';
+    app.field('f-sev').value = 'medium';
+    app.field('f-title').value = 'Cần thêm cột ngày giao hàng';
+    app.field('f-body').value = 'Màn hình đóng gói chưa có cột này.';
+    await app.click('submitreport');
+
+    assert.equal(seen.length, 1, 'the report is filed');
+    assert.equal(seen[0].body.kind, 'feature', 'as a feature request');
+    assert.equal(seen[0].body.titleVi, 'Cần thêm cột ngày giao hàng');
+  });
+
+  test('a feature request is never marked "fixed"', async () => {
+    const feature = {
+      ...payloads.bug, kind: 'feature', status: 'fixing',
+      availableActions: [{ action: 'request_retest', to: 'retest', requiresReason: false }]
+    };
+    const app = loadApp({
+      routes: { ...projectRoutes(payloads.meDev), [`GET /api/bugs/${bug.id}`]: feature },
+      browserLang: 'en-GB'
+    });
+    await app.click('openbug', { id: bug.id });
+
+    const html = app.html();
+    assert.match(html, /Mark as implemented/, 'the move is to implement it');
+    assert.doesNotMatch(html, /Mark as fixed/, 'nothing was broken');
+    assert.match(html, /Implemented — awaiting verification/, 'and so does the state');
+    assert.match(html, /✨ Feature request/, 'and it says what kind of report it is');
+  });
+
+  test('a feature waiting to be checked is verified, not "fixed"', async () => {
+    const waiting = { ...payloads.bug, kind: 'feature', status: 'retest', availableActions: [] };
+    const app = loadApp({
+      routes: { ...projectRoutes(payloads.meTester), [`GET /api/bugs/${bug.id}`]: waiting },
+      browserLang: 'en-GB'
+    });
+    await app.click('openbug', { id: bug.id });
+
+    const html = app.html();
+    assert.match(html, /Feature verified/, 'the tester confirms the feature');
+    assert.match(html, /Not done — send back/, 'or sends it back');
+    assert.doesNotMatch(html, /Still broken/, 'nothing is broken');
+  });
+
+  test('the list marks which reports are requests', async () => {
+    const one = payloads.bugs.bugs[0];
+    const list = {
+      bugs: [
+        { ...one, id: 'b1', kind: 'bug', code: 'BUG-1' },
+        { ...one, id: 'f1', kind: 'feature', code: 'REQ-2', title_vi: 'Cần thêm cột ngày' }
+      ],
+      openCount: 2
+    };
+    const app = loadApp({
+      routes: { ...projectRoutes(payloads.meDev),
+                [`GET /api/projects/${w.project.id}/bugs`]: list },
+      browserLang: 'en-GB'
+    });
+    await settle();
+    await app.click('view', { view: 'bugs' });
+
+    const html = app.html();
+    assert.match(html, /REQ-2/, 'a request keeps its own code');
+    assert.match(html, /✨ Cần thêm cột ngày/, 'and is marked as one');
+    assert.match(html, /🐞 /, 'while a bug is marked as a bug');
+  });
+
   test('an admin sees change-role and remove for each member', async () => {
     const members = { members: [
       { id: 'u1', email: 'a@b.test', display_name: 'Linh', role: 'tester' },
