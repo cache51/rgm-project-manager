@@ -2,3 +2,9 @@ node_modules/
 .rgm/
 *.log
 .DS_Store
+
+# A deployment's configuration, including the database password and the HMAC key
+# behind upload capabilities. .env.example is the committed template.
+.env
+.env.*
+!.env.example

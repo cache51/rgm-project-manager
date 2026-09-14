@@ -1,0 +1,89 @@
+# RGM Project Manager, as containers.
+#
+#   db       PostgreSQL 16 — internal to the compose network, never published
+#   migrate  one-shot: the schema belongs to one runner, not to N app replicas
+#   app      the HTTP server, published on ${APP_PORT:-3000}
+#   worker   drains the queue (translating the testers' notes)
+#
+# Configuration lives in .env beside this file — see .env.example. Nothing secret is
+# written here, and the file is safe to commit.
+name: rgm
+
+x-app-env: &app-env
+  NODE_ENV: production
+  DATABASE_URL: postgres://rgm:${POSTGRES_PASSWORD}@db:5432/rgm
+  STORAGE_DIR: /data/storage
+  STORAGE_SECRET: ${STORAGE_SECRET}
+  PUBLIC_URL: ${PUBLIC_URL}
+  # Plain HTTP (a LAN address, no TLS): a Secure cookie is dropped by the browser, so
+  # signing in would look like it worked and then silently not be signed in. Turn this
+  # on the moment there is HTTPS in front.
+  SECURE_COOKIES: "false"
+  # The migrate service owns the schema; the app must not race it.
+  MIGRATE_ON_START: "false"
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_DB: rgm
+      POSTGRES_USER: rgm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rgm -d rgm"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  migrate:
+    build: .
+    image: rgm:local
+    restart: "no"
+    logging: *logging
+    environment: *app-env
+    depends_on:
+      db: { condition: service_healthy }
+    command: ["node", "src/migrate.js"]
+
+  app:
+    build: .
+    image: rgm:local
+    restart: unless-stopped
+    logging: *logging
+    environment: *app-env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    volumes:
+      - storage:/data/storage
+
+  worker:
+    build: .
+    image: rgm:local
+    restart: unless-stopped
+    logging: *logging
+    environment: *app-env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    volumes:
+      - storage:/data/storage
+    command: ["node", "src/worker.js"]
+    # The probe baked into the image is an HTTP request, and the worker serves no HTTP:
+    # left alone it sits "unhealthy" forever, which trains you to ignore the column. If
+    # the worker dies its PID 1 exits and restart: unless-stopped brings it back — that
+    # is the liveness signal.
+    healthcheck:
+      disable: true
+
+volumes:
+  pgdata:
+  storage:
