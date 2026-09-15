@@ -12,7 +12,7 @@ import { makeWorld, makeProjectWorld, makeMilestone, freshDb, testDriver } from 
 import { bootstrap, createProject, hashToken } from '../src/auth.js';
 import { migrate, migrationFiles, withTransaction } from '../src/db.js';
 import { hit, prune, LIMITS } from '../src/ratelimit.js';
-import { verifyDatabaseRoleBoundary } from '../src/server.js';
+import { verifyDatabaseRoleBoundary, csrfRequired } from '../src/server.js';
 
 /** Send a path verbatim, without the client library normalising it. */
 function rawGet(origin, path) {
@@ -100,11 +100,28 @@ describe('csrf: cookie-authenticated writes', () => {
   test('direct email sign-in works with a stale session cookie and no csrf cookie', async () => {
     const stale = w.newClient();
     await w.loginAs('dev@rgm.example', stale);
+    const sessionBefore = stale.cookie;
+    assert.match(sessionBefore, /^session=.+/,
+      'there must be a session cookie to replace, or the comparison below is vacuous');
     stale.dropCsrf();
 
     const signedIn = await stale.post('/api/auth/direct', { email: 'dev@rgm.example' });
     assert.equal(signedIn.status, 200, signedIn.text);
-    assert.ok(stale.csrf, 'sign-in rotates both the session and csrf cookies');
+    assert.ok(stale.csrf, 'the csrf cookie the app must echo comes back');
+    assert.notEqual(stale.cookie, sessionBefore,
+      'sign-in replaces the stale session rather than adopting it');
+    assert.equal((await stale.get('/api/me')).status, 200,
+      'and the replacement session really is signed in');
+  });
+
+  test('the direct-sign-in exemption matches that path and nothing near it', () => {
+    // A prefix-matching exemption would also exempt these, and the handler behind
+    // them is not the sign-in handler — so the boundary is asserted, not implied.
+    assert.equal(csrfRequired('POST', '/api/auth/direct'), false);
+    for (const path of ['/api/auth/directly', '/api/auth/directx', '/api/auth/direct/extra',
+                        '/api/auth/direct/', '/api/auth/DIRECT']) {
+      assert.equal(csrfRequired('POST', path), true, `${path} must still require the header`);
+    }
   });
 
   test('a sign-in link is still exempt, and an invitation is too', async () => {
