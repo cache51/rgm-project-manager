@@ -97,6 +97,16 @@ describe('csrf: cookie-authenticated writes', () => {
   });
   after(async () => { await w.close(); });
 
+  test('direct email sign-in works with a stale session cookie and no csrf cookie', async () => {
+    const stale = w.newClient();
+    await w.loginAs('dev@rgm.example', stale);
+    stale.dropCsrf();
+
+    const signedIn = await stale.post('/api/auth/direct', { email: 'dev@rgm.example' });
+    assert.equal(signedIn.status, 200, signedIn.text);
+    assert.ok(stale.csrf, 'sign-in rotates both the session and csrf cookies');
+  });
+
   test('a sign-in link is still exempt, and an invitation is too', async () => {
     // IR-017: redemption is capability-addressed, so the session cookie must not
     // decide whether it works. The browser flow is /login?invite=… from someone who

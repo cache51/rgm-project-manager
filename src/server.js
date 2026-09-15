@@ -21,12 +21,14 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 /**
  * Routes where the session cookie is not the source of authority, so a CSRF
  * token cannot be required:
- *   - the two sign-in endpoints run before a session exists
+ *   - the three sign-in endpoints establish or replace the session instead of
+ *     deriving authority from an ambient session cookie
  *   - upload URLs carry a signed capability, which a cross-site page cannot guess
  */
 const CSRF_EXEMPT = [
   /^\/api\/auth\/request-link$/,
   /^\/api\/auth\/consume$/,
+  /^\/api\/auth\/direct$/,
   /^\/api\/uploads\//,
   // Capability-addressed: the invitation token IS the authority, and it is a
   // single-use secret an attacker cannot guess. Requiring a CSRF header here made
