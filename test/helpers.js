@@ -219,7 +219,7 @@ function makeClient(baseUrl) {
   };
 }
 
-export async function makeWorld({ limits = null, storage = null } = {}) {
+export async function makeWorld({ limits = null, storage = null, onError = null } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'rgm-test-'));
   const db = await freshDb();
   const mails = [];
@@ -228,7 +228,7 @@ export async function makeWorld({ limits = null, storage = null } = {}) {
     root: join(dir, 'storage'), secret: 'test-secret'
   });
   const app = createApp({ db, storage: storageImpl, deliver, limits,
-    onError: (err) => console.error('[server error]', err) });
+    onError: onError ?? ((err) => console.error('[server error]', err)) });
   const { url } = await listen(app, { port: 0 });
 
   const world = {
@@ -292,8 +292,8 @@ export async function makeWorld({ limits = null, storage = null } = {}) {
  * A populated world: one project with an admin, a developer and a tester, all
  * with sessions. The shape most tests actually need.
  */
-export async function makeProjectWorld() {
-  const world = await makeWorld();
+export async function makeProjectWorld(options) {
+  const world = await makeWorld(options);
   const { db } = world;
 
   const admin = await bootstrap(db, 'admin@rgm.example');

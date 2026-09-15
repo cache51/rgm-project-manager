@@ -2,8 +2,8 @@
  * Object storage for screenshots.
  *
  * The interface is deliberately the shape an S3/MinIO client has (put/get/delete
- * plus presigned URLs), so moving to a real bucket means implementing this class
- * against the SDK rather than touching callers.
+ * plus signed app-local upload capabilities), so moving to a real bucket means
+ * implementing this class against the SDK rather than touching callers.
  *
  * Two-phase upload is what makes the "no multipart parser" design work:
  *   1. the client requests an upload URL for a key the SERVER chooses
@@ -24,11 +24,10 @@ export class StorageError extends Error {
   }
 }
 
-export class FsStorage {
+export class UploadCapabilityStorage {
   #secret;
 
-  constructor({ root, secret = 'dev-secret-change-me' }) {
-    this.root = root;
+  constructor({ secret = 'dev-secret-change-me' } = {}) {
     this.#secret = secret;
   }
 
@@ -36,21 +35,9 @@ export class FsStorage {
     return createHmac('sha256', this.#secret).update(data).digest('base64url');
   }
 
-  /** Server-assigned key. Never derived from a tester-supplied filename. */
-  keyFor(projectId, bugId) {
-    return `${projectId}/${bugId}/${randomUUID()}`;
-  }
-
-  #path(key) {
-    if (!/^[0-9a-f-]{36}\/[0-9a-f-]{36}\/[0-9a-f-]{36}$/.test(key)) {
-      throw new StorageError('bad_key', `refusing to touch unexpected key shape: ${key}`);
-    }
-    return join(this.root, key);
-  }
-
   /** Issue a signed PUT capability bound to the key, type and expiry. */
-  presignUpload({ key, contentType, expiresInSeconds = 300 }) {
-    const exp = Math.floor(Date.now() / 1000) + expiresInSeconds;
+  presignUpload({ key, contentType, expiresInSeconds = 300, now = new Date() }) {
+    const exp = Math.floor(now.getTime() / 1000) + expiresInSeconds;
     const body = Buffer.from(JSON.stringify({ key, ct: contentType, exp })).toString('base64url');
     const token = `${body}.${this.#sign(body)}`;
     return {
@@ -79,6 +66,25 @@ export class FsStorage {
     }
     return claims;
   }
+}
+
+export class FsStorage extends UploadCapabilityStorage {
+  constructor({ root, secret = 'dev-secret-change-me' }) {
+    super({ secret });
+    this.root = root;
+  }
+
+  /** Server-assigned key. Never derived from a tester-supplied filename. */
+  keyFor(projectId, bugId) {
+    return `${projectId}/${bugId}/${randomUUID()}`;
+  }
+
+  #path(key) {
+    if (!/^[0-9a-f-]{36}\/[0-9a-f-]{36}\/[0-9a-f-]{36}$/.test(key)) {
+      throw new StorageError('bad_key', `refusing to touch unexpected key shape: ${key}`);
+    }
+    return join(this.root, key);
+  }
 
   async put(key, bytes) {
     const p = this.#path(key);
@@ -105,11 +111,8 @@ export class FsStorage {
   /**
    * Move an object to a key no client has a capability for.
    *
-   * RGM3-005: a presigned PUT stays valid until it expires, so an uploader could
-   * complete a validation and then replace the bytes at the same key — every
-   * later view, download and packet would differ from what was checked. Promoting
-   * on completion means the client's capability points at a key nothing
-   * references any more.
+   * Publish to a final key distinct from staging. Completion records both names
+   * before this move and revokes the app-local capability when it finalizes.
    */
   async promote(fromKey, toKey) {
     const src = this.#path(fromKey);

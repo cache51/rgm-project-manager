@@ -9,9 +9,8 @@
 # written here, and the file is safe to commit.
 name: rgm
 
-x-app-env: &app-env
+x-common-env: &common-env
   NODE_ENV: production
-  DATABASE_URL: postgres://rgm:${POSTGRES_PASSWORD}@db:5432/rgm
   STORAGE_DIR: /data/storage
   STORAGE_SECRET: ${STORAGE_SECRET}
   PUBLIC_URL: ${PUBLIC_URL}
@@ -21,6 +20,15 @@ x-app-env: &app-env
   SECURE_COOKIES: "false"
   # The migrate service owns the schema; the app must not race it.
   MIGRATE_ON_START: "false"
+
+x-owner-env: &owner-env
+  <<: *common-env
+  DATABASE_URL: postgres://rgm:${POSTGRES_PASSWORD}@db:5432/rgm
+
+x-runtime-env: &runtime-env
+  <<: *common-env
+  DATABASE_URL: postgres://rgm_app:${RGM_RUNTIME_PASSWORD}@db:5432/rgm
+
 
 x-logging: &logging
   driver: json-file
@@ -48,19 +56,32 @@ services:
     image: rgm:local
     restart: "no"
     logging: *logging
-    environment: *app-env
+    environment: *owner-env
     depends_on:
       db: { condition: service_healthy }
     command: ["node", "src/migrate.js"]
+
+  runtime-role:
+    image: postgres:16-alpine
+    restart: "no"
+    logging: *logging
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      RGM_RUNTIME_PASSWORD: ${RGM_RUNTIME_PASSWORD}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    volumes:
+      - ./scripts/provision-runtime-role.sh:/usr/local/bin/provision-runtime-role.sh:ro
+    command: ["/bin/sh", "/usr/local/bin/provision-runtime-role.sh"]
 
   app:
     build: .
     image: rgm:local
     restart: unless-stopped
     logging: *logging
-    environment: *app-env
+    environment: *runtime-env
     depends_on:
-      migrate: { condition: service_completed_successfully }
+      runtime-role: { condition: service_completed_successfully }
     ports:
       - "${APP_PORT:-3000}:3000"
     volumes:
@@ -71,9 +92,9 @@ services:
     image: rgm:local
     restart: unless-stopped
     logging: *logging
-    environment: *app-env
+    environment: *runtime-env
     depends_on:
-      migrate: { condition: service_completed_successfully }
+      runtime-role: { condition: service_completed_successfully }
     volumes:
       - storage:/data/storage
     command: ["node", "src/worker.js"]
@@ -83,6 +104,35 @@ services:
     # is the liveness signal.
     healthcheck:
       disable: true
+
+  admin:
+    profiles: ["admin"]
+    build: .
+    image: rgm:local
+    restart: "no"
+    logging: *logging
+    environment:
+      <<: *owner-env
+      RGM_ADMIN_ONESHOT: "true"
+    depends_on:
+      db: { condition: service_healthy }
+    volumes:
+      - storage:/data/storage
+    entrypoint: ["node", "src/cli.js"]
+    command: []
+
+  recover-admin:
+    profiles: ["admin"]
+    build: .
+    image: rgm:local
+    restart: "no"
+    logging: *logging
+    environment: *owner-env
+    depends_on:
+      db: { condition: service_healthy }
+    volumes:
+      - storage:/data/storage
+    command: ["node", "scripts/cleanup-storage.mjs"]
 
 volumes:
   pgdata:

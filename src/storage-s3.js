@@ -2,16 +2,15 @@
  * S3-compatible object storage (AWS S3, MinIO, Cloudflare R2, Backblaze B2 …).
  *
  * Implements the same surface as FsStorage so the swap is a one-line change in
- * the assembly, with one difference: uploads go DIRECTLY from the browser to the
- * bucket, so there is no proxied `/api/uploads/:token` hop and no local token to
- * verify. The presigned URL *is* the capability — its signature is what the
- * bucket checks.
+ * the assembly. Browser uploads use the same app-local signed capability on both
+ * drivers; only the app receives bucket credentials and writes the bytes to S3.
  *
  * AWS Signature Version 4 is implemented here rather than pulled in as a
  * dependency, and `test/storage.test.js` verifies it by recomputing the signature
  * server-side, so the signing is exercised rather than assumed.
  */
 import { createHash, createHmac, randomUUID } from 'node:crypto';
+import { UploadCapabilityStorage } from './storage.js';
 
 const ALGORITHM = 'AWS4-HMAC-SHA256';
 const SERVICE = 's3';
@@ -34,7 +33,7 @@ export function signingKey(secretAccessKey, dateStamp, region, service = SERVICE
     'aws4_request');
 }
 
-export class S3Storage {
+export class S3Storage extends UploadCapabilityStorage {
   constructor({
     endpoint,
     bucket,
@@ -42,8 +41,10 @@ export class S3Storage {
     accessKeyId,
     secretAccessKey,
     forcePathStyle = true,
-    fetchImpl = fetch
+    fetchImpl = fetch,
+    secret = 'dev-secret-change-me'
   }) {
+    super({ secret });
     if (!endpoint || !bucket || !accessKeyId || !secretAccessKey) {
       throw new Error('S3Storage needs endpoint, bucket, accessKeyId and secretAccessKey');
     }
@@ -166,36 +167,6 @@ export class S3Storage {
     return res;
   }
 
-  /**
-   * Presign a PUT. The bucket validates the signature, so no local token exists —
-   * the caller uploads straight to the returned URL.
-   */
-  presignUpload({ key, contentType, expiresInSeconds = 300, now = new Date() }) {
-    const url = this.#objectUrl(key);
-    const stamp = amzDate(now);
-    const dateStamp = stamp.slice(0, 8);
-
-    url.searchParams.set('X-Amz-Algorithm', ALGORITHM);
-    url.searchParams.set('X-Amz-Credential', `${this.accessKeyId}/${this.#scope(dateStamp)}`);
-    url.searchParams.set('X-Amz-Date', stamp);
-    url.searchParams.set('X-Amz-Expires', String(expiresInSeconds));
-    url.searchParams.set('X-Amz-SignedHeaders', 'content-type;host');
-
-    // The signature must cover content-type, or a client could upload anything.
-    const headers = { host: url.host, 'content-type': contentType };
-    const { signature } = this.sign({
-      method: 'PUT', url, headers, payloadHash: UNSIGNED_PAYLOAD, now
-    });
-    url.searchParams.set('X-Amz-Signature', signature);
-
-    return {
-      key,
-      url: url.toString(),
-      // The browser must send exactly these signed headers.
-      headers: { 'content-type': contentType },
-      expiresAt: Math.floor(now.getTime() / 1000) + expiresInSeconds
-    };
-  }
 
   /** A presigned GET, so the API can redirect instead of proxying bytes. */
   presignDownload({ key, expiresInSeconds = 300, now = new Date() }) {
@@ -261,10 +232,9 @@ export class S3Storage {
   /**
    * Server-side copy, then remove the source.
    *
-   * RGM3-005: the presigned PUT the client holds stays valid until it expires, so
-   * the object it validated must not be the object later served. Copying to a key
-   * no capability was ever issued for closes that window — and doing it
-   * server-side means the bytes never pass through the app.
+   * Publish to a final key distinct from staging. The pending-upload row records
+   * both names before this copy starts, so a partial copy/delete stays discoverable
+   * by purge.
    */
   async promote(fromKey, toKey) {
     const url = this.#objectUrl(toKey);

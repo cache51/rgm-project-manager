@@ -13,6 +13,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeWorld } from './helpers.js';
 import { bootstrap } from '../src/auth.js';
+import { purgeProject } from '../src/admin-purge.js';
 
 function spyStorage() {
   const objects = new Map();
@@ -20,19 +21,22 @@ function spyStorage() {
   const heads = [];
   let counter = 0;
   let headSize = null;
+  let failPromotionAfterCopy = false;
 
   return {
     heads,
     objects,
     /** Force `head` to report a size, to exercise the post-promotion rejection. */
     setHeadSize: (value) => { headSize = value; },
+    failNextPromotionAfterCopy: () => { failPromotionAfterCopy = true; },
     keyFor: (projectId, bugId) => `${projectId}/${bugId}/obj${++counter}`,
 
     presignUpload({ key, contentType }) {
       // The token must be a single path segment, so it cannot be the key itself.
       const token = `t${++counter}`;
       tokens.set(token, { key, ct: contentType });
-      return { key, url: `/api/uploads/${token}`, token, headers: {}, expiresAt: 0 };
+      return { key, url: `/api/uploads/${token}`, token, headers: {},
+        expiresAt: Math.floor(Date.now() / 1000) + 300 };
     },
 
     verifyUpload(token) {
@@ -60,6 +64,10 @@ function spyStorage() {
     async promote(fromKey, toKey) {
       if (!objects.has(fromKey)) throw new Error(`nothing to promote at ${fromKey}`);
       objects.set(toKey, objects.get(fromKey));
+      if (failPromotionAfterCopy) {
+        failPromotionAfterCopy = false;
+        throw new Error('simulated S3 source-delete failure after copy');
+      }
       objects.delete(fromKey);
       return { key: toKey };
     }
@@ -151,6 +159,58 @@ describe('completion validates the object that will be served (IR-013)', () => {
         'the refused object must be removed, not left for nobody to reference');
       const listed = (await client.get(`/api/bugs/${bug.id}`)).json;
       assert.equal(listed.attachments.length, 0);
+    } finally {
+      await w.close();
+    }
+  });
+
+  test('a partial promotion keeps both keys discoverable for purge', async () => {
+    const storage = spyStorage();
+    const w = await makeWorld({ storage });
+    try {
+      await bootstrap(w.db, 'promotion-failure@rgm.example');
+      const client = w.newClient();
+      await w.loginAs('promotion-failure@rgm.example', client);
+
+      const project = (await client.post('/api/projects',
+        { name: 'Promotion failure', client: 'ACME' })).json;
+      const milestone = (await client.post(`/api/projects/${project.id}/milestones`,
+        { code: 'M-PF', titleEn: 'Promotion failure' })).json;
+      const bug = (await client.post(`/api/projects/${project.id}/bugs`,
+        { milestoneId: milestone.id, severity: 'high', titleVi: 'a', bodyVi: 'b' })).json;
+      const signed = (await client.post(`/api/bugs/${bug.id}/attachments/presign`,
+        { contentType: 'image/png', byteSize: 64 })).json;
+      await client.put(signed.uploadUrl, Buffer.alloc(64, 7));
+
+      storage.failNextPromotionAfterCopy();
+      const failed = await client.post(`/api/bugs/${bug.id}/attachments/complete`, {
+        storageKey: signed.storageKey,
+        uploadToken: signed.uploadToken,
+        filename: 'partial.png'
+      });
+      assert.equal(failed.status, 409, failed.text);
+
+      const finalKey = [...storage.objects.keys()].find(key => key !== signed.storageKey);
+      assert.ok(finalKey, 'precondition: the external copy created the final object');
+      const pending = await w.db.query(
+        `SELECT storage_key, to_jsonb(pending_uploads)->>'final_storage_key' AS final_storage_key
+           FROM pending_uploads WHERE storage_key = $1`, [signed.storageKey]);
+      assert.equal(pending.rows.length, 1);
+      assert.equal(pending.rows[0].final_storage_key, finalKey,
+        'the final key must commit before the external copy is attempted');
+
+      await purgeProject({
+        db: w.db,
+        storage,
+        actorEmail: 'promotion-failure@rgm.example',
+        projectId: project.id,
+        reason: 'remove partial promotion test project',
+        force: true
+      });
+      assert.equal(storage.objects.size, 0, 'purge must delete staging and copied final objects');
+      const audit = await w.db.query(
+        `SELECT metadata FROM admin_audit_log WHERE target_id = $1`, [project.id]);
+      assert.deepEqual(audit.rows[0].metadata.storageKeys, [finalKey, signed.storageKey].sort());
     } finally {
       await w.close();
     }

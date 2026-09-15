@@ -25,6 +25,7 @@ COPY package.json ./
 COPY src ./src
 COPY public ./public
 COPY db ./db
+COPY scripts/cleanup-storage.mjs ./scripts/cleanup-storage.mjs
 
 # The embedded database and local object storage live under /data, which is the
 # only path the process needs to write to.

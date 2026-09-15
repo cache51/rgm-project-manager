@@ -1280,9 +1280,8 @@ async function submitReport() {
     const bug = await api('POST', `/api/projects/${S.projectId}/bugs`,
       { milestoneId, severity, titleVi, bodyVi, kind });
 
-    // Two-phase upload: presign, PUT the bytes, then complete. The server chooses
-    // the key and, for the proxying driver, hands back a signed upload URL; for a
-    // bucket-backed deployment it hands back a presigned URL straight to storage.
+    // Two-phase upload: issue an app-local capability, PUT the bytes, then complete.
+    // The server chooses the key and proxies every storage backend, including S3.
     for (const file of files) {
       const signed = await api('POST', `/api/bugs/${bug.id}/attachments/presign`,
         { contentType: file.type || 'image/png', byteSize: file.size });

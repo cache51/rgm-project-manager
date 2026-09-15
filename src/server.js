@@ -213,6 +213,52 @@ export function createApp({
   return { server, router };
 }
 
+async function databaseRoleFacts(db) {
+  const result = await db.query(
+    `SELECT session_user::text AS session_user,
+            (SELECT rolsuper FROM pg_roles WHERE rolname = session_user) AS is_superuser,
+            pg_get_userbyid(c.relowner) = session_user AS owns_events,
+            has_function_privilege(session_user,
+              'public.admin_purge_project(text,uuid,text,boolean)', 'EXECUTE') AS can_purge,
+            has_function_privilege(session_user,
+              'public.admin_mark_storage_cleaned(uuid,text)', 'EXECUTE') AS can_mark_cleanup,
+            has_table_privilege(session_user, 'public.admin_audit_log',
+              'INSERT,UPDATE,DELETE,TRUNCATE') AS can_write_audit,
+            has_table_privilege(session_user, 'public.projects',
+              'DELETE') AS can_delete_projects,
+            has_table_privilege(session_user, 'public.admin_storage_cleanup',
+              'INSERT,UPDATE,DELETE,TRUNCATE') AS can_write_cleanup,
+            has_table_privilege(session_user, 'public.events',
+              'UPDATE,DELETE,TRUNCATE') AS can_mutate_events
+       FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relname = 'events'`);
+  if (result.rows.length !== 1) {
+    throw new Error('database role verification requires the migrated events table');
+  }
+  return result.rows[0];
+}
+
+/** Refuse a deployment whose long-lived logins can bypass the purge boundary. */
+export async function verifyDatabaseRoleBoundary({ db }) {
+  const runtime = await databaseRoleFacts(db);
+  if (runtime.is_superuser || runtime.owns_events) {
+    throw new Error('runtime database login must not be a superuser or table owner');
+  }
+  if (runtime.can_purge || runtime.can_mark_cleanup || runtime.can_write_audit) {
+    throw new Error('runtime database login has forbidden purge authority or direct audit writes');
+  }
+  if (runtime.can_delete_projects) {
+    throw new Error('unsafe runtime database login: direct project deletion is allowed');
+  }
+  if (runtime.can_write_cleanup) {
+    throw new Error('unsafe runtime database login: cleanup queue writes are allowed');
+  }
+  if (runtime.can_mutate_events) {
+    throw new Error('unsafe runtime database login: event mutation is allowed');
+  }
+}
+
 /** Build a fully-wired app from the environment. */
 export async function createAppFromEnv(env = process.env) {
   const { loadConfig } = await import('./config.js');
@@ -220,6 +266,13 @@ export async function createAppFromEnv(env = process.env) {
 
   const db = await createDb({ dataDir: config.dataDir, url: config.databaseUrl });
   if (config.migrateOnStart) await migrate(db);
+
+  try {
+    if (config.databaseUrl) await verifyDatabaseRoleBoundary({ db });
+  } catch (error) {
+    await db.close().catch(() => {});
+    throw error;
+  }
 
   const app = createApp({
     db,

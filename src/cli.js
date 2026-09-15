@@ -8,6 +8,8 @@
  *   rgm bugs
  *   rgm prompt 142            # print the agent handoff prompt to stdout
  *   rgm pull 142              # fetch the packet and extract it under .rgm/BUG-142
+ *   # Host-only one-shot task (no RGM login/token):
+ *   rgm admin delete-project <uuid> --actor-email admin@example.com --reason "..." --force
  *
  * `pull` is the primary handoff path: it lands bug.md, meta.json and the
  * screenshots on disk, ready to hand to a coding agent.
@@ -17,6 +19,9 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { readZip } from './unzip.js';
 import { assertSafeRelativePath, packetPathFor } from './packet.js';
+import { purgeProject } from './admin-purge.js';
+import { createDb } from './db.js';
+import { loadConfig as loadEnvironmentConfig } from './config.js';
 
 export const CONFIG_PATH = process.env.RGM_CONFIG ?? join(homedir(), '.rgm', 'config.json');
 
@@ -266,15 +271,60 @@ function parseArgs(argv) {
   const args = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith('--')) args[a.slice(2)] = argv[++i];
+    if (a.startsWith('--')) {
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith('--')) {
+        args[a.slice(2)] = next;
+        i++;
+      } else {
+        args[a.slice(2)] = true;
+      }
+    }
     else args._.push(a);
   }
   return args;
 }
 
-export async function run(argv = process.argv.slice(2)) {
+async function ownerAdminDelete(input) {
+  if (process.env.RGM_ADMIN_ONESHOT !== 'true') {
+    throw new Error(
+      'permanent deletion only runs in the one-shot admin container; use docker compose run --rm admin ...');
+  }
+  const config = loadEnvironmentConfig(process.env);
+  if (!config.databaseUrl) throw new Error('the one-shot admin container needs DATABASE_URL');
+  const db = await createDb({ url: config.databaseUrl, dataDir: config.dataDir });
+  try {
+    return await purgeProject({ ...input, db, storage: config.storage });
+  } finally {
+    await db.close();
+  }
+}
+
+export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdminDelete } = {}) {
   const args = parseArgs(argv);
   const command = args._[0];
+
+  if (command === 'admin' && args._[1] === 'delete-project') {
+    const target = args._[2];
+    if (!target) throw new Error('delete-project needs a project id');
+    const actorEmail = args['actor-email'];
+    if (typeof actorEmail !== 'string' || !actorEmail.trim()) {
+      throw new Error('delete-project needs --actor-email <site-admin-email>');
+    }
+    const reason = args.reason;
+    if (typeof reason !== 'string') {
+      throw new Error('delete-project needs --reason "..." (at least 12 characters)');
+    }
+    if (reason.trim().length < 12) {
+      throw new Error('--reason must be at least 12 characters — purging is irreversible');
+    }
+    const out = await adminDelete({
+      actorEmail, projectId: target, reason,
+      force: args.force === true || args.force === 'true'
+    });
+    return `purged ${out.name ?? target}\n  reason: ${out.reason ?? reason}`;
+  }
+
   const config = await loadConfig();
 
   if (command === 'login') {
@@ -314,6 +364,7 @@ export async function run(argv = process.argv.slice(2)) {
     await saveConfig({ ...config, projectId: match.id, projectName: match.name });
     return `using ${match.name}`;
   }
+
 
   if (!config.projectId) throw new Error('no project selected — run: rgm use <project>');
 

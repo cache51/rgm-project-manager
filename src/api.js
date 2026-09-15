@@ -256,7 +256,10 @@ export function buildRoutes() {
   const r = createRouter();
 
   // ── health ──
-  r.get('/api/health', handle(async (req, res) => sendJson(res, 200, { ok: true })));
+  r.get('/api/health', handle(async (req, res, ctx) => {
+    await ctx.db.query('SELECT 1 AS runtime_ready');
+    sendJson(res, 200, { ok: true });
+  }));
 
   // ── auth (§4) ──
   r.post('/api/auth/request-link', handle(async (req, res, ctx) => {
@@ -1119,8 +1122,6 @@ export function buildRoutes() {
 
   // ── attachments: two-phase upload (§8) ──
   r.post('/api/bugs/:id/attachments/presign', handle(async (req, res, ctx) => {
-    const { projectId } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
-
     const { contentType, byteSize } = await readJson(req);
 
     if (!ALLOWED_IMAGE_TYPES.includes(String(contentType))) {
@@ -1129,36 +1130,70 @@ export function buildRoutes() {
     if (!Number.isInteger(byteSize) || byteSize <= 0 || byteSize > 8_000_000) {
       throw new HttpError(400, 'bad_size', 'byteSize must be 1..8000000');
     }
-    const count = await ctx.db.query(
-      `SELECT count(*)::int AS c FROM bug_attachments WHERE bug_id = $1`, [ctx.params.id]);
-    if (count.rows[0].c >= MAX_ATTACHMENTS_PER_BUG) {
-      throw new HttpError(400, 'too_many_attachments',
-        `at most ${MAX_ATTACHMENTS_PER_BUG} screenshots per bug`);
-    }
 
-    // The SERVER chooses the key: it can never contain a tester-supplied path.
-    const key = ctx.storage.keyFor(projectId, ctx.params.id);
-    const signed = ctx.storage.presignUpload({ key, contentType });
+    const issued = await withTransaction(ctx.db, async (tx) => {
+      const { projectId } = await authorizeBug(tx, ctx.actor, ctx.params.id);
+      // Serialize capability issuance with hard purge. If purge owns this row,
+      // authorization sees no active project; if issuance owns it, purge sees the
+      // pending capability and waits for its expiry instead of losing the key.
+      const project = await tx.query(
+        'SELECT id FROM projects WHERE id = $1 AND deleted_at IS NULL FOR UPDATE', [projectId]);
+      if (!project.rows.length) {
+        throw new HttpError(410, 'project_removed', 'this project was removed');
+      }
+      const count = await tx.query(
+        `SELECT count(*)::int AS c FROM bug_attachments WHERE bug_id = $1`, [ctx.params.id]);
+      if (count.rows[0].c >= MAX_ATTACHMENTS_PER_BUG) {
+        throw new HttpError(400, 'too_many_attachments',
+          `at most ${MAX_ATTACHMENTS_PER_BUG} screenshots per bug`);
+      }
+
+      // The SERVER chooses the key: it can never contain a tester-supplied path.
+      const key = ctx.storage.keyFor(projectId, ctx.params.id);
+      const signed = ctx.storage.presignUpload({ key, contentType });
+      await tx.query(
+        `INSERT INTO pending_uploads (storage_key, project_id, bug_id, expires_at)
+         VALUES ($1, $2, $3, $4)`,
+        [key, projectId, ctx.params.id,
+          new Date(signed.expiresAt * 1000).toISOString()]);
+      return { signed };
+    });
+
     sendJson(res, 201, {
-      storageKey: signed.key,
-      uploadUrl: signed.url,
-      // Absent when the bucket validates the signature itself (S3 driver).
-      uploadToken: signed.token ?? null,
-      uploadHeaders: signed.headers ?? null,
-      expiresAt: new Date(signed.expiresAt * 1000).toISOString()
+      storageKey: issued.signed.key,
+      uploadUrl: issued.signed.url,
+      uploadToken: issued.signed.token ?? null,
+      uploadHeaders: issued.signed.headers ?? null,
+      expiresAt: new Date(issued.signed.expiresAt * 1000).toISOString()
     });
   }));
 
   r.put('/api/uploads/:token', handle(async (req, res, ctx) => {
-    // Only the proxying driver has anything to verify here; the S3 driver hands
-    // the browser a direct-to-bucket URL and this route is never used.
+    // Every browser upload uses this app-local capability route, including S3.
     if (typeof ctx.storage.verifyUpload !== 'function') {
       throw new HttpError(404, 'no_upload_proxy',
-        'this deployment uploads directly to object storage');
+        'this storage adapter does not support app-local upload capabilities');
     }
     const bytes = await readBytes(req, { limit: 8_000_000 });
     const claims = ctx.storage.verifyUpload(ctx.params.token);
-    await ctx.storage.put(claims.key, bytes, { contentType: claims.ct });
+    await withTransaction(ctx.db, async (tx) => {
+      const pending = await tx.query(
+        `SELECT u.storage_key
+           FROM pending_uploads u
+           JOIN projects p ON p.id = u.project_id
+          WHERE u.storage_key = $1
+            AND u.expires_at > now()
+            AND p.deleted_at IS NULL
+          FOR UPDATE OF p`,
+        [claims.key]);
+      if (!pending.rows.length) {
+        throw new HttpError(410, 'upload_revoked',
+          'this upload capability expired or its project was removed');
+      }
+      // Hold the project lock through publication so purge either sees this active
+      // capability afterward or removes it first; it can never miss the object.
+      await ctx.storage.put(claims.key, bytes, { contentType: claims.ct });
+    });
     sendJson(res, 201, { storageKey: claims.key, byteSize: bytes.length });
   }));
 
@@ -1193,7 +1228,42 @@ export function buildRoutes() {
       throw new HttpError(400, 'upload_missing', 'object was never uploaded');
     }
 
-    // 4. Promote, then validate what was promoted — in one transaction.
+    // 4. Durably claim the destination before touching external storage. A copy
+    //    can succeed while its source delete or the process itself fails; purge
+    //    must be able to discover both names in every such state.
+    const claim = await withTransaction(ctx.db, async (tx) => {
+      const project = await tx.query(
+        'SELECT id, deleted_at FROM projects WHERE id = $1 FOR UPDATE', [projectId]);
+      if (!project.rows.length || project.rows[0].deleted_at) {
+        throw new HttpError(410, 'project_removed', 'this project was removed');
+      }
+      const pending = await tx.query(
+        `SELECT storage_key, final_storage_key FROM pending_uploads
+          WHERE storage_key = $1
+            AND project_id = $2
+            AND bug_id = $3
+            AND expires_at > now()
+          FOR UPDATE`,
+        [storageKey, projectId, ctx.params.id]);
+      if (!pending.rows.length) {
+        throw new HttpError(410, 'upload_revoked',
+          'this upload capability expired or was already completed');
+      }
+      let finalKey = pending.rows[0].final_storage_key;
+      if (!finalKey) {
+        finalKey = typeof ctx.storage.promote === 'function'
+          ? ctx.storage.keyFor(projectId, ctx.params.id)
+          : storageKey;
+        await tx.query(
+          `UPDATE pending_uploads SET final_storage_key = $2 WHERE storage_key = $1`,
+          [storageKey, finalKey]);
+      }
+      return { finalKey };
+    });
+
+    // 5. Reacquire the project and pending locks around promotion and database
+    //    finalization. Purge either removes the committed claim first or waits and
+    //    collects the finished attachment; it cannot race through the middle.
     //
     //    IR-013: validating the staged key and promoting afterwards leaves a
     //    window, because a presigned PUT stays valid until it expires. Between the
@@ -1209,6 +1279,26 @@ export function buildRoutes() {
     //    and the bug row is locked, so concurrent completions cannot both pass the
     //    count check.
     const inserted = await withTransaction(ctx.db, async (tx) => {
+      // Purge locks the same project row before collecting attachment keys. Taking
+      // it before any storage promotion makes the object move and row insert one
+      // serialized operation from purge's point of view.
+      const project = await tx.query(
+        'SELECT id, deleted_at FROM projects WHERE id = $1 FOR UPDATE', [projectId]);
+      if (!project.rows.length || project.rows[0].deleted_at) {
+        throw new HttpError(410, 'project_removed', 'this project was removed');
+      }
+      const pending = await tx.query(
+        `SELECT storage_key, final_storage_key FROM pending_uploads
+          WHERE storage_key = $1
+            AND project_id = $2
+            AND bug_id = $3
+            AND expires_at > now()
+          FOR UPDATE`,
+        [storageKey, projectId, ctx.params.id]);
+      if (!pending.rows.length) {
+        throw new HttpError(410, 'upload_revoked',
+          'this upload capability expired or was already completed');
+      }
       await tx.query('SELECT id FROM bugs WHERE id = $1 FOR UPDATE', [ctx.params.id]);
 
       const count = await tx.query(
@@ -1219,12 +1309,12 @@ export function buildRoutes() {
           `at most ${MAX_ATTACHMENTS_PER_BUG} screenshots per bug`);
       }
 
-      // Move the object off the key the client holds a capability for.
-      let finalKey = storageKey;
-      if (typeof ctx.storage.promote === 'function') {
-        const target = ctx.storage.keyFor(projectId, ctx.params.id);
+      // Move the object off the key the client holds a capability for, using the
+      // destination committed by the claim transaction above.
+      const finalKey = pending.rows[0].final_storage_key ?? claim.finalKey;
+      if (typeof ctx.storage.promote === 'function' && finalKey !== storageKey) {
         try {
-          finalKey = (await ctx.storage.promote(storageKey, target)).key;
+          await ctx.storage.promote(storageKey, finalKey);
         } catch (err) {
           // Racing completions: the other one already moved it.
           throw new HttpError(409, 'upload_already_claimed',
@@ -1276,6 +1366,8 @@ export function buildRoutes() {
          VALUES ($1,$2,$3,'bug.attachment_added',$4)`,
         [projectId, ctx.params.id, ctx.actor.userId,
           JSON.stringify({ attachmentId: ins.rows[0].id, filename: ins.rows[0].filename })]);
+
+      await tx.query('DELETE FROM pending_uploads WHERE storage_key = $1', [storageKey]);
 
       return ins.rows[0];
     });

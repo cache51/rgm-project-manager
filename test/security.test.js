@@ -7,10 +7,12 @@
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { request as httpRequest } from 'node:http';
+import { readFile } from 'node:fs/promises';
 import { makeWorld, makeProjectWorld, makeMilestone, freshDb, testDriver } from './helpers.js';
 import { bootstrap, createProject, hashToken } from '../src/auth.js';
 import { migrate, migrationFiles, withTransaction } from '../src/db.js';
 import { hit, prune, LIMITS } from '../src/ratelimit.js';
+import { verifyDatabaseRoleBoundary } from '../src/server.js';
 
 /** Send a path verbatim, without the client library normalising it. */
 function rawGet(origin, path) {
@@ -28,6 +30,59 @@ function rawGet(origin, path) {
     req.end();
   });
 }
+
+test('health fails closed when a required database pool is unavailable', async () => {
+  const w = await makeWorld({ onError: () => {} });
+  const original = w.db.query.bind(w.db);
+  w.db.query = async () => { throw new Error('simulated database outage'); };
+  try {
+    const response = await fetch(`${w.url}/api/health`);
+    assert.equal(response.status, 500);
+  } finally {
+    w.db.query = original;
+    await w.close();
+  }
+});
+
+test('startup rejects an owner or privileged runtime database identity', async () => {
+  const identity = ({ user, superuser = false, owner = false, purge = false,
+    mark = false, auditWrite = false, projectDelete = false, cleanupWrite = false,
+    eventWrite = false }) => ({
+    query: async () => ({ rows: [{
+      session_user: user,
+      is_superuser: superuser,
+      owns_events: owner,
+      can_purge: purge,
+      can_mark_cleanup: mark,
+      can_write_audit: auditWrite,
+      can_delete_projects: projectDelete,
+      can_write_cleanup: cleanupWrite,
+      can_mutate_events: eventWrite
+    }] })
+  });
+
+  await assert.rejects(
+    () => verifyDatabaseRoleBoundary({ db: identity({ user: 'owner', owner: true }) }),
+    /runtime database login.*owner/i);
+  await assert.rejects(
+    () => verifyDatabaseRoleBoundary({ db: identity({ user: 'rgm_app', purge: true }) }),
+    /runtime database login.*purge authority/i);
+  await assert.rejects(
+    () => verifyDatabaseRoleBoundary({ db: identity({ user: 'rgm_app', auditWrite: true }) }),
+    /runtime database login.*direct audit writes/i);
+  await assert.rejects(
+    () => verifyDatabaseRoleBoundary({ db: identity({ user: 'rgm_app', projectDelete: true }) }),
+    /runtime database login.*direct project deletion/i);
+  await assert.rejects(
+    () => verifyDatabaseRoleBoundary({ db: identity({ user: 'rgm_app', cleanupWrite: true }) }),
+    /runtime database login.*cleanup queue writes/i);
+  await assert.rejects(
+    () => verifyDatabaseRoleBoundary({ db: identity({ user: 'rgm_app', eventWrite: true }) }),
+    /runtime database login.*event mutation/i);
+  await assert.doesNotReject(() => verifyDatabaseRoleBoundary({
+    db: identity({ user: 'rgm_app' })
+  }));
+});
 
 describe('csrf: cookie-authenticated writes', () => {
   let w, ms;
@@ -314,6 +369,35 @@ describe('concurrency: transactions must not interleave', () => {
 });
 
 describe('migrations', () => {
+  test('hard purge adds no long-lived database role or transient runtime grant', async () => {
+    const sql = await readFile(new URL('../db/migrations/013_purge_executor.sql', import.meta.url),
+      'utf8');
+    assert.doesNotMatch(sql, /CREATE\s+ROLE|rgm_purge_executor/i);
+    assert.match(sql,
+      /IF EXISTS \(SELECT 1 FROM pg_roles WHERE rolname = 'rgm_runtime'\)[\s\S]*REVOKE EXECUTE ON FUNCTION admin_purge_project[\s\S]*REVOKE ALL ON admin_storage_cleanup FROM rgm_runtime/i,
+      'runtime revocations must be conditional on role existence and fail closed when it exists');
+    const guarded = await readFile(new URL('../db/migrations/012_guarded_admin_purge.sql',
+      import.meta.url), 'utf8');
+    assert.doesNotMatch(guarded,
+      /GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+admin_purge_project[\s\S]*?TO\s+rgm_runtime/i,
+      'runtime must never receive purge authority, even between migrations');
+    assert.doesNotMatch(guarded, /EXCEPTION\s+WHEN\s+insufficient_privilege/i,
+      'a failed runtime DELETE revocation must abort the migration');
+    const privileges = await readFile(new URL('../db/migrations/002_privileges.sql',
+      import.meta.url), 'utf8');
+    assert.doesNotMatch(privileges, /insufficient privilege to grant on public: skipping/i,
+      'failed event ACL revocation must abort rather than leave mutable audit rows');
+    const auditCreate = await readFile(new URL('../db/migrations/010_admin_audit.sql',
+      import.meta.url), 'utf8');
+    assert.match(auditCreate,
+      /REVOKE\s+INSERT,\s*UPDATE,\s*DELETE,\s*TRUNCATE\s+ON\s+admin_audit_log\s+FROM\s+rgm_runtime/i,
+      'audit mutation rights must be revoked in the table-creation migration');
+    const auditGuard = await readFile(new URL('../db/migrations/011_admin_audit_append_only.sql',
+      import.meta.url), 'utf8');
+    assert.doesNotMatch(auditGuard, /GRANT\s+SELECT,\s*INSERT\s+ON\s+admin_audit_log/i,
+      'a later migration must never re-grant runtime audit insertion');
+  });
+
   test('the suite is running on the driver the environment selected', async () => {
     const db = await freshDb();
     assert.ok(['pglite', 'pg'].includes(db.driver), `unexpected driver ${db.driver}`);
@@ -412,37 +496,81 @@ describe('migrations', () => {
     const project = await createProject(db, { name: 'ACL', client: 'X',
                                                createdBy: admin.userId });
 
-    // Actually assume the role. Catalog introspection can be wrong about what is
-    // enforced; becoming the role cannot.
-    await db.exec('SET ROLE rgm_runtime');
-    try {
-      const before = (await db.query('SELECT count(*)::int AS c FROM events')).rows[0].c;
-
-      // INSERT must succeed — this is why the sequence is granted too. A missing
-      // sequence grant would fail right here.
-      await db.query(
+    // Actually assume the role on one pinned connection. A standalone SET ROLE
+    // through a pool can affect one connection while the checked statement lands
+    // on another, making the test silently run as the owner.
+    const before = (await db.query('SELECT count(*)::int AS c FROM events')).rows[0].c;
+    await db.transaction(async (tx) => {
+      await tx.exec('SET LOCAL ROLE rgm_runtime');
+      await tx.query(
         `INSERT INTO events (project_id, actor_id, kind, payload)
          VALUES ($1, $2, 'acl.test', '{}'::jsonb)`, [project.id, admin.userId]);
-      const after = (await db.query('SELECT count(*)::int AS c FROM events')).rows[0].c;
-      assert.equal(after, before + 1, 'the append landed');
+    });
+    assert.equal((await db.query('SELECT count(*)::int AS c FROM events')).rows[0].c,
+      before + 1, 'the append landed');
 
-      // The trigger and the grant both refuse these; either error is a pass.
-      await assert.rejects(() => db.query(`UPDATE events SET kind = 'x'`),
-        /permission denied|append-only/);
-      await assert.rejects(() => db.query('DELETE FROM events'),
-        /permission denied|append-only/);
-      // TRUNCATE is refused too — by privilege on PGlite, by the foreign-key
-      // constraint on PostgreSQL 17. Both are refusals, which is the point; the
-      // grant removal itself is asserted from relacl above.
-      await assert.rejects(() => db.exec('TRUNCATE events'),
-        /permission denied|append-only|cannot truncate/);
-
-      // Nothing was lost by those attempts.
-      assert.equal((await db.query('SELECT count(*)::int AS c FROM events')).rows[0].c,
-        before + 1);
-    } finally {
-      await db.exec('RESET ROLE');
+    for (const [action, expected] of [
+      [tx => tx.query(`UPDATE events SET kind = 'x'`), /permission denied|append-only/],
+      [tx => tx.query('DELETE FROM events'), /permission denied|append-only/],
+      [tx => tx.exec('TRUNCATE events'), /permission denied|append-only|cannot truncate/]
+    ]) {
+      await assert.rejects(
+        () => db.transaction(async (tx) => {
+          await tx.exec('SET LOCAL ROLE rgm_runtime');
+          await action(tx);
+        }), expected);
     }
+
+    assert.equal((await db.query('SELECT count(*)::int AS c FROM events')).rows[0].c,
+      before + 1, 'failed mutations changed nothing');
+    await db.close();
+  });
+
+  test('rgm_runtime cannot impersonate a site admin or fabricate purge audit rows', async () => {
+    const db = await freshDb();
+    const admin = await bootstrap(db, 'purge-acl@rgm.example');
+    const project = await createProject(db, { name: 'Runtime purge ACL', client: 'X',
+                                               createdBy: admin.userId });
+    await db.query(`UPDATE projects SET deleted_at = now() WHERE id = $1`, [project.id]);
+
+    const asRole = (role, action) => db.transaction(async (tx) => {
+      await tx.exec(`SET LOCAL ROLE ${role}`);
+      return action(tx);
+    });
+
+    await assert.rejects(
+      () => asRole('rgm_runtime', tx =>
+        tx.exec('ALTER TABLE events DISABLE TRIGGER events_no_update')),
+      /permission denied|must be owner/i);
+    await assert.rejects(
+      () => asRole('rgm_runtime', tx => tx.query(
+        `SELECT * FROM admin_purge_project($1, $2, $3, false)`,
+        ['purge-acl@rgm.example', project.id, 'runtime must not impersonate this admin'])),
+      /permission denied/i);
+    await assert.rejects(
+      () => asRole('rgm_runtime', tx => tx.query(
+        `INSERT INTO admin_audit_log
+           (actor_id, action, target_id, target_name, reason)
+         VALUES ($1, 'project.purged', $2, 'forged', 'forged audit reason')`,
+        [admin.userId, project.id])),
+      /permission denied/i);
+    await assert.rejects(
+      () => asRole('rgm_runtime', tx =>
+        tx.query(`DELETE FROM admin_audit_log WHERE target_id = $1`, [project.id])),
+      /permission denied|append-only/i);
+
+    const purged = await db.query(
+      `SELECT project_name, storage_keys
+         FROM admin_purge_project($1, $2, $3, false)`,
+      ['purge-acl@rgm.example', project.id, 'one-shot owner task writes tombstone']);
+    assert.equal(purged.rows[0].project_name, 'Runtime purge ACL');
+    assert.deepEqual(purged.rows[0].storage_keys, []);
+
+    assert.equal((await db.query(
+      `SELECT count(*)::int AS c FROM projects WHERE id = $1`, [project.id])).rows[0].c, 0);
+    assert.equal((await db.query(
+      `SELECT count(*)::int AS c FROM admin_audit_log WHERE target_id = $1`,
+      [project.id])).rows[0].c, 1);
     await db.close();
   });
 

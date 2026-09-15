@@ -183,8 +183,8 @@ bucket, mailer or translation provider they are using.
 |---|---|
 | `DATABASE_URL` | Use a real Postgres server (`pg`). Unset → the embedded PGlite. |
 | `PGLITE_DIR` | Where the embedded database keeps its files. Unset → in-memory. |
-| `STORAGE_DIR` / `STORAGE_SECRET` | Local object storage, and the HMAC key for upload capabilities. |
-| `S3_ENDPOINT` `S3_BUCKET` `S3_ACCESS_KEY_ID` `S3_SECRET_ACCESS_KEY` | Store attachments in a bucket instead. `S3_REGION`, `S3_FORCE_PATH_STYLE` (default true — MinIO needs it). |
+| `STORAGE_DIR` / `STORAGE_SECRET` | Local object storage, and the HMAC key for app-local upload capabilities. `STORAGE_SECRET` is also required with S3 in production. |
+| `S3_ENDPOINT` `S3_BUCKET` `S3_ACCESS_KEY_ID` `S3_SECRET_ACCESS_KEY` | Store attachment bytes in a bucket instead. Browser uploads still use the app-local capability URL; the app writes to S3 under the project lock. `S3_REGION`, `S3_FORCE_PATH_STYLE` (default true — MinIO needs it). |
 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASS` `MAIL_FROM` | Send real mail over SMTP. `SMTP_SECURE=true` for implicit TLS. `SMTP_REQUIRE_TLS` demands STARTTLS and **defaults to true whenever `SMTP_USER` is set**; set it to `false` explicitly to allow plaintext (dev only). The older spelling `REQUIRE_TLS` is still read. |
 | `EMAIL_API_ENDPOINT` `EMAIL_API_KEY` | Send mail through an HTTP provider instead — takes precedence over SMTP. |
 | `TRANSLATE_PROVIDER` | `stub` (default), `openai`, or `deepl`. |
@@ -270,15 +270,93 @@ The **build** is a working, tested server + worker + CLI.
 
 ```bash
 npm install
-npm test          # 389 tests against a real Postgres (WASM) over real HTTP
+npm test          # 459 tests against a real Postgres (WASM) over real HTTP
 npm run migrate
 npm start         # http://127.0.0.1:3000
 npm run worker    # drains the translation queue and the notification outbox — for a
                   # real Postgres. With the embedded database this cannot start (PGlite
                   # takes a single process), so the server runs the same loop in-process
 npx rgm login --url http://127.0.0.1:3000 --token <api-token>
-npx rgm pull 1    # write .rgm/BUG-1/{bug.md,meta.json,screenshot_01.png}
+npx rgm pull 1              # write .rgm/BUG-1/{bug.md,meta.json,screenshot_01.png}
+npx rgm admin delete-project <id> --reason "..."   # hard-delete an old project; the
+                                                   # reason is recorded in admin_audit_log
+                                                   # and survives the row's deletion
 ```
+
+### CLI: `rgm admin delete-project`
+
+The HTTP API has a soft delete (`DELETE /api/projects/:id`) that keeps the data and
+lets it be restored — the right answer for accidents. The CLI exposes a hard delete
+for the case where the operator wants the row gone, with a written reason:
+
+```
+docker compose --profile admin run --rm admin admin delete-project <project-id> \
+  --actor-email yuen.chan@gmail.com --reason "was a duplicate of HR Leave App"
+# For a live project, bypass the soft-delete precondition explicitly:
+docker compose --profile admin run --rm admin admin delete-project <project-id> \
+  --actor-email yuen.chan@gmail.com --reason "disposable test project, confirmed" --force
+```
+
+The reason must be at least 12 characters in both the command and guarded database function,
+and is recorded in `admin_audit_log` — a parallel audit table that has no FK to `projects`
+and so survives the project's deletion. The table is append-only, and its metadata
+records the attachment object keys removed from storage. The result:
+
+```
+purged HR Leave App
+  reason: was a duplicate of HR Leave App
+```
+
+Permanent deletion is not an HTTP route and needs no RGM password or API token. It runs only
+as an explicit one-shot Compose task on the deployment host, reusing the existing migration-
+owner connection; `--actor-email` must map to a site administrator. Because host authorization
+is not browser authentication, the tombstone keeps `actor_id` null and records the supplied
+email explicitly as `metadata.actorEmail` with `metadata.authorization = docker-host` rather
+than falsely claiming a browser-authenticated identity.
+Ordinary browser access remains direct email-to-role sign-in with no password. Without `--force`,
+the project must already have been removed through the normal soft-delete path. The command
+never soft-deletes as a side effect. `--force` permits purging a live project and that choice is
+stored in the audit metadata. If object storage is temporarily unavailable, the database purge
+is committed, cleanup remains in `admin_storage_cleanup`, and rerunning the command retries only
+the pending objects while returning the original immutable reason/force values. Issued upload
+capabilities are tracked in the database and every storage backend proxies PUT through the app.
+Purge takes the same project lock, revokes outstanding capabilities immediately, and durably
+queues both staging and claimed final object keys before deleting project rows.
+
+The Compose deployment has only its existing PostgreSQL owner credential plus the generated
+non-owner `RGM_RUNTIME_PASSWORD`; neither is an RGM sign-in password. Browser users enter only
+an email address. App and worker run as `rgm_app` and never receive the owner connection; only
+one-shot migration/recovery/admin containers receive it. Startup fails closed if the runtime
+login is an owner/superuser or has purge/audit mutation privileges, and `/api/health` proves that
+runtime database connection can execute a query.
+
+### Database recovery
+
+`scripts/recover.sh` restores a PostgreSQL custom-format dump into the local Compose
+deployment. Run it on the deployment host from the repository root:
+
+```bash
+scripts/recover.sh /path/to/rgm.dump --confirm-drop-database rgm
+
+# Optional: retain only these project UUIDs from the snapshot
+scripts/recover.sh /path/to/rgm.dump --confirm-drop-database rgm \
+  --actor-email yuen.chan@gmail.com \
+  --keep-project 11111111-1111-4111-8111-111111111111 \
+  --keep-project 22222222-2222-4222-8222-222222222222
+```
+
+The exact database-name confirmation is mandatory and one recovery runs at a time. Recovery
+filters the archive's table of contents, creates a disposable database, applies the current
+migrations, and runs the **same filtered data-only restore and project allow-list** intended
+for production. That proves every compressed data block, current-schema mapping, and requested
+keep UUID before writers stop. Only then does it recreate/migrate production and repeat the
+validated sequence with `pg_restore --exit-on-error`. Excluded projects go through the guarded
+purge function so completed and staged objects enter durable cleanup; a one-shot owner service
+deletes them before writers restart. Per-run archive/TOC copies and the validation database must
+be removed successfully. Any restore or object-cleanup error is fatal and leaves app/worker
+stopped. With no `--keep-project` options, every project in the snapshot is retained.
+When an allow-list is supplied, `--actor-email` is mandatory, must resolve to a current site
+administrator in the restored data, and that exact user is recorded on each exclusion purge.
 
 ### What is built
 

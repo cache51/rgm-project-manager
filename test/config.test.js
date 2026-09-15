@@ -29,6 +29,16 @@ describe('config: storage', () => {
     assert.equal(storage.forcePathStyle, true, 'path style suits MinIO, the common case');
   });
 
+  test('production S3 also requires the app-local capability secret', () => {
+    assert.throws(() => chooseStorage({
+      NODE_ENV: 'production',
+      S3_BUCKET: 'rgm-attachments',
+      S3_ENDPOINT: 'https://s3.example',
+      S3_ACCESS_KEY_ID: 'key',
+      S3_SECRET_ACCESS_KEY: 'secret'
+    }), /STORAGE_SECRET must be set/);
+  });
+
   test('virtual-host addressing can be requested', () => {
     const storage = chooseStorage({
       S3_BUCKET: 'b', S3_ENDPOINT: 'https://s3.example', S3_ACCESS_KEY_ID: 'k',
@@ -187,6 +197,15 @@ describe('config: loadConfig', () => {
     const both = loadConfig({ DATABASE_URL: 'postgres://x', PGLITE_DIR: '/tmp/pg' });
     assert.equal(both.describe().database, 'postgres (DATABASE_URL)',
       'a connection string must win, or a deployment silently uses a local file');
+  });
+
+  test('hard purge does not add a long-lived application database credential', () => {
+    const config = loadConfig({
+      DATABASE_URL: 'postgres://rgm_app:runtime@db/rgm',
+      PURGE_DATABASE_URL: 'postgres://obsolete:must-not-be-used@db/rgm'
+    });
+    assert.equal(config.databaseUrl, 'postgres://rgm_app:runtime@db/rgm');
+    assert.equal(Object.hasOwn(config, 'purgeDatabaseUrl'), false);
   });
 
   test('production refuses the built-in development storage secret', () => {

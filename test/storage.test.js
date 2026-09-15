@@ -282,14 +282,14 @@ describe('s3 storage', () => {
     const key = virtualHost.keyFor('11111111-1111-1111-1111-111111111111',
       '22222222-2222-2222-2222-222222222222');
 
-    const signed = virtualHost.presignUpload({ key, contentType: 'image/png' });
+    const signed = virtualHost.presignDownload({ key });
     const url = new URL(signed.url);
 
     assert.equal(url.hostname, `${creds.bucket}.s3.example.internal`,
       'the bucket must be part of the hostname');
     assert.ok(!url.pathname.includes(creds.bucket),
       'and must not also appear in the path');
-    assert.equal(url.searchParams.get('X-Amz-SignedHeaders'), 'content-type;host',
+    assert.equal(url.searchParams.get('X-Amz-SignedHeaders'), 'host',
       'the signature must cover the host it is actually sent to');
   });
 
@@ -305,36 +305,25 @@ describe('s3 storage', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  test('a presigned PUT verifies against an independent implementation', async () => {
+  test('an S3 upload capability is local, signed, and type-bound', async () => {
     const key = storage.keyFor('11111111-1111-1111-1111-111111111111',
       '22222222-2222-2222-2222-222222222222');
     const signed = storage.presignUpload({ key, contentType: 'image/png' });
 
-    const url = new URL(signed.url);
-    assert.equal(url.searchParams.get('X-Amz-Algorithm'), 'AWS4-HMAC-SHA256');
-    assert.ok(url.searchParams.get('X-Amz-Signature'));
-    assert.equal(url.searchParams.get('X-Amz-SignedHeaders'), 'content-type;host');
-    assert.ok(signed.expiresAt > Date.now() / 1000);
-
-    // Upload exactly as a browser would: the signed headers, verbatim.
-    const res = await fetch(signed.url, {
-      method: 'PUT', body: PNG_BYTES, headers: signed.headers
+    assert.match(signed.url, /^\/api\/uploads\//);
+    assert.deepEqual(storage.verifyUpload(signed.token), {
+      key, ct: 'image/png', exp: signed.expiresAt
     });
-    assert.equal(res.status, 200, await res.text().catch(() => ''));
-    assert.equal(stub.rejections.length, 0, JSON.stringify(stub.rejections));
+    assert.deepEqual(signed.headers, { 'content-type': 'image/png' });
+    assert.ok(signed.expiresAt > Date.now() / 1000);
   });
 
-  test('a signature that does not cover the body is detected', async () => {
+  test('a tampered S3 upload capability is refused locally', async () => {
     const key = storage.keyFor('11111111-1111-1111-1111-111111111111',
       '44444444-4444-4444-4444-444444444444');
     const signed = storage.presignUpload({ key, contentType: 'image/png' });
-
-    // Swap the path for another key: the signature no longer matches.
-    const tampered = signed.url.replace(/\/([0-9a-f-]{36})$/, '/$1');
-    const moved = `${tampered.split('?')[0].replace(/\/$/, '')}-other?${tampered.split('?')[1]}`;
-    const res = await fetch(moved, { method: 'PUT', body: PNG_BYTES, headers: signed.headers });
-    assert.equal(res.status, 403, 'a URL for a different key must not be accepted');
-    assert.ok(stub.rejections.length > 0);
+    assert.throws(() => storage.verifyUpload(`${signed.token.slice(0, -2)}xx`),
+      /signature mismatch/);
   });
 
   test('put, head, get and delete all sign correctly', async () => {
@@ -413,38 +402,49 @@ describe('the api on the s3 driver', () => {
     await stub.close();
   });
 
-  test('presign returns a direct-to-bucket url and no local token', async () => {
-    const res = await w.testerClient.post(`/api/bugs/${bug.id}/attachments/presign`,
-      { contentType: 'image/png', byteSize: PNG_BYTES.length });
-    assert.equal(res.status, 201);
-    assert.equal(res.json.uploadToken, null,
-      'the signature is the capability; there is no local token');
-    assert.ok(res.json.uploadUrl.startsWith(stub.url), 'the URL points at the bucket');
-    assert.deepEqual(res.json.uploadHeaders, { 'content-type': 'image/png' });
-  });
-
-  test('the proxying upload route is not available on this driver', async () => {
-    const res = await w.testerClient.put('/api/uploads/anything', PNG_BYTES);
-    assert.equal(res.status, 404);
-    assert.equal(res.json.error, 'no_upload_proxy');
-  });
-
-  test('a full upload through the bucket produces a downloadable attachment', async () => {
+  test('S3 uploads use an app-local capability that completion revokes immediately', async () => {
     const signed = (await w.testerClient.post(`/api/bugs/${bug.id}/attachments/presign`,
       { contentType: 'image/png', byteSize: PNG_BYTES.length })).json;
 
-    // The browser uploads straight to storage, using the signed headers.
-    const put = await fetch(signed.uploadUrl, {
-      method: 'PUT', body: PNG_BYTES, headers: signed.uploadHeaders
-    });
-    assert.equal(put.status, 200, await put.text().catch(() => ''));
+    assert.match(signed.uploadUrl, /^\/api\/uploads\//,
+      'the browser must upload through the app, never directly to the bucket');
+    assert.equal(typeof signed.uploadToken, 'string');
+    assert.deepEqual(signed.uploadHeaders, { 'content-type': 'image/png' });
 
-    const done = await w.testerClient.post(`/api/bugs/${bug.id}/attachments/complete`,
-      { storageKey: signed.storageKey, filename: 'thùng 3.png' });
+    const uploaded = await w.testerClient.put(signed.uploadUrl, PNG_BYTES,
+      { headers: signed.uploadHeaders });
+    assert.equal(uploaded.status, 201, uploaded.text);
+    const completed = await w.testerClient.post(`/api/bugs/${bug.id}/attachments/complete`, {
+      storageKey: signed.storageKey,
+      uploadToken: signed.uploadToken,
+      filename: 'revoked.png'
+    });
+    assert.equal(completed.status, 201, completed.text);
+
+    const replay = await w.testerClient.put(signed.uploadUrl, PNG_BYTES,
+      { headers: signed.uploadHeaders });
+    assert.equal(replay.status, 410, replay.text);
+    assert.equal(replay.json.error, 'upload_revoked');
+    assert.equal(stub.objects.has(signed.storageKey), false,
+      'replay must not recreate the staged object in the bucket');
+  });
+
+  test('a full proxied upload produces a downloadable S3 attachment', async () => {
+    const uploadBug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    const signed = (await w.testerClient.post(`/api/bugs/${uploadBug.id}/attachments/presign`,
+      { contentType: 'image/png', byteSize: PNG_BYTES.length })).json;
+
+    const put = await w.testerClient.put(signed.uploadUrl, PNG_BYTES,
+      { headers: signed.uploadHeaders });
+    assert.equal(put.status, 201, put.text);
+
+    const done = await w.testerClient.post(`/api/bugs/${uploadBug.id}/attachments/complete`,
+      { storageKey: signed.storageKey, uploadToken: signed.uploadToken,
+        filename: 'thùng 3.png' });
     assert.equal(done.status, 201, done.text);
     assert.equal(done.json.content_type, 'image/png');
 
-    const payload = (await w.testerClient.get(`/api/bugs/${bug.id}`)).json;
+    const payload = (await w.testerClient.get(`/api/bugs/${uploadBug.id}`)).json;
     const att = payload.attachments.find((a) => a.id === done.json.id);
     assert.equal(att.originalFilename, 'thùng 3.png');
     assert.equal(att.name, 'screenshot_01.png');
@@ -460,9 +460,8 @@ describe('the api on the s3 driver', () => {
     const other = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
     const signed = (await w.testerClient.post(`/api/bugs/${other.id}/attachments/presign`,
       { contentType: 'image/png', byteSize: PNG_BYTES.length })).json;
-    await fetch(signed.uploadUrl, {
-      method: 'PUT', body: PNG_BYTES, headers: signed.uploadHeaders
-    });
+    await w.testerClient.put(signed.uploadUrl, PNG_BYTES,
+      { headers: signed.uploadHeaders });
 
     const res = await w.testerClient.post(`/api/bugs/${bug.id}/attachments/complete`,
       { storageKey: signed.storageKey, filename: 'x.png' });

@@ -24,6 +24,19 @@ const num = (value, fallback) => {
 };
 
 export function chooseStorage(env = process.env) {
+  // Every backend issues the same app-local HMAC capability. The default is
+  // public knowledge, so production must provide an actual secret even when the
+  // bytes ultimately live in S3.
+  const secret = (() => {
+    if (env.STORAGE_SECRET) return env.STORAGE_SECRET;
+    if (env.NODE_ENV === 'production') {
+      throw new Error('STORAGE_SECRET must be set when NODE_ENV=production; '
+        + 'the built-in development secret is public and would let anyone '
+        + 'forge upload capabilities');
+    }
+    return 'dev-secret-change-me';
+  })();
+
   if (env.S3_BUCKET) {
     return new S3Storage({
       endpoint: env.S3_ENDPOINT,
@@ -31,6 +44,7 @@ export function chooseStorage(env = process.env) {
       region: env.S3_REGION ?? 'us-east-1',
       accessKeyId: env.S3_ACCESS_KEY_ID,
       secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+      secret,
       // MinIO and most self-hosted gateways need path-style addressing;
       // AWS itself prefers virtual-host style.
       forcePathStyle: bool(env.S3_FORCE_PATH_STYLE, true)
@@ -38,19 +52,7 @@ export function chooseStorage(env = process.env) {
   }
   return new FsStorage({
     root: env.STORAGE_DIR ?? './.rgm/storage',
-    // The default secret is public knowledge — it is in this repository. Anyone
-    // who can reach the upload endpoint could forge a capability with it, so it
-    // is refused outright in production (IR-012).
-    secret: (() => {
-      const secret = env.STORAGE_SECRET;
-      if (secret) return secret;
-      if (env.NODE_ENV === 'production') {
-        throw new Error('STORAGE_SECRET must be set when NODE_ENV=production; '
-          + 'the built-in development secret is public and would let anyone '
-          + 'forge upload capabilities');
-      }
-      return 'dev-secret-change-me';
-    })()
+    secret
   });
 }
 

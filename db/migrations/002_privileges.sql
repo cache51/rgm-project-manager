@@ -44,29 +44,25 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rgm_runtime') THEN
     RAISE NOTICE 'rgm_runtime does not exist: skipping grants';
   ELSE
-    BEGIN
-      GRANT USAGE ON SCHEMA public TO rgm_runtime;
+    GRANT USAGE ON SCHEMA public TO rgm_runtime;
 
       -- Everything the application reads and writes today. Granting "all tables"
       -- rather than a list means a migration that adds a table does not silently
       -- produce a runtime role that cannot use it — the failure IR-004 describes.
-      GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rgm_runtime;
-      GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO rgm_runtime;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rgm_runtime;
+    GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO rgm_runtime;
 
       -- ...and then take back the one thing the application must never do.
-      REVOKE UPDATE, DELETE, TRUNCATE ON events FROM rgm_runtime;
+    REVOKE UPDATE, DELETE, TRUNCATE ON events FROM rgm_runtime;
 
       -- Tables added later belong to whoever runs the next migration; this keeps
       -- the grants true for objects created after this migration too.
-      ALTER DEFAULT PRIVILEGES IN SCHEMA public
-        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO rgm_runtime;
-      ALTER DEFAULT PRIVILEGES IN SCHEMA public
-        GRANT USAGE, SELECT ON SEQUENCES TO rgm_runtime;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO rgm_runtime;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT USAGE, SELECT ON SEQUENCES TO rgm_runtime;
 
-      RAISE NOTICE 'granted runtime access; `events` stays append-only';
-    EXCEPTION WHEN insufficient_privilege THEN
-      RAISE NOTICE 'insufficient privilege to grant on public: skipping';
-    END;
+    RAISE NOTICE 'granted runtime access; `events` stays append-only';
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rgm_auditor') THEN
