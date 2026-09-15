@@ -730,4 +730,304 @@ describe('ui (dom): every action reaches the API it should', () => {
     assert.ok(app.apiCalls().some((c) => c.method === 'POST' && c.path === '/api/auth/logout'));
     assert.ok(app.redirects.includes('/login'), 'and the browser is sent to /login');
   });
+
+  // ── IR-036: a failed upload must not cost the tester their report ──
+
+  // A File the way the browser hands one to fetch: name and size, and it is a
+  // live object, not a string — which is exactly what the harness records.
+  const file = (name, lastModified = 1) => ({
+    name, size: 2048, type: 'image/png', lastModified
+  });
+
+  /** Drive the report form the way a tester does, with the given files staged. */
+  async function fillReport(app, files) {
+    await app.click('report', { ms });
+    app.field('f-ms').value = ms;
+    app.field('f-sev').value = 'high';
+    app.field('f-title').value = 'Số lượng thùng không khớp';
+    app.field('f-body').value = 'Thùng 3 thiếu 4 cái.';
+    app.field('f-files').files = files;
+    await app.click('submitreport');
+  }
+
+  test('an upload failure keeps the report: the form survives, and retrying reuses the bug', async () => {
+    seen.length = 0;
+    let failUploads = true;
+    const app = loadApp({ routes: {
+      ...routes(),
+      [`POST /api/projects/${w.project.id}/bugs`]: (c) => {
+        seen.push(c);
+        return { body: { id: bug.id, code: 'BUG-9', kind: 'bug' }, status: 201 };
+      },
+      'PUT http://bucket.test/put': (c) => {
+        seen.push(c);
+        return failUploads ? { body: {}, status: 502 } : { body: {} };
+      },
+      [`PATCH /api/bugs/${bug.id}`]: (c) => { seen.push(c); return { body: {} }; }
+    } });
+    await settle();
+
+    await fillReport(app, [file('shot1.png')]);
+    assert.equal(app.apiCalls().filter((c) => c.method === 'POST' && c.path === `/api/projects/${w.project.id}/bugs`).length, 1,
+      'the bug was filed exactly once');
+
+    // The failure is visible, and the form is still on screen with its text.
+    assert.match(app.html(), /id="f-title"/, 'the report form was not cleared');
+    assert.equal(app.field('f-title').value, 'Số lượng thùng không khớp',
+      'the typed text survived the failure');
+    assert.equal(app.field('f-sev').value, 'high',
+      'and so did the severity — restored by hand after the re-render');
+
+    app.input('f-title', 'Edited after the upload failed');
+    app.runTimers();
+    assert.match(app.html(), /value="Edited after the upload failed"/,
+      'edits made after failure survive the later notice-expiry render');
+    assert.match(app.html(), />Thùng 3 thiếu 4 cái\.<\/textarea>/,
+      'the description also survives notice expiry');
+    app.input('f-title', 'Số lượng thùng không khớp');
+
+    // The tester presses Send again; the network recovers.
+    failUploads = false;
+    app.field('f-files').files = [file('shot1.png')];
+    await app.click('submitreport');
+
+    const filed = app.apiCalls().filter((c) => c.method === 'POST' && c.path === `/api/projects/${w.project.id}/bugs`);
+    assert.equal(filed.length, 1,
+      'retrying must not file a second report — the first one exists');
+    assert.equal(app.apiCalls().filter((c) => c.method === 'PATCH').length, 0,
+      'an unchanged draft does not overwrite later edits with stale values');
+    assert.equal(app.apiCalls().filter((c) => c.path === '/api/bugs/' + bug.id + '/attachments/complete').length, 1,
+      'the screenshot completes on the retry');
+    assert.doesNotMatch(app.html(), /id="f-title"/,
+      'and the form is gone once the retry succeeds');
+  });
+
+  test('cancelling a half-uploaded report abandons it: the next Send is a fresh bug', async () => {
+    seen.length = 0;
+    let failUploads = true;
+    const app = loadApp({ routes: {
+      ...routes(),
+      [`POST /api/projects/${w.project.id}/bugs`]: (c) => {
+        seen.push(c);
+        return { body: { id: bug.id, code: 'BUG-9', milestoneId: c.body.milestoneId }, status: 201 };
+      },
+      'PUT http://bucket.test/put': (c) => {
+        seen.push(c);
+        return failUploads ? { body: {}, status: 502 } : { body: {} };
+      }
+    } });
+    await settle();
+
+    await fillReport(app, [file('shot1.png')]);
+    await app.click('cancelreport');          // the tester gives up on this one
+    failUploads = false;
+    await fillReport(app, [file('shot1.png')]);   // and starts over
+
+    const filed = app.apiCalls().filter((c) => c.method === 'POST' && c.path === `/api/projects/${w.project.id}/bugs`);
+    assert.equal(filed.length, 2,
+      'a cancelled report is abandoned, so starting over files a new bug — no silent edit');
+    assert.equal(app.apiCalls().filter((c) => c.method === 'PATCH').length, 0,
+      'and nothing was PATCHed: the abandoned text was never pushed onto the old bug');
+  });
+
+  test('a retry after a partial failure does not re-upload the files that already landed', async () => {
+    seen.length = 0;
+    let failSecond = true;
+    const app = loadApp({ routes: {
+      ...routes(),
+      [`POST /api/projects/${w.project.id}/bugs`]: (c) => {
+        seen.push(c);
+        return { body: { id: bug.id, code: 'BUG-9', kind: 'bug' }, status: 201 };
+      },
+      'PUT http://bucket.test/put': (c) => {
+        seen.push(c);
+        return { body: {} };
+      },
+      [`POST /api/bugs/${bug.id}/attachments/complete`]: (c) => {
+        seen.push(c);
+        // The first file completes; the second one fails. Once storage recovers,
+        // the third completion (the retried second file) succeeds.
+        const done = seen.filter((x) => x.path === `/api/bugs/${bug.id}/attachments/complete`).length;
+        return done === 1 || !failSecond
+          ? { body: { id: `a${done}` }, status: 201 }
+          : { body: { message: 'complete failed' }, status: 502 };
+      },
+      [`PATCH /api/bugs/${bug.id}`]: (c) => { seen.push(c); return { body: {} }; }
+    } });
+    await settle();
+
+    await fillReport(app, [file('shot.png', 1), file('shot.png', 2)]);
+
+    // One attachment completed, one failed. An empty retry must not claim success.
+    failSecond = false;
+    await app.click('submitreport');
+    assert.match(app.html(), /id="f-title"/,
+      'the report stays pending until the missing file is reattached');
+    assert.equal(app.calls.filter((c) => c.method === 'PUT').length, 2,
+      'an empty retry neither uploads nor closes the report');
+
+    // Reattaching both lets the app skip the completed first file and replace the
+    // failed same-name slot with the tester's changed file.
+    app.field('f-files').files = [file('shot.png', 1), file('shot.png', 3)];
+    await app.click('submitreport');
+
+    const puts = app.calls.filter((c) => c.method === 'PUT');
+    assert.equal(puts.length, 3,
+      'two uploads the first time, one on the retry — the landed file is not re-sent');
+    assert.deepEqual(puts.map((c) => c.file?.lastModified), [1, 2, 3],
+      'a changed same-name file replaces only the unfinished slot');
+    const completes = app.apiCalls().filter((c) => c.path === `/api/bugs/${bug.id}/attachments/complete`);
+    assert.equal(completes.length, 3,
+      'the first file completes once; the second fails, then completes on retry');
+    assert.doesNotMatch(app.html(), /id="f-title"/,
+      'the successful retry clears pending state and closes the form');
+  });
+
+  test('identical file metadata keeps occurrence slots stable across retry', async () => {
+    seen.length = 0;
+    let completion = 0;
+    let recovered = false;
+    const app = loadApp({ routes: {
+      ...routes(),
+      [`POST /api/projects/${w.project.id}/bugs`]: () => ({
+        body: { id: bug.id, code: 'BUG-9', kind: 'bug' }, status: 201
+      }),
+      'PUT http://bucket.test/put': () => ({}),
+      [`POST /api/bugs/${bug.id}/attachments/complete`]: () => {
+        completion += 1;
+        return completion === 2 && !recovered
+          ? { body: { message: 'complete failed' }, status: 502 }
+          : { body: { id: `a${completion}` }, status: 201 };
+      }
+    } });
+    await settle();
+
+    await fillReport(app, [file('same.png', 7), file('same.png', 7)]);
+    recovered = true;
+
+    // One indistinguishable file maps to completed occurrence zero, not pending one.
+    app.field('f-files').files = [file('same.png', 7)];
+    await app.click('submitreport');
+    assert.match(app.html(), /id="f-title"/,
+      'an ambiguous single reattachment cannot silently skip occurrence one');
+
+    app.field('f-files').files = [file('same.png', 7), file('same.png', 7)];
+    await app.click('submitreport');
+    assert.equal(app.calls.filter((c) => c.method === 'PUT').length, 3,
+      'both initial occurrences upload; only the failed second occurrence retries');
+    assert.doesNotMatch(app.html(), /id="f-title"/,
+      'the manifest closes only after both occurrence slots complete');
+  });
+
+  test('a retry PATCH sends only changed fields and blocks uploads if it fails', async () => {
+    seen.length = 0;
+    let failUploads = true;
+    const app = loadApp({ routes: {
+      ...routes(),
+      [`POST /api/projects/${w.project.id}/bugs`]: () => ({
+        body: { id: bug.id, code: 'BUG-9', kind: 'bug' }, status: 201
+      }),
+      'PUT http://bucket.test/put': () => failUploads ? { status: 502 } : {},
+      [`PATCH /api/bugs/${bug.id}`]: (c) => {
+        seen.push(c);
+        return { body: { message: 'changed elsewhere' }, status: 409 };
+      }
+    } });
+    await settle();
+
+    await fillReport(app, [file('shot.png')]);
+    failUploads = false;
+    app.field('f-title').value = 'Tester corrected only the title';
+    app.field('f-files').files = [file('shot.png')];
+    const putsBefore = app.calls.filter((c) => c.method === 'PUT').length;
+    await app.click('submitreport');
+
+    const patch = app.apiCalls().find((c) => c.method === 'PATCH');
+    assert.deepEqual(patch?.body, { titleVi: 'Tester corrected only the title' },
+      'unchanged body and severity are not overwritten');
+    assert.equal(app.calls.filter((c) => c.method === 'PUT').length, putsBefore,
+      'a failed edit stops the upload instead of reporting false success');
+    assert.match(app.html(), /id="f-title"/, 'the report stays open for another retry');
+  });
+
+  test('changing milestone cannot attach files to the report created for the old milestone', async () => {
+    seen.length = 0;
+    let failUploads = true;
+    const app = loadApp({ routes: {
+      ...routes(),
+      [`POST /api/projects/${w.project.id}/bugs`]: () => ({
+        body: { id: bug.id, code: 'BUG-9', kind: 'bug' }, status: 201
+      }),
+      'PUT http://bucket.test/put': () => failUploads ? { status: 502 } : {}
+    } });
+    await settle();
+
+    await fillReport(app, [file('shot.png')]);
+    failUploads = false;
+    app.field('f-ms').value = 'different-milestone';
+    app.field('f-files').files = [file('shot.png')];
+    const callsBefore = app.calls.length;
+    await app.click('submitreport');
+
+    assert.equal(app.calls.length, callsBefore,
+      'the mismatch is rejected before POST, PATCH, presign or upload');
+    assert.match(app.html(), /id="f-title"/, 'the pending report remains open');
+  });
+
+  test('navigation during a failed upload cannot revive stale retry state', async () => {
+    seen.length = 0;
+    let releaseUpload;
+    let uploadStarted;
+    const started = new Promise((resolve) => { uploadStarted = resolve; });
+    const delayedFailure = new Promise((resolve) => { releaseUpload = resolve; });
+    const app = loadApp({ routes: {
+      ...routes(),
+      [`POST /api/projects/${w.project.id}/bugs`]: () => ({
+        body: { id: bug.id, code: 'BUG-9', kind: 'bug' }, status: 201
+      }),
+      'PUT http://bucket.test/put': async () => {
+        uploadStarted();
+        return delayedFailure;
+      }
+    } });
+    await settle();
+
+    const firstSubmit = fillReport(app, [file('old.png')]);
+    await started;
+    await app.click('view', { view: 'bugs' });
+    assert.doesNotMatch(app.html(), /id="f-title"/,
+      'view navigation is honored while the upload request is still pending');
+    releaseUpload({ status: 502 });
+    await firstSubmit;
+
+    await fillReport(app, []);
+    const posts = app.apiCalls().filter((c) =>
+      c.method === 'POST' && c.path === `/api/projects/${w.project.id}/bugs`);
+    assert.equal(posts.length, 2,
+      'a fresh report after navigation does not reuse the abandoned bug');
+  });
+
+  test('creating and switching to a project clears another project retry state', async () => {
+    let failUploads = true;
+    const app = loadApp({ routes: {
+      ...routes(),
+      [`POST /api/projects/${w.project.id}/bugs`]: () => ({
+        body: { id: bug.id, code: 'BUG-9', kind: 'bug' }, status: 201
+      }),
+      'PUT http://bucket.test/put': () => failUploads ? { status: 502 } : {},
+      'POST /api/projects': () => ({
+        body: { id: 'new-project', name: 'New project', env: 'staging' }, status: 201
+      })
+    } });
+    await settle();
+
+    await fillReport(app, [file('old-project.png')]);
+    await app.click('newproject');
+    app.field('f-pname').value = 'New project';
+    app.field('f-penv').value = 'staging';
+    await app.click('createproject');
+
+    assert.doesNotMatch(app.html(), /id="f-title"/,
+      'the new project never renders the old project locked retry form');
+  });
 });

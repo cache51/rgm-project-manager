@@ -35,6 +35,7 @@ export function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
   const copied = [];
   const downloads = [];
   const listeners = {};
+  const timers = [];
   const redirects = [];
   const promptAnswer = { value: '' };
   // Removals ask for confirmation first. The harness answers it so both branches can
@@ -50,12 +51,40 @@ export function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
     removeItem: (k) => store.delete(k)
   };
 
+  const decodeHtml = (value) => String(value ?? '')
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+
+  const renderedValue = (id) => {
+    const input = html.match(new RegExp(`<input[^>]*id="${id}"[^>]*>`));
+    if (input) return decodeHtml(input[0].match(/\bvalue="([^"]*)"/)?.[1] ?? '');
+    const textarea = html.match(new RegExp(`<textarea[^>]*id="${id}"[^>]*>([\\s\\S]*?)<\\/textarea>`));
+    if (textarea) return decodeHtml(textarea[1]);
+    const select = html.match(new RegExp(`<select[^>]*id="${id}"[^>]*>([\\s\\S]*?)<\\/select>`));
+    if (select) {
+      const selected = select[1].match(/<option[^>]*value="([^"]*)"[^>]*selected[^>]*>/)
+        ?? select[1].match(/<option[^>]*value="([^"]*)"[^>]*>/);
+      return decodeHtml(selected?.[1] ?? '');
+    }
+    return '';
+  };
+
   const field = (id) => {
-    if (!fields.has(id)) fields.set(id, { id, value: '', files: [] });
+    if (!fields.has(id)) fields.set(id, { id, value: renderedValue(id), files: [] });
     return fields.get(id);
   };
 
-  const appEl = { innerHTML: '', addEventListener: (ev, fn) => { listeners[ev] = fn; } };
+  let html = '';
+  const appEl = {
+    get innerHTML() { return html; },
+    set innerHTML(value) {
+      html = value;
+      // Replacing innerHTML creates new controls in a browser. In particular, a
+      // file input is empty after a re-render and must be filled again by the user.
+      fields.clear();
+    },
+    addEventListener: (ev, fn) => { listeners[ev] = fn; }
+  };
 
   const document = {
     getElementById: (id) => (id === 'app' ? appEl : field(id)),
@@ -87,7 +116,11 @@ export function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
 
   const ctx = {
     console,
-    setTimeout, clearTimeout, setInterval, clearInterval,
+    setTimeout: (fn, ms, ...args) => {
+      if (ms >= 4000) { timers.push(() => fn(...args)); return timers.length; }
+      return setTimeout(fn, ms, ...args);
+    },
+    clearTimeout, setInterval, clearInterval,
     document,
     location: { replace: (u) => redirects.push(u), href: 'http://127.0.0.1:3000/' },
     navigator: { clipboard: { writeText: async (t) => { copied.push(t); } }, language: browserLang },
@@ -100,12 +133,20 @@ export function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
     confirm: () => confirmAnswer.value,
     fetch: async (path, opts = {}) => {
       const method = (opts.method ?? 'GET').toUpperCase();
-      const call = { method, path, body: opts.body ? JSON.parse(opts.body) : null };
+      // A JSON body is a string and is recorded parsed; an upload body is a File.
+      // Snapshot its metadata instead of retaining a mutable, potentially large body.
+      const call = opts.body === undefined ? { method, path, body: null }
+        : typeof opts.body === 'string'
+          ? { method, path, body: JSON.parse(opts.body) }
+          : { method, path, body: null, file: {
+              name: opts.body.name, size: opts.body.size, type: opts.body.type,
+              lastModified: opts.body.lastModified
+            } };
       calls.push(call);
 
       const route = routes[`${method} ${path}`];
       if (typeof route === 'function') {
-        const out = route(call) ?? {};
+        const out = (await route(call)) ?? {};
         return respond(out.body ?? {}, out.status ?? 200, out.headers);
       }
       // A plain value is the payload. Nothing is inferred from its shape: a bug
@@ -127,7 +168,13 @@ export function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
     ctx,
     html: () => appEl.innerHTML,
     field: (id) => field(id),
+    runTimers() { while (timers.length) timers.shift()(); },
     apiCalls: () => calls.filter((c) => String(c.path).startsWith('/api/')),
+    input(id, value) {
+      const el = field(id);
+      el.value = value;
+      listeners.input?.({ target: el });
+    },
     /** Invoke the app's delegated click handler as a browser would. */
     async click(action, dataset = {}) {
       const el = { dataset: { action, ...dataset } };

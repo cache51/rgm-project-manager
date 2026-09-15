@@ -138,8 +138,21 @@ Recorded so they are not lost, roughly in the order worth doing them.
 
 ### Interface
 
-- **IR-036 (med)** — An upload failure after bug creation loses the bug id, and the
-  error path clears the form — a retry creates a duplicate report.
+- **IR-036 (med, fixed)** — An upload failure after bug creation lost the bug id and
+  cleared the form, so a retry created a duplicate report. Retry state is now bound to
+  the active project, milestone, report session and bug. A retry sends only fields the
+  tester changed, blocks uploads if that PATCH fails, and distinguishes same-name files
+  by metadata plus occurrence. An expected-file manifest prevents success until every
+  original upload slot is complete, including identical files; the draft and edits made
+  after failure are held in state across every render. Cancel, navigation and project
+  switches invalidate the
+  session, including requests already in flight. Eight focused DOM regressions cover
+  full and partial failure, cancellation, missing-file retry, identical occurrences,
+  selective PATCH failure, milestone mismatch, in-flight navigation and project
+  switching; the corrected harness clears file inputs on render. A headless Chrome run
+  against real app/server code and injected flaky storage waited past toast expiry,
+  then verified one POST, preserved text, explicit file reattachment, no stale PATCH
+  and successful completion.
 
 ### Verification
 

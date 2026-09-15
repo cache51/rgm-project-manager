@@ -61,6 +61,8 @@ const T = {
     editBug: 'Sửa báo cáo này',
     editHint: 'Sửa phần tiếng Việt sẽ đưa bản dịch vào hàng đợi dịch lại.',
     needBugText: 'Cần cả tiêu đề và nội dung',
+    finishPendingReport: 'Hãy huỷ báo cáo đang chờ trước khi đổi mốc hoặc loại.',
+    reattachPendingFiles: 'Hãy đính kèm lại tất cả ảnh chưa hoàn tất.',
     confirmRemoveMember: 'Xoá người này khỏi dự án?'
   },
   zh: {
@@ -110,6 +112,8 @@ const T = {
     editBug: '編輯此報告',
     editHint: '修改越南文內容後，翻譯會重新排入佇列。',
     needBugText: '標題和內容都必須填寫',
+    finishPendingReport: '請先取消待完成的報告，再更改里程碑或類型。',
+    reattachPendingFiles: '請重新附上所有尚未完成的圖片。',
     confirmRemoveMember: '將此人從專案移除？'
   },
   en: {
@@ -159,6 +163,8 @@ const T = {
     editBug: 'Edit this report',
     editHint: 'Changing the Vietnamese text puts its translation back in the queue.',
     needBugText: 'A title and a description are both required',
+    finishPendingReport: 'Cancel the pending report before changing milestone or type.',
+    reattachPendingFiles: 'Reattach every screenshot that has not finished uploading.',
     confirmRemoveMember: 'Remove this person from the project?'
   }
 };
@@ -218,6 +224,9 @@ const S = {
   // here from further down the file throws a temporal-dead-zone error.
   view: 'milestones', lang: initialLang(), bug: null, prompt: null,
   milestones: null, bugs: null, busy: false, notice: null,
+  // IR-036: the bug created by a report whose screenshots have not all landed yet.
+  // While set, pressing Send again continues THAT bug instead of filing a new one.
+  pendingBug: null, pendingUploads: null, reportDraft: null, reportSession: 0,
   members: [],
   // Screens that are revealed on demand: the create-project form is no longer only
   // the first-run screen, and the add-milestone form is no longer only the empty
@@ -328,6 +337,20 @@ function notice(text, kind = 'ok') {
   S.notice = text ? { text, kind } : null;
   render();
   if (text) setTimeout(() => { S.notice = null; render(); }, 4000);
+}
+
+function abandonPendingReport() {
+  S.reportSession += 1;
+  S.pendingBug = null;
+  S.pendingUploads = null;
+  S.reportDraft = null;
+}
+
+function uploadIdentity(file, occurrences) {
+  const base = [file.name, file.size, file.type, file.lastModified ?? 0].join('\u0000');
+  const occurrence = occurrences.get(base) ?? 0;
+  occurrences.set(base, occurrence + 1);
+  return `${base}\u0000${occurrence}`;
 }
 
 // ───────────────────────── data ─────────────────────────
@@ -868,28 +891,32 @@ function editForm() {
 
 function reportForm() {
   const ready = (S.milestones ?? []).filter((m) => m.status === 'ready');
+  const draft = S.reportDraft;
+  const reportKind = S.pendingBug?.kind ?? draft?.kind ?? S.reportKind;
+  const reportFor = S.pendingBug?.milestoneId ?? draft?.milestoneId ?? S.reportFor;
+  const severity = draft?.severity ?? 'medium';
+  const locked = S.pendingBug ? ' disabled' : '';
   return `
   <div class="wrap">
     <a href="#" class="btn sm" data-action="cancelreport">${t('cancel')}</a>
     <div class="card" style="margin-top:14px;max-width:640px">
       <h2 style="margin:0 0 14px;font-size:16px">🐞 ${t('send')}</h2>
       <label>${t('kindL')}</label>
-      <select id="f-kind">
-        <option value="bug"${S.reportKind === 'feature' ? '' : ' selected'}>🐞 ${t('kindBug')}</option>
-        <option value="feature"${S.reportKind === 'feature' ? ' selected' : ''}>✨ ${t('kindFeature')}</option>
+      <select id="f-kind"${locked}>
+        <option value="bug"${reportKind === 'feature' ? '' : ' selected'}>🐞 ${t('kindBug')}</option>
+        <option value="feature"${reportKind === 'feature' ? ' selected' : ''}>✨ ${t('kindFeature')}</option>
       </select>
       <label>${t('msL')}</label>
-      <select id="f-ms">${ready.map((m) => `<option value="${esc(m.id)}"${m.id === S.reportFor ? ' selected' : ''}>${esc(m.code)} — ${esc(titleFor(m))}</option>`).join('')}</select>
+      <select id="f-ms"${locked}>${ready.map((m) => `<option value="${esc(m.id)}"${m.id === reportFor ? ' selected' : ''}>${esc(m.code)} — ${esc(titleFor(m))}</option>`).join('')}</select>
       <label>${t('sevL')}</label>
       <select id="f-sev">
-        <option value="high">${esc(SEV.high[S.lang])}</option>
-        <option value="medium" selected>${esc(SEV.medium[S.lang])}</option>
-        <option value="low">${esc(SEV.low[S.lang])}</option>
+        ${['high', 'medium', 'low'].map((value) =>
+          `<option value="${value}"${severity === value ? ' selected' : ''}>${esc(SEV[value][S.lang])}</option>`).join('')}
       </select>
       <label>${t('titleL')}</label>
-      <input id="f-title" placeholder="Số lượng thùng không khớp">
+      <input id="f-title" value="${esc(draft?.titleVi ?? '')}" placeholder="Số lượng thùng không khớp">
       <label>${t('bodyL')}</label>
-      <textarea id="f-body" rows="5" placeholder="Thùng thứ 3 chỉ có 47 cái, bảng đóng gói ghi 50 cái."></textarea>
+      <textarea id="f-body" rows="5" placeholder="Thùng thứ 3 chỉ có 47 cái, bảng đóng gói ghi 50 cái.">${esc(draft?.bodyVi ?? '')}</textarea>
       <label>${t('attachL')}</label>
       <input id="f-files" type="file" accept="image/*" multiple>
       <div style="margin-top:16px;display:flex;gap:8px">
@@ -992,17 +1019,31 @@ function render() {
 
 // ───────────────────────── actions ─────────────────────────
 
+function syncReportDraft(event) {
+  if (!S.reporting || !['f-ms', 'f-kind', 'f-sev', 'f-title', 'f-body'].includes(event.target.id)) return;
+  const value = (id) => document.getElementById(id)?.value ?? '';
+  S.reportDraft = {
+    milestoneId: value('f-ms'), kind: value('f-kind') || 'bug',
+    severity: value('f-sev'), titleVi: value('f-title'), bodyVi: value('f-body')
+  };
+}
+
+document.getElementById('app').addEventListener('input', syncReportDraft);
+document.getElementById('app').addEventListener('change', syncReportDraft);
+
 document.getElementById('app').addEventListener('click', async (event) => {
   const el = event.target.closest('[data-action]');
   if (!el) return;
   const action = el.dataset.action;
   event.preventDefault();
-  if (S.busy) return;
+  if (S.busy && !['project', 'view', 'cancelreport', 'newproject'].includes(action)) return;
 
   try {
     switch (action) {
       // ── revealing the forms that used to be unreachable ──
       case 'newproject':
+        S.reporting = false;
+        abandonPendingReport();
         S.creatingProject = true;
         render();
         break;
@@ -1050,6 +1091,7 @@ document.getElementById('app').addEventListener('click', async (event) => {
         try {
           await api('DELETE', `/api/projects/${S.projectId}`);
           S.projectId = null; S.bug = null;
+          S.reporting = false; abandonPendingReport();
           notice(t('removed'));
           await boot();
         } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
@@ -1153,10 +1195,14 @@ document.getElementById('app').addEventListener('click', async (event) => {
       }
       case 'project':
         S.projectId = el.dataset.id; S.bug = null; S.prompt = null;
+        // Leaving the report screen abandons any half-uploaded report (IR-036):
+        // the next Send is a fresh one, not a silent edit of the old bug.
+        S.reporting = false; abandonPendingReport();
         await refresh();
         break;
       case 'view':
         S.view = el.dataset.view; S.bug = null; S.reporting = false;
+        abandonPendingReport();
         await refresh();
         break;
       case 'lang':
@@ -1183,7 +1229,11 @@ document.getElementById('app').addEventListener('click', async (event) => {
           S.creatingProject = false;
           // Adding a second project: stay where you are and switch to it, rather than
           // dropping the operator back into whatever they were looking at.
-          if (S.me?.projects.length && created?.id) S.projectId = created.id;
+          if (S.me?.projects.length && created?.id) {
+            S.projectId = created.id;
+            S.reporting = false;
+            abandonPendingReport();
+          }
           await boot();
         } catch (err) {
           console.error(err);
@@ -1231,10 +1281,13 @@ document.getElementById('app').addEventListener('click', async (event) => {
         break;
       case 'report':
       case 'cancelreport':
+        abandonPendingReport();
         S.bug = null; S.reporting = action === 'report';
         S.reportFor = action === 'report' ? el.dataset.ms : null;
         // The button you pressed decides; the form lets you change your mind.
         S.reportKind = action === 'report' ? (el.dataset.kind ?? 'bug') : 'bug';
+        // Cancelling abandons any half-uploaded report: the next Send is a fresh
+        // one, not an edit of the bug whose screenshots failed to land (IR-036).
         if (action === 'report') await loadMilestones();
         render();
         break;
@@ -1266,25 +1319,114 @@ document.getElementById('app').addEventListener('click', async (event) => {
 });
 
 async function submitReport() {
-  const milestoneId = document.getElementById('f-ms').value;
-  const kind = document.getElementById('f-kind')?.value ?? 'bug';
+  let milestoneId = document.getElementById('f-ms').value;
+  let kind = document.getElementById('f-kind')?.value ?? 'bug';
   const severity = document.getElementById('f-sev').value;
   const titleVi = document.getElementById('f-title').value.trim();
   const bodyVi = document.getElementById('f-body').value.trim();
   const files = [...document.getElementById('f-files').files];
 
-  if (!titleVi || !bodyVi) throw new Error('Title and description are required');
+  const restoreDraft = () => {
+    for (const [id, value] of [['f-ms', milestoneId], ['f-kind', kind],
+                               ['f-sev', severity], ['f-title', titleVi], ['f-body', bodyVi]]) {
+      const fieldEl = document.getElementById(id);
+      if (fieldEl) fieldEl.value = value;
+    }
+  };
+
+  // A navigation invalidates the report session. This defensive check also prevents
+  // a stale async completion from ever being reused if one somehow survived a render.
+  if (S.pendingBug && (S.pendingBug.projectId !== S.projectId
+                       || S.pendingBug.session !== S.reportSession)) {
+    abandonPendingReport();
+  }
+
+  const rememberDraft = () => {
+    S.reportDraft = { milestoneId, kind, severity, titleVi, bodyVi };
+  };
+  rememberDraft();
+
+  if (!titleVi || !bodyVi) {
+    notice(t('needBugText'), 'bad');
+    restoreDraft();
+    return;
+  }
+
+  const pending = S.pendingBug;
+  if (pending && (pending.milestoneId !== milestoneId || pending.kind !== kind)) {
+    milestoneId = pending.milestoneId;
+    kind = pending.kind;
+    rememberDraft();
+    notice(t('finishPendingReport'), 'bad');
+    restoreDraft();
+    return;
+  }
+
+  const projectId = S.projectId;
+  const session = S.reportSession;
+  const active = () => S.reporting && S.projectId === projectId && S.reportSession === session;
+  const occurrences = new Map();
+  const selectedFiles = files.map((file) => ({
+    file,
+    identity: uploadIdentity(file, occurrences),
+    name: file.name,
+    size: file.size,
+    type: file.type,
+    lastModified: file.lastModified ?? 0
+  }));
   S.busy = true;
 
   try {
-    const bug = await api('POST', `/api/projects/${S.projectId}/bugs`,
-      { milestoneId, severity, titleVi, bodyVi, kind });
+    let bug = S.pendingBug;
+    if (bug) {
+      // Only fields the tester changed after filing are PATCHed. Unchanged values are
+      // never sent back, so a concurrent edit to another field is not overwritten.
+      const changes = {};
+      if (titleVi !== bug.draft.titleVi) changes.titleVi = titleVi;
+      if (bodyVi !== bug.draft.bodyVi) changes.bodyVi = bodyVi;
+      if (severity !== bug.draft.severity) changes.severity = severity;
+      if (Object.keys(changes).length) {
+        await api('PATCH', `/api/bugs/${bug.id}`, changes);
+        if (!active()) return;
+        bug.draft = { titleVi, bodyVi, severity };
+      }
+    } else {
+      const created = await api('POST', `/api/projects/${projectId}/bugs`,
+        { milestoneId, severity, titleVi, bodyVi, kind });
+      if (!active()) return;
+      bug = {
+        ...created, projectId, milestoneId, kind, session,
+        draft: { titleVi, bodyVi, severity }
+      };
+      S.pendingBug = bug;
+      S.pendingUploads = selectedFiles.map(({ file: _file, ...slot }) => ({ ...slot, done: false }));
+    }
 
     // Two-phase upload: issue an app-local capability, PUT the bytes, then complete.
-    // The server chooses the key and proxies every storage backend, including S3.
-    for (const file of files) {
+    // Slots preserve completed uploads and keep duplicate-file occurrence numbers stable.
+    const usedSlots = new Set();
+    for (const selected of selectedFiles) {
+      if (!active()) return;
+      const { file } = selected;
+      let slot = S.pendingUploads.find((candidate) =>
+        candidate.identity === selected.identity && !usedSlots.has(candidate));
+      if (!slot) {
+        // A changed file with the same name replaces an unfinished slot rather than
+        // colliding with a completed upload merely because its name stayed the same.
+        slot = S.pendingUploads.find((candidate) =>
+          !candidate.done && candidate.name === selected.name && !usedSlots.has(candidate));
+        if (slot) Object.assign(slot, selected, { file: undefined });
+        else {
+          const { file: _file, ...newSlot } = selected;
+          slot = { ...newSlot, done: false };
+          S.pendingUploads.push(slot);
+        }
+      }
+      usedSlots.add(slot);
+      if (slot.done) continue;
       const signed = await api('POST', `/api/bugs/${bug.id}/attachments/presign`,
         { contentType: file.type || 'image/png', byteSize: file.size });
+      if (!active()) return;
 
       const put = await fetch(signed.uploadUrl, {
         method: 'PUT',
@@ -1292,6 +1434,7 @@ async function submitReport() {
         // The signed headers must be sent verbatim, or the signature will not match.
         headers: signed.uploadHeaders ?? { 'content-type': file.type || 'image/png' }
       });
+      if (!active()) return;
       if (!put.ok) throw new Error(`upload failed for ${file.name}`);
 
       await api('POST', `/api/bugs/${bug.id}/attachments/complete`, {
@@ -1300,12 +1443,28 @@ async function submitReport() {
         filename: file.name,
         contentType: file.type || 'image/png'
       });
+      if (!active()) return;
+      slot.done = true;
     }
 
+    if (S.pendingUploads.some((slot) => !slot.done)) {
+      throw new Error(t('reattachPendingFiles'));
+    }
+    if (!active()) return;
+    S.pendingBug = null;
+    S.pendingUploads = null;
+    S.reportDraft = null;
     S.reporting = false;
     S.view = 'bugs';
     notice(`${bug.code} ${t('saved')} · ${files.length} 📷`);
     await refresh();
+  } catch (err) {
+    if (!active()) return;
+    // The report remains filed and retryable. notice() rebuilds the form, so text
+    // values are restored; browsers intentionally do not allow restoring file inputs.
+    console.error(err);
+    notice(`${err.message} — ${S.pendingBug?.code ?? t('send')}`, 'bad');
+    restoreDraft();
   } finally { S.busy = false; }
 }
 
