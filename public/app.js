@@ -17,6 +17,11 @@ const T = {
   vi: {
     projects: 'Dự án', ms: 'Các cột mốc', bugs: 'Danh sách lỗi', nav: 'Điều hướng',
     help: 'Hướng dẫn',
+    closeTitle: 'Đóng lỗi', closeKindL: 'Lý do đóng',
+    closeDuplicate: 'Trùng với báo cáo khác', closeRejected: 'Từ chối',
+    closeRefL: 'Báo cáo gốc', closeConfirm: 'Đóng', needCloseRef: 'Hãy chọn báo cáo gốc',
+    needReason: 'Hãy ghi lý do', commentHint: 'Ctrl+Enter để gửi',
+    closedAs: 'Đóng vì',
     lang: 'Ngôn ngữ', tester: 'Tester', dev: 'Developer', admin: 'Quản trị',
     ready: 'Sẵn sàng kiểm thử', done: 'Đã xong', wip: 'Đang làm', plan: 'Kế hoạch',
     due: 'Hạn', report: 'Báo lỗi', view: 'Xem', send: 'Gửi báo lỗi',
@@ -69,6 +74,11 @@ const T = {
   zh: {
     projects: '專案', ms: '里程碑', bugs: 'Bug 列表', nav: '導覽', lang: '語言',
     help: '使用說明',
+    closeTitle: '關閉問題', closeKindL: '關閉原因',
+    closeDuplicate: '與其他回報重複', closeRejected: '拒絕',
+    closeRefL: '原回報', closeConfirm: '關閉', needCloseRef: '請選擇原回報',
+    needReason: '請填寫原因', commentHint: 'Ctrl+Enter 送出',
+    closedAs: '關閉原因',
     tester: '測試人員', dev: '開發人員', admin: '管理員',
     ready: '待測試', done: '已完成', wip: '進行中', plan: '規劃中',
     due: '期限', report: '回報問題', view: '檢視', send: '送出',
@@ -121,6 +131,11 @@ const T = {
   en: {
     projects: 'Projects', ms: 'Milestones', bugs: 'Bug reports', nav: 'Navigation',
     help: 'Help',
+    closeTitle: 'Close the report', closeKindL: 'Close reason',
+    closeDuplicate: 'Duplicate of another report', closeRejected: 'Rejected',
+    closeRefL: 'Original report', closeConfirm: 'Close', needCloseRef: 'Choose the original report',
+    needReason: 'A reason is required', commentHint: 'Ctrl+Enter to send',
+    closedAs: 'Closed as',
     lang: 'Language', tester: 'Tester', dev: 'Developer', admin: 'Admin',
     ready: 'Ready for testing', done: 'Done', wip: 'In progress', plan: 'Planned',
     due: 'Due', report: 'Report bug', view: 'View', send: 'Submit',
@@ -231,6 +246,9 @@ const S = {
   // While set, pressing Send again continues THAT bug instead of filing a new one.
   pendingBug: null, pendingUploads: null, reportDraft: null, reportSession: 0,
   members: [],
+  // The project's live reports, for the "duplicate of …" picker, and the close
+  // panel's current choice (null until a developer opens it).
+  projectBugs: [], closePanel: null, commentDraft: null,
   // Screens that are revealed on demand: the create-project form is no longer only
   // the first-run screen, and the add-milestone form is no longer only the empty
   // list. Both were dead ends once you already had one of the thing.
@@ -416,6 +434,12 @@ async function loadRemoved() {
 async function openBug(id) {
   S.bug = await api('GET', `/api/bugs/${id}`);
   S.prompt = null;
+  // The close panel offers "duplicate of …" with the project's other live
+  // reports, so the list has to be here even when the detail was reached
+  // directly (a notification link, a transition) rather than via the list.
+  S.projectBugs = S.bug
+    ? (await api('GET', `/api/projects/${S.bug.projectId}/bugs`)).bugs
+    : [];
   render();
   // Fetch the server-built prompt lazily so the detail view is not blocked by it.
   try {
@@ -789,6 +813,10 @@ function bugDetail() {
         <div><em>${t('createdL')}</em><b>${fmt(b.createdAt)}</b></div>
         <div><em>${t('updatedL')}</em><b>${fmt(b.updatedAt)}</b> <span class="rel">${rel(b.updatedAt)}</span></div>
         <div><em>${t('statusL')}</em><b>${esc(b.status)}</b></div>
+        ${b.closeKind ? `<div><em>${t('closedAs')}</em><b>${
+          b.closeKind === 'duplicate'
+            ? `${t('closeDuplicate')}${b.closeRef ? ` → ${esc(b.closeRef.code)}` : ''}`
+            : t('closeRejected')}</b></div>` : ''}
         ${b.retestAttempt ? `<div><em>retest</em><b>#${b.retestAttempt}</b></div>` : ''}
       </div>
     </div>
@@ -827,11 +855,18 @@ function bugDetail() {
 
     <h3 style="margin:22px 0 10px;font-size:14px">${t('actions')}</h3>
     <div class="card">
-      ${(b.availableActions ?? []).length ? b.availableActions.map((a) => `
+      ${(b.availableActions ?? []).filter((a) => a.action !== 'close').length
+        ? (b.availableActions ?? []).filter((a) => a.action !== 'close').map((a) => `
         <button class="btn" data-action="transition" data-id="${esc(b.id)}"
                 data-move="${esc(a.action)}" data-reason="${a.requiresReason ? '1' : ''}">
           ${esc(moveLabel(a.action))} → ${statusLabel('bug', a.to, b.kind)}
-        </button>`).join(' ') : `<div class="tag">—</div>`}
+        </button>`).join(' ') : ''}
+      ${(b.availableActions ?? []).some((a) => a.action === 'close')
+        ? `<button class="btn" data-action="openclose" data-id="${esc(b.id)}">
+             ${esc(moveLabel('close'))} → ${statusLabel('bug', 'closed', b.kind)}
+           </button>` : ''}
+      ${(b.availableActions ?? []).length ? '' : `<div class="tag">—</div>`}
+      ${closePanel()}
 
       ${['retest'].includes(b.status) ? `
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -841,10 +876,12 @@ function bugDetail() {
           <button class="btn" data-action="retest" data-id="${esc(b.id)}" data-result="fail">❌ ${esc(moveLabel('retest_fail', b.kind))}</button>
         </div>` : ''}
 
-      <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
-        <input id="commentnote" placeholder="${t('addNote')}" style="flex:1">
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:flex-end">
+        <textarea id="commentnote" rows="3" placeholder="${t('addNote')}"
+                  style="flex:1;resize:vertical">${esc(S.commentDraft ?? '')}</textarea>
         <button class="btn" data-action="comment" data-id="${esc(b.id)}">${t('addNote')}</button>
       </div>
+      <div class="hint" style="margin:4px 0 0">${t('commentHint')}</div>
 
       ${canEditBug() || myRole() === 'admin' ? `
       <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line,#e2e8f0);display:flex;gap:8px;flex-wrap:wrap">
@@ -862,6 +899,41 @@ function canEditBug() {
   const b = S.bug;
   if (!b || b.status === 'closed') return false;
   return myRole() === 'admin' || b.reporter?.id === S.me?.userId;
+}
+
+/**
+ * The close panel: a reason is always required, and the developer says WHY the
+ * report is being closed — it duplicates another report (naming it, so the
+ * timeline and the packet can point at the survivor) or it is rejected.
+ * Hidden until the Close button is pressed, so the ordinary action row stays
+ * as quiet as it was.
+ */
+function closePanel() {
+  const b = S.bug;
+  if (!S.closePanel || !b || b.status === 'closed') return '';
+  const others = (S.projectBugs ?? [])
+    .filter((x) => x.id !== b.id && x.status !== 'closed');
+  const kind = S.closePanel.kind ?? 'duplicate';
+  return `
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line,#e2e8f0)">
+      <label>${t('closeKindL')}</label>
+      <select id="close-kind">
+        <option value="duplicate"${kind === 'duplicate' ? ' selected' : ''}>🔁 ${t('closeDuplicate')}</option>
+        <option value="rejected"${kind === 'rejected' ? ' selected' : ''}>🚫 ${t('closeRejected')}</option>
+      </select>
+      ${kind === 'duplicate' ? `
+        <label>${t('closeRefL')}</label>
+        <select id="close-ref">
+          <option value="">—</option>
+          ${others.map((x) => `<option value="${esc(x.code)}"${S.closePanel.ref === x.code ? ' selected' : ''}>${esc(x.code)} — ${esc(x.title_vi)}</option>`).join('')}
+        </select>` : ''}
+      <label>${t('reasonL')}</label>
+      <textarea id="close-reason" rows="3" style="resize:vertical">${esc(S.closePanel.reason ?? '')}</textarea>
+      <div style="margin-top:10px;display:flex;gap:8px">
+        <button class="btn pri" data-action="confirmclose" data-id="${esc(b.id)}">${t('closeConfirm')}</button>
+        <button class="btn" data-action="cancelclose">${t('cancel')}</button>
+      </div>
+    </div>`;
 }
 
 /**
@@ -1037,6 +1109,34 @@ function syncReportDraft(event) {
 document.getElementById('app').addEventListener('input', syncReportDraft);
 document.getElementById('app').addEventListener('change', syncReportDraft);
 
+/**
+ * The close panel re-renders on every state change, so its current choices live
+ * in S rather than in the DOM: an input event copies them back before the next
+ * render can discard them. Selects fire `input` in every browser we support, so
+ * one listener covers the kind, the reference and both textareas.
+ */
+document.getElementById('app').addEventListener('input', (event) => {
+  if (event.target.id === 'commentnote') S.commentDraft = event.target.value;
+  if (!S.closePanel) return;
+  if (event.target.id === 'close-kind') {
+    S.closePanel = { ...S.closePanel, kind: event.target.value, ref: '' };
+    render();
+  } else if (event.target.id === 'close-ref') {
+    S.closePanel = { ...S.closePanel, ref: event.target.value };
+  } else if (event.target.id === 'close-reason') {
+    S.closePanel = { ...S.closePanel, reason: event.target.value };
+  }
+});
+
+/** Ctrl+Enter sends the multi-line comment, from inside the textarea. */
+document.getElementById('app').addEventListener('keydown', (event) => {
+  if (event.target.id !== 'commentnote') return;
+  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    document.querySelector('[data-action="comment"]')?.click();
+  }
+});
+
 document.getElementById('app').addEventListener('click', async (event) => {
   const el = event.target.closest('[data-action]');
   if (!el) return;
@@ -1200,14 +1300,16 @@ document.getElementById('app').addEventListener('click', async (event) => {
         break;
       }
       case 'project':
-        S.projectId = el.dataset.id; S.bug = null; S.prompt = null;
+        S.projectId = el.dataset.id; S.bug = null; S.prompt = null; S.closePanel = null;
+        S.commentDraft = null;
         // Leaving the report screen abandons any half-uploaded report (IR-036):
         // the next Send is a fresh one, not a silent edit of the old bug.
         S.reporting = false; abandonPendingReport();
         await refresh();
         break;
       case 'view':
-        S.view = el.dataset.view; S.bug = null; S.reporting = false;
+        S.view = el.dataset.view; S.bug = null; S.reporting = false; S.closePanel = null;
+        S.commentDraft = null;
         abandonPendingReport();
         await refresh();
         break;
@@ -1280,10 +1382,12 @@ document.getElementById('app').addEventListener('click', async (event) => {
         break;
       }
       case 'openbug':
+        S.commentDraft = null; S.closePanel = null;
         await openBug(el.dataset.id);
         break;
       case 'closebug':
-        S.bug = null; S.prompt = null; await refresh();
+        S.bug = null; S.prompt = null; S.closePanel = null; S.commentDraft = null;
+        await refresh();
         break;
       case 'report':
       case 'cancelreport':
@@ -1302,6 +1406,17 @@ document.getElementById('app').addEventListener('click', async (event) => {
         break;
       case 'transition':
         await transition(el.dataset.id, el.dataset.move, el.dataset.reason === '1');
+        break;
+      case 'openclose':
+        S.closePanel = { kind: 'duplicate', ref: '', reason: '' };
+        render();
+        break;
+      case 'cancelclose':
+        S.closePanel = null;
+        render();
+        break;
+      case 'confirmclose':
+        await confirmClose(el.dataset.id);
         break;
       case 'retest':
         await retest(el.dataset.id, el.dataset.result);
@@ -1489,6 +1604,24 @@ async function transition(id, action, needsReason) {
   } finally { S.busy = false; }
 }
 
+async function confirmClose(id) {
+  const kind = document.getElementById('close-kind')?.value;
+  const ref = document.getElementById('close-ref')?.value ?? '';
+  const reason = document.getElementById('close-reason')?.value.trim();
+  if (kind === 'duplicate' && !ref) return notice(t('needCloseRef'), 'bad');
+  if (!reason) return notice(t('needReason'), 'bad');
+  S.busy = true;
+  try {
+    await api('POST', `/api/bugs/${id}/status`,
+      { action: 'close', reason, closeKind: kind,
+        closeRefCode: kind === 'duplicate' ? ref : undefined });
+    S.closePanel = null;
+    notice(t('saved'));
+    await openBug(id);
+    await loadProjects();
+  } finally { S.busy = false; }
+}
+
 async function retest(id, result) {
   const note = document.getElementById('retestnote')?.value.trim() || undefined;
   S.busy = true;
@@ -1509,6 +1642,7 @@ async function comment(id) {
   S.busy = true;
   try {
     await api('POST', `/api/bugs/${id}/comments`, { note });
+    S.commentDraft = null;
     notice(t('saved'));
     await openBug(id);
   } finally { S.busy = false; }

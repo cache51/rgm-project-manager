@@ -609,32 +609,79 @@ describe('ui (dom): every action reaches the API it should', () => {
     assert.equal(post.body.titleVi, 'Số lượng thùng không khớp');
   });
 
-  test('a status change posts the action and the reason from the dialog', async () => {
-    // The reason comes from window.prompt (see transition() in app.js), so the
-    // harness answers it — there is no f-reason field.
+  test('closing as a duplicate posts the kind and the referenced code', async () => {
     seen.length = 0;
     const app = loadApp({ routes: routes() });
     await settle();
     await app.click('openbug', { id: bug.id });
-    app.promptAnswer.value = 'Đã sửa ở nhánh fix/packing';
-    await app.click('transition', { id: bug.id, move: 'close', reason: '1' });
+    await app.click('openclose', { id: bug.id });
+    // The panel opens on "duplicate": pick the original report and give a reason.
+    app.input('close-ref', 'BUG-1');
+    app.input('close-reason', 'Trùng với báo cáo trước');
+    await app.click('confirmclose', { id: bug.id });
 
     const post = seen.find((c) => c.path === `/api/bugs/${bug.id}/status`);
-    assert.ok(post, 'the transition is posted');
+    assert.ok(post, 'the close is posted');
     assert.equal(post.body.action, 'close');
-    assert.equal(post.body.reason, 'Đã sửa ở nhánh fix/packing');
+    assert.equal(post.body.closeKind, 'duplicate');
+    assert.equal(post.body.closeRefCode, 'BUG-1');
+    assert.equal(post.body.reason, 'Trùng với báo cáo trước');
   });
 
-  test('cancelling the reason dialog posts nothing', async () => {
+  test('closing as rejected posts the kind and no reference', async () => {
     seen.length = 0;
     const app = loadApp({ routes: routes() });
     await settle();
     await app.click('openbug', { id: bug.id });
-    app.promptAnswer.value = '';                       // the tester pressed Cancel
-    await app.click('transition', { id: bug.id, move: 'close', reason: '1' });
+    await app.click('openclose', { id: bug.id });
+    app.input('close-kind', 'rejected');
+    app.input('close-reason', 'Không tái hiện được');
+    await app.click('confirmclose', { id: bug.id });
+
+    const post = seen.find((c) => c.path === `/api/bugs/${bug.id}/status`);
+    assert.ok(post, 'the close is posted');
+    assert.equal(post.body.closeKind, 'rejected');
+    assert.equal(post.body.closeRefCode, undefined, 'a rejection names no other bug');
+  });
+
+  test('a duplicate close without a chosen original posts nothing', async () => {
+    seen.length = 0;
+    const app = loadApp({ routes: routes() });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+    await app.click('openclose', { id: bug.id });
+    app.input('close-reason', 'có lý do nhưng chưa chọn báo cáo gốc');
+    await app.click('confirmclose', { id: bug.id });
+
+    assert.equal(seen.filter((c) => c.path === `/api/bugs/${bug.id}/status`).length, 0,
+      'a duplicate must name the bug it duplicates');
+  });
+
+  test('a close without a reason posts nothing', async () => {
+    seen.length = 0;
+    const app = loadApp({ routes: routes() });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+    await app.click('openclose', { id: bug.id });
+    app.input('close-kind', 'rejected');
+    await app.click('confirmclose', { id: bug.id });
 
     assert.equal(seen.filter((c) => c.path === `/api/bugs/${bug.id}/status`).length, 0,
       'an empty reason must not send a half-formed close');
+  });
+
+  test('a comment keeps its line breaks', async () => {
+    seen.length = 0;
+    const app = loadApp({ routes: routes() });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+    app.input('commentnote', 'Dòng một\nDòng hai');
+    await app.click('comment', { id: bug.id });
+
+    const post = seen.find((c) => c.path === `/api/bugs/${bug.id}/comments`);
+    assert.ok(post, 'the comment is posted');
+    assert.equal(post.body.note, 'Dòng một\nDòng hai',
+      'a multi-line comment reaches the server as typed');
   });
 
   test('a comment posts the note from the comment field', async () => {

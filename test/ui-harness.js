@@ -83,7 +83,10 @@ export function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
       // file input is empty after a re-render and must be filled again by the user.
       fields.clear();
     },
-    addEventListener: (ev, fn) => { listeners[ev] = fn; }
+    // A real element dispatches to EVERY registered listener, in order; a double
+    // that keeps only the last one silently drops the earlier handlers (and the
+    // app registers several per event).
+    addEventListener: (ev, fn) => { (listeners[ev] ??= []).push(fn); }
   };
 
   const document = {
@@ -173,15 +176,17 @@ export function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
     input(id, value) {
       const el = field(id);
       el.value = value;
-      listeners.input?.({ target: el });
+      for (const fn of listeners.input ?? []) fn({ target: el });
     },
     /** Invoke the app's delegated click handler as a browser would. */
     async click(action, dataset = {}) {
       const el = { dataset: { action, ...dataset } };
-      await listeners.click({
-        target: { closest: () => el },
-        preventDefault() {}
-      });
+      for (const fn of listeners.click ?? []) {
+        await fn({
+          target: { closest: () => el },
+          preventDefault() {}
+        });
+      }
       await settle();
     }
   };

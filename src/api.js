@@ -149,11 +149,16 @@ async function loadBug(db, bugId) {
     `SELECT b.*, u.display_name AS reporter_name,
             m.code AS milestone_code, m.title_en AS milestone_title, m.title_vi AS milestone_title_vi,
             p.name AS project_name, p.client AS project_client, p.env AS project_env,
-            p.timezone AS project_timezone
+            p.timezone AS project_timezone,
+            ref.id AS close_ref_id,
+            CASE WHEN ref.id IS NOT NULL
+                 THEN (CASE WHEN ref.kind = 'feature' THEN 'REQ-' ELSE 'BUG-' END
+                       || ref.bug_number) END AS close_ref_code
        FROM bugs b
        JOIN users u ON u.id = b.reporter_id
        JOIN milestones m ON m.id = b.milestone_id
        JOIN projects p ON p.id = b.project_id
+       LEFT JOIN bugs ref ON ref.id = b.close_ref_bug_id
       WHERE b.id = $1 AND b.deleted_at IS NULL`, [bugId]);
   return r.rows[0] ?? null;
 }
@@ -181,6 +186,8 @@ async function timelineFor(db, bugId) {
     kind: row.kind,
     note: row.payload?.note ?? null,
     reason: row.payload?.reason ?? null,
+    closeKind: row.payload?.closeKind ?? null,
+    closeRefCode: row.payload?.closeRefCode ?? null,
     result: row.payload?.result ?? null,
     to: row.payload?.to ?? null,
     noteTranslations: byEvent[row.id] ?? {}
@@ -229,6 +236,9 @@ async function bugPayload(db, bug, role = 'developer') {
     isOpen: isOpenBug(bug.status),
     retestAttempt: bug.retest_attempt,
     retestAssigneeId: bug.retest_assignee_id,
+    // How an open bug was closed: a duplicate names the report it duplicates.
+    closeKind: bug.close_kind ?? null,
+    closeRef: bug.close_ref_code ? { id: bug.close_ref_id, code: bug.close_ref_code } : null,
     reporter: { id: bug.reporter_id, name: bug.reporter_name },
     titleVi: bug.title_vi,
     bodyVi: bug.body_vi,
@@ -903,7 +913,17 @@ export function buildRoutes() {
   r.post('/api/bugs/:id/status', handle(async (req, res, ctx) => {
     const { projectId, role } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id,
       ['admin', 'developer']);
-    const { action, reason, assigneeId } = await readJson(req);
+    const { action, reason, assigneeId, closeKind, closeRefCode } = await readJson(req);
+
+    if (closeKind !== undefined && !['duplicate', 'rejected'].includes(closeKind)) {
+      throw new HttpError(400, 'bad_close_kind', 'closeKind must be duplicate or rejected');
+    }
+    if (closeKind === 'rejected' && closeRefCode) {
+      throw new HttpError(400, 'bad_close_ref', 'a rejection names no other bug');
+    }
+    if (closeRefCode !== undefined && closeKind !== 'duplicate') {
+      throw new HttpError(400, 'bad_close_ref', 'only a duplicate close names another bug');
+    }
 
     // An assignee is optional (unassigned = any tester may retest), but if named
     // they must actually be an active member of this project.
@@ -924,6 +944,25 @@ export function buildRoutes() {
       const move = resolveTransition('bug', action, b.status, role,
         { reason, isSiteAdmin: ctx.actor.isSiteAdmin });
 
+      // A duplicate close names the bug it duplicates, by its display code
+      // (BUG-7 / REQ-3). Resolved here, under the row lock, so the reference is
+      // a real live bug of this project and never the bug being closed.
+      let closeRefId = null;
+      if (closeKind === 'duplicate' && closeRefCode) {
+        const m = String(closeRefCode).trim().match(/^(?:BUG|REQ)-(\d+)$/i);
+        if (!m) {
+          throw new HttpError(400, 'bad_close_ref', `not a bug code: ${closeRefCode}`);
+        }
+        const ref = await tx.query(
+          `SELECT id FROM bugs WHERE project_id = $1 AND bug_number = $2 AND id <> $3
+             AND deleted_at IS NULL`,
+          [projectId, Number(m[1]), ctx.params.id]);
+        if (!ref.rows.length) {
+          throw new HttpError(404, 'no_such_bug', `no open bug ${closeRefCode} in this project`);
+        }
+        closeRefId = ref.rows[0].id;
+      }
+
       const upd = await tx.query(
         `UPDATE bugs
             SET status = $1,
@@ -933,16 +972,24 @@ export function buildRoutes() {
                   WHEN $1 <> 'retest' THEN NULL
                   WHEN $3 THEN $4::uuid
                   ELSE retest_assignee_id END,
+                -- the close decision is recorded on close and forgotten on reopen.
+                -- The casts matter: on a transition that carries no decision both
+                -- parameters are NULL, and a NULL-only parameter in a CASE has no
+                -- inferable type.
+                close_kind = CASE WHEN $1 = 'closed' THEN $6::text ELSE NULL END,
+                close_ref_bug_id = CASE WHEN $1 = 'closed' THEN $7::uuid ELSE NULL END,
                 updated_at = now()
           WHERE id = $5
           RETURNING id, status, retest_attempt, retest_assignee_id`,
-        [move.to, move.bumpsAttempt, move.recordsAssignee, assigneeId ?? null, ctx.params.id]);
+        [move.to, move.bumpsAttempt, move.recordsAssignee, assigneeId ?? null, ctx.params.id,
+         closeKind ?? null, closeRefId]);
 
       const ev = await tx.query(
         `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
          VALUES ($1,$2,$3,$4,$5) RETURNING id`,
         [projectId, ctx.params.id, ctx.actor.userId, `bug.${move.to}`,
-          JSON.stringify({ action, from: move.from, to: move.to, reason: reason ?? null })]);
+          JSON.stringify({ action, from: move.from, to: move.to, reason: reason ?? null,
+                           closeKind: closeKind ?? null, closeRefCode: closeRefCode ?? null })]);
 
       if (reason) {
         await enqueueEventTranslation(tx, { eventId: ev.rows[0].id, note: reason });

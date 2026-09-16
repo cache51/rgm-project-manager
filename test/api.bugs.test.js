@@ -141,6 +141,75 @@ describe('bugs: lifecycle transitions', () => {
     assert.equal(withReason.json.status, 'closed');
   });
 
+  test('a duplicate close records the bug it duplicates, and says so', async () => {
+    const original = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    const twin = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+
+    const closed = await w.devClient.post(`/api/bugs/${twin.id}/status`,
+      { action: 'close', reason: 'Trùng', closeKind: 'duplicate',
+        closeRefCode: original.code });
+    assert.equal(closed.status, 200, JSON.stringify(closed.json));
+    assert.equal(closed.json.status, 'closed');
+
+    const after = await w.devClient.get(`/api/bugs/${twin.id}`);
+    assert.equal(after.json.closeKind, 'duplicate');
+    assert.equal(after.json.closeRef.code, original.code, 'the survivor is named');
+    assert.equal(after.json.closeRef.id, original.id);
+
+    // And the timeline entry carries the decision, so a reader sees why.
+    const ev = after.json.timeline.find((e) => e.kind === 'bug.closed');
+    assert.equal(ev.closeKind ?? ev.payload?.closeKind ?? null, 'duplicate');
+  });
+
+  test('a duplicate close refuses a reference that is not a live bug of this project', async () => {
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+
+    for (const [label, body] of [
+      ['a code that is not a code', { closeKind: 'duplicate', closeRefCode: 'nope' }],
+      ['a number from another project', { closeKind: 'duplicate', closeRefCode: 'BUG-9999' }],
+      ['itself', { closeKind: 'duplicate', closeRefCode: bug.code }]
+    ]) {
+      const res = await w.devClient.post(`/api/bugs/${bug.id}/status`,
+        { action: 'close', reason: 'x', ...body });
+      assert.ok([400, 404].includes(res.status), `${label} → ${res.status}`);
+      assert.equal((await w.devClient.get(`/api/bugs/${bug.id}`)).json.status, 'new',
+        `${label} left the bug open`);
+    }
+  });
+
+  test('a rejection names no other bug, and a reference needs the duplicate kind', async () => {
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    const other = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+
+    const rejectedWithRef = await w.devClient.post(`/api/bugs/${bug.id}/status`,
+      { action: 'close', reason: 'x', closeKind: 'rejected', closeRefCode: other.code });
+    assert.equal(rejectedWithRef.status, 400);
+
+    const refWithoutKind = await w.devClient.post(`/api/bugs/${bug.id}/status`,
+      { action: 'close', reason: 'x', closeRefCode: other.code });
+    assert.equal(refWithoutKind.status, 400);
+
+    const badKind = await w.devClient.post(`/api/bugs/${bug.id}/status`,
+      { action: 'close', reason: 'x', closeKind: 'wontfix' });
+    assert.equal(badKind.status, 400);
+
+    assert.equal((await w.devClient.get(`/api/bugs/${bug.id}`)).json.status, 'new');
+  });
+
+  test('reopening forgets the close decision', async () => {
+    const original = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    const twin = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await w.devClient.post(`/api/bugs/${twin.id}/status`,
+      { action: 'close', reason: 'Trùng', closeKind: 'duplicate', closeRefCode: original.code });
+
+    await w.devClient.post(`/api/bugs/${twin.id}/status`,
+      { action: 'reopen', reason: 'hoá ra khác' });
+    const after = await w.devClient.get(`/api/bugs/${twin.id}`);
+    assert.equal(after.json.status, 'fixing');
+    assert.equal(after.json.closeKind, null, 'a reopened bug carries no stale decision');
+    assert.equal(after.json.closeRef, null);
+  });
+
   test('a tester cannot perform a developer-only transition', async () => {
     const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
     const res = await w.testerClient.post(`/api/bugs/${bug.id}/status`,
