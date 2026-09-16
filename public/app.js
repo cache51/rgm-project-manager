@@ -861,10 +861,13 @@ function bugDetail() {
                 data-move="${esc(a.action)}" data-reason="${a.requiresReason ? '1' : ''}">
           ${esc(moveLabel(a.action))} → ${statusLabel('bug', a.to, b.kind)}
         </button>`).join(' ') : ''}
-      ${(b.availableActions ?? []).some((a) => a.action === 'close')
-        ? `<button class="btn" data-action="openclose" data-id="${esc(b.id)}">
-             ${esc(moveLabel('close'))} → ${statusLabel('bug', 'closed', b.kind)}
-           </button>` : ''}
+      ${(b.availableActions ?? []).some((a) => a.action === 'close') ? `
+        <button class="btn" data-action="openclose" data-kind="duplicate" data-id="${esc(b.id)}">
+          🔁 ${t('closeDuplicate')} → ${statusLabel('bug', 'closed', b.kind)}
+        </button>
+        <button class="btn" data-action="openclose" data-kind="rejected" data-id="${esc(b.id)}">
+          🚫 ${t('closeRejected')} → ${statusLabel('bug', 'closed', b.kind)}
+        </button>` : ''}
       ${(b.availableActions ?? []).length ? '' : `<div class="tag">—</div>`}
       ${closePanel()}
 
@@ -1408,7 +1411,8 @@ document.getElementById('app').addEventListener('click', async (event) => {
         await transition(el.dataset.id, el.dataset.move, el.dataset.reason === '1');
         break;
       case 'openclose':
-        S.closePanel = { kind: 'duplicate', ref: '', reason: '' };
+        S.closePanel = { kind: el.dataset.kind === 'rejected' ? 'rejected' : 'duplicate',
+                         ref: '', reason: '' };
         render();
         break;
       case 'cancelclose':
