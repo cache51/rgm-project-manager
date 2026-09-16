@@ -28,7 +28,10 @@ function loadPage({ search = '', hash = '', routes = {} } = {}) {
 
   const el = (id) => {
     if (!elements.has(id)) {
-      elements.set(id, { id, textContent: '', value: '', disabled: false, style: {} });
+      elements.set(id, { id, textContent: '', value: '', disabled: false, style: {},
+                         // The page paints its own copy on load, which reaches a
+                         // <label> inside the field wrapper.
+                         querySelector: (sel) => el(id + sel) });
     }
     return elements.get(id);
   };
@@ -36,11 +39,14 @@ function loadPage({ search = '', hash = '', routes = {} } = {}) {
   const form = {
     id: 'form',
     addEventListener: (ev, fn) => { listeners[ev] = fn; },
-    style: {}
+    style: {},
+    dataset: {}
   };
 
   const document = {
-    getElementById: (id) => (id === 'form' ? form : el(id))
+    getElementById: (id) => (id === 'form' ? form : el(id)),
+    documentElement: { lang: '' },
+    title: ''
   };
 
   const respond = (body, status = 200) => ({
@@ -56,6 +62,10 @@ function loadPage({ search = '', hash = '', routes = {} } = {}) {
     setTimeout, clearTimeout,
     URLSearchParams, URL,
     document,
+    // The page paints its own copy on load, choosing a language the same way
+    // the app does: remembered choice, then browser language, then Vietnamese.
+    navigator: { language: 'en-US' },
+    localStorage: { getItem: () => null, setItem: () => {} },
     location: { search,
                 // Modelled separately from `search`, exactly as a browser does:
                 // a fixture that put the fragment text into `search` would let a

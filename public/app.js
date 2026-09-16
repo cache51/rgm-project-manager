@@ -16,6 +16,7 @@ const TZ = 'Asia/Ho_Chi_Minh';
 const T = {
   vi: {
     projects: 'Dự án', ms: 'Các cột mốc', bugs: 'Danh sách lỗi', nav: 'Điều hướng',
+    help: 'Hướng dẫn',
     lang: 'Ngôn ngữ', tester: 'Tester', dev: 'Developer', admin: 'Quản trị',
     ready: 'Sẵn sàng kiểm thử', done: 'Đã xong', wip: 'Đang làm', plan: 'Kế hoạch',
     due: 'Hạn', report: 'Báo lỗi', view: 'Xem', send: 'Gửi báo lỗi',
@@ -67,6 +68,7 @@ const T = {
   },
   zh: {
     projects: '專案', ms: '里程碑', bugs: 'Bug 列表', nav: '導覽', lang: '語言',
+    help: '使用說明',
     tester: '測試人員', dev: '開發人員', admin: '管理員',
     ready: '待測試', done: '已完成', wip: '進行中', plan: '規劃中',
     due: '期限', report: '回報問題', view: '檢視', send: '送出',
@@ -118,6 +120,7 @@ const T = {
   },
   en: {
     projects: 'Projects', ms: 'Milestones', bugs: 'Bug reports', nav: 'Navigation',
+    help: 'Help',
     lang: 'Language', tester: 'Tester', dev: 'Developer', admin: 'Admin',
     ready: 'Ready for testing', done: 'Done', wip: 'In progress', plan: 'Planned',
     due: 'Due', report: 'Report bug', view: 'View', send: 'Submit',
@@ -496,6 +499,9 @@ function sidebar() {
         <div class="nav ${S.view === 'team' && !S.bug ? 'on' : ''}" data-action="view" data-view="team">
           <span>👤</span> ${t('team')}
         </div>
+        <a class="nav" href="/help" target="_blank" rel="noopener">
+          <span>❓</span> ${t('help')}
+        </a>
       </nav>
     </div>
 
