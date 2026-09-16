@@ -151,6 +151,7 @@ describe('csrf: cookie-authenticated writes', () => {
     const client = w.newClient();
     const before = w.mails.length;
     await client.post('/api/auth/request-link', { email: 'dev@rgm.example' });
+    await w.flushDeliveries();   // delivery is out of band now (IR-019)
     const token = w.mails.slice(before).find((m) => m.kind === 'login').token;
     const res = await client.post('/api/auth/consume', { token });
     assert.equal(res.status, 200);

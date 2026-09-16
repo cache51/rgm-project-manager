@@ -148,8 +148,15 @@ export async function authorizeMilestone(db, actor, milestoneId, allowed = ROLES
 /**
  * Issue a login link. Always resolves to `{ sent }` without revealing whether the
  * address exists — the caller must return an identical response either way.
+ *
+ * Delivery happens out of band: the response never waits on the mailer, and a
+ * mailer failure is logged rather than surfaced, because both would let an
+ * unauthenticated caller distinguish a known address from an unknown one by
+ * timing or by error (IR-019).
  */
-export async function requestLoginLink(db, rawEmail, { deliver, ttlMinutes = 15, ip = null } = {}) {
+export async function requestLoginLink(db, rawEmail,
+    { deliver, ttlMinutes = 15, ip = null, onDeliveryError = null,
+      defer = setImmediate } = {}) {
   const email = normalizeEmail(rawEmail);
   const u = await db.query('SELECT id, email, is_site_admin FROM users WHERE email = $1', [email]);
   if (!u.rows.length) return { sent: false };
@@ -167,7 +174,31 @@ export async function requestLoginLink(db, rawEmail, { deliver, ttlMinutes = 15,
      VALUES ($1, $2, now() + make_interval(mins => $3::int), $4)`,
     [user.id, hashToken(token), ttlMinutes, ip]);
 
-  if (deliver) await deliver({ to: email, token, kind: 'login' });
+  if (deliver) {
+    // The caller's promise is "a link was requested", not "the mail left the
+    // building". `defer` decides when delivery may start — the HTTP route
+    // schedules it after the response has closed, so not even the mailer's
+    // SYNCHRONOUS prefix (message building, socket setup) shares the response's
+    // event-loop turn; a known address must not cost measurably more than an
+    // unknown one. Everything is terminal: a synchronous throw must not escape,
+    // and a failing reporter must not become an unhandled rejection (IR-019).
+    defer(() => {
+      void (async () => {
+        try {
+          await deliver({ to: email, token, kind: 'login' });
+        } catch (err) {
+          try {
+            // Awaited, not just called: a reporter may itself be async, and a
+            // rejected reporter promise must be caught here, not floating.
+            await (onDeliveryError
+              ?? ((e) => console.error('[login-link delivery failed]', e.message)))(err);
+          } catch (reporterErr) {
+            console.error('[login-link delivery] error reporter failed', reporterErr);
+          }
+        }
+      })();
+    });
+  }
   return { sent: true };
 }
 

@@ -281,8 +281,20 @@ export function buildRoutes() {
     }
 
     // Always the same response, so this cannot be used to enumerate accounts.
-    await requestLoginLink(ctx.db, email, { deliver: ctx.deliver, ip });
+    //
+    // The mail is scheduled for after the response has closed, so no mailer work
+    // — not even its synchronous prefix — shares this request's event-loop turn
+    // (IR-019). 'close' rather than 'finish' so an aborted connection still
+    // delivers; a caller who aborts cannot observe the server's later work.
+    const deferred = [];
+    await requestLoginLink(ctx.db, email, {
+      deliver: ctx.deliver, ip,
+      defer: (run) => { deferred.push(run); }
+    });
     sendJson(res, 200, { ok: true });
+    if (deferred.length) {
+      res.once('close', () => { for (const run of deferred) run(); });
+    }
   }));
 
   r.post('/api/auth/consume', handle(async (req, res, ctx) => {

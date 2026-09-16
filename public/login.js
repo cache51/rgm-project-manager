@@ -16,6 +16,24 @@ const submit = document.getElementById('submit');
 const hint = document.getElementById('hint');
 const form = document.getElementById('form');
 
+/**
+ * Wipe any secret from the address bar (IR-018).
+ *
+ * Links arrive as /login#token=… or /login#invite=…; older mail carried the
+ * secret in the query. Either way the page never uses it: there is no token
+ * sign-in here, so the value has no job once the URL is clean. Left in place
+ * it would ride into history, screenshots and the next pasted URL.
+ */
+(function cleanAddressBar() {
+  const hasSecret = location.hash.startsWith('#token=')
+    || location.hash.startsWith('#invite=')
+    || location.search.includes('token=')
+    || location.search.includes('invite=');
+  if (hasSecret) {
+    history.replaceState(null, '', location.pathname);
+  }
+})();
+
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   const email = document.getElementById('email').value.trim();

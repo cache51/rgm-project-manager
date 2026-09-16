@@ -125,9 +125,12 @@ export function makeDeliver(mailer, publicUrl) {
 
   return async ({ to, token, kind }) => {
     const encoded = encodeURIComponent(token);
+    // The secret lives in the fragment, which browsers never send to the server
+    // and proxies therefore never log. A query string reaches access logs,
+    // Referer headers and browser history (IR-018).
     const link = kind === 'invite'
-      ? `${base}/login?invite=${encoded}`
-      : `${base}/login?token=${encoded}`;
+      ? `${base}/login#invite=${encoded}`
+      : `${base}/login#token=${encoded}`;
 
     const subject = kind === 'invite'
       ? '[RGM] Lời mời tham gia dự án'

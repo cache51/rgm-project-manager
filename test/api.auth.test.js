@@ -26,11 +26,109 @@ describe('auth: login', () => {
     assert.deepEqual(unknown.json, known.json);
   });
 
+  test('a failing mailer does not change the request-link response (IR-019)', async () => {
+    // The link is delivered out of band: an SMTP outage must not be a signal an
+    // unauthenticated caller can read, and must not turn the request into a 500.
+    w.setDeliver(async () => { throw new Error('SMTP unavailable'); });
+
+    const res = await w.newClient().post('/api/auth/request-link', { email: 'dev@rgm.example' });
+    assert.equal(res.status, 200, 'a mailer outage is never the caller\'s business');
+    assert.deepEqual(res.json, { ok: true });
+
+    await w.flushDeliveries();   // the rejected delivery is logged, not surfaced
+    w.setDeliver(null);
+  });
+
+  test('a delivery that throws SYNCHRONOUSLY is still out of band (IR-019)', async () => {
+    // `Promise.resolve(fn())` only catches rejections; a function that throws
+    // before returning escapes into the handler and becomes a 500 — the same
+    // oracle the async path removed, one code path away. Called directly
+    // because the harness's async deliver wrapper would convert the
+    // synchronous throw into a rejection and mask exactly this case.
+    const { requestLoginLink } = await import('../src/auth.js');
+    const sent = await requestLoginLink(w.db, 'dev@rgm.example', {
+      deliver: () => { throw new Error('SMTP exploded synchronously'); }
+    });
+    assert.deepEqual(sent, { sent: true }, 'the throw did not escape');
+    await new Promise((r) => setTimeout(r, 10));
+  });
+
+  test('a failing error reporter does not become an unhandled rejection (IR-019)', async () => {
+    // The delivery-error hook is operator-owned; if reporting itself fails —
+    // by throwing or by rejecting — the process must not die of an unhandled
+    // rejection mid-request.
+    //
+    // The deliver stub REJECTS rather than throws: that is the form the old
+    // implementation handled, so the reporter is actually reached and this
+    // test fails on the reporter, not on an earlier synchronous escape.
+    let unhandled = null;
+    const onUnhandled = (err) => { unhandled = err; };
+    process.on('unhandledRejection', onUnhandled);
+    const { requestLoginLink } = await import('../src/auth.js');
+
+    await requestLoginLink(w.db, 'admin@rgm.example', {
+      deliver: async () => { throw new Error('SMTP unavailable'); },
+      onDeliveryError: () => { throw new Error('reporter is broken too'); }
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(unhandled, null, 'a throwing reporter is contained');
+
+    // And the async-reporter form, which a synchronous try/catch would miss.
+    await requestLoginLink(w.db, 'admin@rgm.example', {
+      deliver: async () => { throw new Error('SMTP unavailable'); },
+      onDeliveryError: async () => { throw new Error('reporter rejects'); }
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(unhandled, null, 'a rejecting reporter is also contained');
+    process.off('unhandledRejection', onUnhandled);
+  });
+
+  test('not even the delivery\'s synchronous prefix runs inside the response (IR-019)', async () => {
+    // An async IIFE still runs its body synchronously up to the first await, so
+    // the mailer's synchronous prefix (message build, socket setup) would land
+    // in the request path and a known address would still cost more. Asserted
+    // at the seam: when the caller returns, delivery must not have started.
+    const { requestLoginLink } = await import('../src/auth.js');
+    let invoked = false;
+    await requestLoginLink(w.db, 'admin@rgm.example', {
+      deliver: () => { invoked = true; }
+    });
+    assert.equal(invoked, false, 'delivery had not even started when the caller returned');
+
+    await new Promise((r) => setImmediate(r));
+    assert.equal(invoked, true, 'and it does run, just later');
+  });
+
+  test('request-link resolves before the mail leaves: a slow mailer is not a timing oracle (IR-019)', async () => {
+    // The response used to wait for SMTP. Now the link is queued: the response
+    // time cannot depend on whether an address is known, because neither path
+    // touches the mailer before responding.
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    // The gate always opens: in the buggy state the response blocks on it (and
+    // then fails the timing assertion), and in the fixed state the flush below
+    // needs it to settle. A test may never hang on its own scaffolding.
+    const opener = setTimeout(release, 800);
+    w.setDeliver(async () => { await gate; });
+
+    const started = Date.now();
+    const res = await w.newClient().post('/api/auth/request-link', { email: 'admin@rgm.example' });
+    const elapsed = Date.now() - started;
+
+    assert.equal(res.status, 200);
+    assert.ok(elapsed < 500, `response waited for mail (${elapsed}ms)`);
+    clearTimeout(opener);
+    release();
+    await w.flushDeliveries();
+    w.setDeliver(null);
+  });
+
   test('a login link is single-use', async () => {
     const client = w.newClient();
     await w.db.query('DELETE FROM login_tokens');
     const before = w.mails.length;
     await w.newClient().post('/api/auth/request-link', { email: 'admin@rgm.example' });
+    await w.flushDeliveries();   // delivery is out of band now (IR-019)
     const token = w.mails.slice(before)[0].token;
 
     assert.equal((await client.post('/api/auth/consume', { token })).status, 200);

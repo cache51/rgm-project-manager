@@ -19,9 +19,10 @@ async function settle(times = 40) {
   for (let i = 0; i < times; i++) await new Promise((r) => setTimeout(r, 0));
 }
 
-function loadPage({ search = '', routes = {} } = {}) {
+function loadPage({ search = '', hash = '', routes = {} } = {}) {
   const calls = [];
   const redirects = [];
+  const replaces = [];
   const elements = new Map();
   const listeners = {};
 
@@ -55,8 +56,21 @@ function loadPage({ search = '', routes = {} } = {}) {
     setTimeout, clearTimeout,
     URLSearchParams, URL,
     document,
-    location: { search, replace: (u) => redirects.push(u),
-                href: `http://127.0.0.1:3000/login${search}` },
+    location: { search,
+                // Modelled separately from `search`, exactly as a browser does:
+                // a fixture that put the fragment text into `search` would let a
+                // broken hash branch pass on the query branch's evidence.
+                hash,
+                href: `http://127.0.0.1:3000/login${search}${hash}`,
+                pathname: '/login',
+                replace: (u) => { replaces.push(u); redirects.push(u); } },
+    history: {
+      // Address-bar cleaning is not navigation: it must not disturb the
+      // "never navigates anywhere but the app" assertions.
+      replaceState: (_state, _title, url) => {
+        replaces.push(`http://127.0.0.1:3000${url}`);
+      }
+    },
     fetch: async (path, opts = {}) => {
       const method = (opts.method ?? 'GET').toUpperCase();
       calls.push({ method, path, body: opts.body ? JSON.parse(opts.body) : null });
@@ -75,7 +89,10 @@ function loadPage({ search = '', routes = {} } = {}) {
   vm.runInContext(SOURCE, ctx, { filename: 'public/login.js' });
 
   return {
-    calls, redirects, el, form,
+    calls, redirects, replaces, el, form,
+    /** True when a replace wiped the address bar down to bare /login. */
+    locationCleaned: () => replaces.some((u) => /^http:\/\/127\.0\.0\.1:3000\/login\/?$/.test(u)
+      || /^\/login\/?$/.test(u)),
     text: () => ({
       heading: el('heading').textContent,
       note: el('note').textContent,
@@ -168,6 +185,33 @@ describe('login page: an address in, a session out', () => {
       assert.deepEqual(page.redirects, ['/'],
         `${search} must not change where sign-in lands`);
     }
+  });
+
+  test('a link secret in the fragment is wiped from the address bar (IR-018)', async () => {
+    // Links carry the secret after '#', which servers never see. The page still
+    // removes it, so it cannot leak into history, screenshots or the next paste
+    // of the URL. `search` is empty here, as it is in a real fragment URL — the
+    // hash branch is what has to do the work.
+    for (const fragment of ['#token=abc', '#invite=xyz']) {
+      const page = loadPage({
+        hash: fragment,
+        routes: { 'POST /api/auth/direct': () => ({ body: { ok: true } }) }
+      });
+      await settle();
+
+      assert.ok(page.locationCleaned(),
+        `${fragment} must be wiped from the address bar on load`);
+      assert.equal(page.calls.length, 0,
+        `${fragment} is never consumed by the browser (no token sign-in)`);
+    }
+
+    // And the older form, where the secret rode in the query string.
+    const legacy = loadPage({
+      search: '?token=old-style',
+      routes: { 'POST /api/auth/direct': () => ({ body: { ok: true } }) }
+    });
+    await settle();
+    assert.ok(legacy.locationCleaned(), 'a legacy query secret is wiped too');
   });
 
   test('the page does not mention links, passwords or tokens', async () => {

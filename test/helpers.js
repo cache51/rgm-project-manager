@@ -219,27 +219,55 @@ function makeClient(baseUrl) {
   };
 }
 
-export async function makeWorld({ limits = null, storage = null, onError = null } = {}) {
+export async function makeWorld({ limits = null, storage = null, onError = null, deliver = null } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'rgm-test-'));
   const db = await freshDb();
   const mails = [];
-  const deliver = async (msg) => { mails.push(msg); };
+  // Deliveries the route fired in the background (IR-019); tests await them
+  // through flushDeliveries() instead of racing the HTTP response.
+  const inFlight = new Set();
+  const defaultDeliver = async (msg) => { mails.push(msg); };
+  let activeDeliver = deliver ?? defaultDeliver;
+  const deliverImpl = async (msg) => {
+    const p = Promise.resolve(activeDeliver(msg)).finally(() => { inFlight.delete(p); });
+    inFlight.add(p);
+    await p;
+  };
   const storageImpl = storage ?? new FsStorage({
     root: join(dir, 'storage'), secret: 'test-secret'
   });
-  const app = createApp({ db, storage: storageImpl, deliver, limits,
+  const flushDeliveries = async () => {
+    // Delivery is deferred until the response has closed (IR-019), so keep
+    // turning the loop until no new delivery appears for two consecutive ticks.
+    let idle = 0;
+    while (idle < 2) {
+      await new Promise((r) => setImmediate(r));
+      if (inFlight.size) {
+        await Promise.allSettled([...inFlight]);
+        idle = 0;
+      } else {
+        idle += 1;
+      }
+    }
+  };
+  const app = createApp({ db, storage: storageImpl, deliver: deliverImpl, limits,
     onError: onError ?? ((err) => console.error('[server error]', err)) });
   const { url } = await listen(app, { port: 0 });
 
   const world = {
-    db, app, storage: storageImpl, mails, url, dir, deliver,
+    db, app, storage: storageImpl, mails, url, dir, deliver: deliverImpl,
+    /** Swap the delivery transport for one test; null restores the default. */
+    setDeliver: (fn) => { activeDeliver = fn ?? defaultDeliver; },
+    /** Wait until every background delivery has settled (rejections swallowed). */
+    flushDeliveries,
 
     newClient: () => makeClient(url),
 
     /** Sign a user in through the real login-link flow; returns a client. */
     async loginAs(email, client = makeClient(url)) {
       const before = mails.length;
-      await requestLoginLink(db, email, { deliver });
+      await requestLoginLink(db, email, { deliver: deliverImpl });
+      await flushDeliveries();   // delivery is out of band now (IR-019)
       const mail = mails.slice(before).find(m => m.kind === 'login');
       if (!mail) throw new Error(`no login link issued for ${email}`);
       const res = await client.post('/api/auth/consume', { token: mail.token });
@@ -253,7 +281,7 @@ export async function makeWorld({ limits = null, storage = null, onError = null 
       // `createInvite` re-authorizes the actor inside its transaction (RGM4-001),
       // so it needs an identity rather than just an audit trail.
       await createInvite(db, { projectId, email, role, name,
-                               actor: { userId: createdBy }, deliver });
+                               actor: { userId: createdBy }, deliver: deliverImpl });
       const mail = mails.slice(before).find(m => m.kind === 'invite');
       if (!mail) throw new Error(`no invite issued for ${email}`);
       return mail.token;

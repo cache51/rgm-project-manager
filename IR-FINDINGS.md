@@ -109,10 +109,27 @@ Recorded so they are not lost, roughly in the order worth doing them.
 
 ### Authorization and credential handling
 
-- **IR-018 (med)** — Login and invitation secrets travel in query strings, so they
-  reach browser history and access logs.
-- **IR-019 (med)** — SMTP latency distinguishes a known address from an unknown
-  one.
+- **IR-018 (med, fixed)** — Login and invitation secrets travelled in email links
+  as query strings, reaching browser history, access logs, proxies and Referer
+  headers. Links now carry the secret in the URL fragment (`#token=`/`#invite=`),
+  which browsers never send to any server; the sign-in page wipes it from the
+  address bar on load and never consumes it — browser sign-in stays email-only,
+  with no token login. Regressions cover both link kinds and the page cleanup.
+- **IR-019 (med, mitigated — residual accepted)** — `POST /api/auth/request-link`
+  awaited the mailer inside the response, so SMTP latency distinguished a known
+  address from an unknown one, and an SMTP outage turned the request into a 500 —
+  a second distinguishable signal. Delivery is now scheduled after the response
+  has closed, failures are logged and never surfaced, and a synchronous mailer
+  throw cannot escape; each of those was verified red against the old code.
+  Accepted residual, recorded against an independent review that withheld a clean
+  verdict on it: a known address still awaits one `login_tokens` INSERT that an
+  unknown one skips, a sub-millisecond difference. It is not closed here because
+  the flow is **inert in this deployment** — no mailer is configured and the
+  browser signs in through `/api/auth/direct`, which already reveals address
+  validity by design ("that address is not on any project yet"). Hardening a
+  retired path is not worth the token-issuance rewrite it would need.
+  Cleanup, not security: the link and invitation-delivery flow is dead code here
+  and should be deleted outright rather than hardened.
 
 ### Uploads and storage
 

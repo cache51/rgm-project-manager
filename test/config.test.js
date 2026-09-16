@@ -117,7 +117,7 @@ describe('config: the deliver adapter', () => {
     };
   };
 
-  test('a sign-in link points at /login and carries the token', async () => {
+  test('a sign-in link carries its secret in the fragment, never the query (IR-018)', async () => {
     const mailer = capture();
     await makeDeliver(mailer, 'http://localhost:3000')({
       to: 'linh@rgm.example', token: 'tok+with/special=chars', kind: 'login'
@@ -125,19 +125,23 @@ describe('config: the deliver adapter', () => {
 
     const [msg] = mailer.sent;
     assert.equal(msg.to, 'linh@rgm.example');
-    assert.match(msg.body, /http:\/\/localhost:3000\/login\?token=/);
+    assert.match(msg.body, /http:\/\/localhost:3000\/login#token=/);
+    // The fragment never leaves the browser; the query string reaches access
+    // logs, proxies and Referer headers.
+    assert.ok(!msg.body.includes('?token='), 'no secret in the query string');
     // The token must be url-encoded, or a '+' in it would arrive as a space.
     assert.ok(msg.body.includes(encodeURIComponent('tok+with/special=chars')));
     assert.match(msg.subject, /đăng nhập/);
   });
 
-  test('an invitation points at the invite flow, not sign-in', async () => {
+  test('an invitation points at the invite flow, not sign-in (IR-018)', async () => {
     const mailer = capture();
     await makeDeliver(mailer, 'https://rgm.example')({
       to: 'new@rgm.example', token: 'abc', kind: 'invite'
     });
-    assert.match(mailer.sent[0].body, /https:\/\/rgm\.example\/login\?invite=abc/);
-    assert.ok(!mailer.sent[0].body.includes('?token='), 'an invitation is not a session');
+    assert.match(mailer.sent[0].body, /https:\/\/rgm\.example\/login#invite=abc/);
+    assert.ok(!mailer.sent[0].body.includes('?invite='), 'no secret in the query string');
+    assert.ok(!mailer.sent[0].body.includes('#token='), 'an invitation is not a session');
   });
 
   test('a trailing slash on the public URL does not produce a double slash', async () => {
