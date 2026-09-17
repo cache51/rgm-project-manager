@@ -697,6 +697,23 @@ describe('ui (dom): every action reaches the API it should', () => {
     assert.equal(post.body.note, 'Cần ảnh rõ hơn');
   });
 
+  test('the timeline speaks the language the reader chose', async () => {
+    // The entries were rendered as the raw server kind — "filed", "fixing",
+    // "commented" — in every language, so a Vietnamese tester read a Vietnamese
+    // page with English tags in the middle of it.
+    const vi = loadApp({ routes: routes(), browserLang: 'vi-VN' });
+    await settle();
+    await vi.click('openbug', { id: bug.id });
+    assert.match(vi.html(), /đã báo/, 'the filing entry is Vietnamese');
+    assert.doesNotMatch(vi.html(), />filed</, 'not the raw event kind');
+
+    const zh = loadApp({ routes: routes(), browserLang: 'zh-HK' });
+    await settle();
+    await zh.click('openbug', { id: bug.id });
+    assert.match(zh.html(), /已回報/, 'and Chinese for a Chinese reader');
+    assert.doesNotMatch(zh.html(), />filed</, 'not the raw event kind');
+  });
+
   test('an empty comment is not sent', async () => {
     seen.length = 0;
     const app = loadApp({ routes: routes() });

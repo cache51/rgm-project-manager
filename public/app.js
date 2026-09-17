@@ -20,8 +20,12 @@ const T = {
     closeTitle: 'Đóng lỗi', closeKindL: 'Lý do đóng',
     closeDuplicate: 'Trùng với báo cáo khác', closeRejected: 'Từ chối',
     closeRefL: 'Báo cáo gốc', closeConfirm: 'Đóng', needCloseRef: 'Hãy chọn báo cáo gốc',
-    needReason: 'Hãy ghi lý do', commentHint: 'Ctrl+Enter để gửi',
+    needReason: 'Hãy ghi lý do', commentHint: 'Ctrl+Enter để gửi', writVi: 'Tiếng Việt',
     closedAs: 'Đóng vì',
+    kFiled: 'đã báo', kAttach: 'thêm ảnh', kFixing: 'đang sửa',
+    kRetest: 'đã sửa — chờ xác nhận', kRetestPass: 'xác nhận đã sửa', kRetestFail: 'trả lại',
+    kClosed: 'đã đóng', kComment: 'bình luận', kEdited: 'sửa báo cáo',
+    kRemoved: 'đã xoá', kRestored: 'khôi phục',
     lang: 'Ngôn ngữ', tester: 'Tester', dev: 'Developer', admin: 'Quản trị',
     ready: 'Sẵn sàng kiểm thử', done: 'Đã xong', wip: 'Đang làm', plan: 'Kế hoạch',
     due: 'Hạn', report: 'Báo lỗi', view: 'Xem', send: 'Gửi báo lỗi',
@@ -77,8 +81,12 @@ const T = {
     closeTitle: '關閉問題', closeKindL: '關閉原因',
     closeDuplicate: '與其他回報重複', closeRejected: '拒絕',
     closeRefL: '原回報', closeConfirm: '關閉', needCloseRef: '請選擇原回報',
-    needReason: '請填寫原因', commentHint: 'Ctrl+Enter 送出',
+    needReason: '請填寫原因', commentHint: 'Ctrl+Enter 送出', writVi: '用越南文',
     closedAs: '關閉原因',
+    kFiled: '已回報', kAttach: '新增截圖', kFixing: '修復中',
+    kRetest: '已修復——待確認', kRetestPass: '確認已修復', kRetestFail: '退回',
+    kClosed: '已關閉', kComment: '留言', kEdited: '修改回報',
+    kRemoved: '已刪除', kRestored: '已還原',
     tester: '測試人員', dev: '開發人員', admin: '管理員',
     ready: '待測試', done: '已完成', wip: '進行中', plan: '規劃中',
     due: '期限', report: '回報問題', view: '檢視', send: '送出',
@@ -134,8 +142,12 @@ const T = {
     closeTitle: 'Close the report', closeKindL: 'Close reason',
     closeDuplicate: 'Duplicate of another report', closeRejected: 'Rejected',
     closeRefL: 'Original report', closeConfirm: 'Close', needCloseRef: 'Choose the original report',
-    needReason: 'A reason is required', commentHint: 'Ctrl+Enter to send',
+    needReason: 'A reason is required', commentHint: 'Ctrl+Enter to send', writVi: 'in Vietnamese',
     closedAs: 'Closed as',
+    kFiled: 'filed', kAttach: 'attachment added', kFixing: 'fixing',
+    kRetest: 'marked fixed', kRetestPass: 'verified', kRetestFail: 'sent back',
+    kClosed: 'closed', kComment: 'comment', kEdited: 'edited',
+    kRemoved: 'removed', kRestored: 'restored',
     lang: 'Language', tester: 'Tester', dev: 'Developer', admin: 'Admin',
     ready: 'Ready for testing', done: 'Done', wip: 'In progress', plan: 'Planned',
     due: 'Due', report: 'Report bug', view: 'View', send: 'Submit',
@@ -775,6 +787,27 @@ function translationBlock(field) {
   return `<div class="tag">${t('trPending')}</div>`;
 }
 
+/**
+ * The activity timeline's server-side event kinds, as words a reader recognizes.
+ *
+ * The timeline rendered `e.kind.replace(/^bug\./, '')` — the raw wire value — so a
+ * Vietnamese or Chinese page carried "filed", "fixing" and "commented" in English
+ * down the middle of it. Anything not listed here still falls back to the raw kind,
+ * which is better than hiding an event the server started writing.
+ */
+const KIND_KEY = {
+  filed: 'kFiled', attachment_added: 'kAttach', fixing: 'kFixing',
+  retest: 'kRetest', retest_pass: 'kRetestPass', retest_fail: 'kRetestFail',
+  closed: 'kClosed', commented: 'kComment', edited: 'kEdited',
+  removed: 'kRemoved', restored: 'kRestored'
+};
+
+function kindLabel(kind) {
+  const bare = String(kind ?? '').replace(/^bug\./, '');
+  const key = KIND_KEY[bare];
+  return key ? t(key) : bare;
+}
+
 function timelineBlock() {
   if (!S.bug.timeline?.length) return '';
   return `<h3 style="margin:22px 0 10px;font-size:14px">${t('timeline')}</h3>
@@ -785,7 +818,7 @@ function timelineBlock() {
         return `
         <div class="tl">
           <div class="tl-h">
-            <b>${esc(e.actor)}</b> · <span class="tag">${esc(e.kind.replace(/^bug\./, ''))}</span>
+            <b>${esc(e.actor)}</b> · <span class="tag">${esc(kindLabel(e.kind))}</span>
             <span class="rel" style="margin-left:auto">${fmt(e.at)} · ${rel(e.at)}</span>
           </div>
           ${note ? `<div class="tl-n">${esc(note)}</div>` : ''}
@@ -873,7 +906,7 @@ function bugDetail() {
 
       ${['retest'].includes(b.status) && ['tester', 'admin'].includes(myRole()) ? `
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <input id="retestnote" placeholder="${t('noteL')} (${S.lang === 'vi' ? 'Tiếng Việt' : '…'})"
+          <input id="retestnote" placeholder="${t('noteL')} (${t('writVi')})"
                  style="flex:1;min-width:220px">
           <button class="btn pri" data-action="retest" data-id="${esc(b.id)}" data-result="pass">✅ ${esc(moveLabel('retest_pass', b.kind))}</button>
           <button class="btn" data-action="retest" data-id="${esc(b.id)}" data-result="fail">❌ ${esc(moveLabel('retest_fail', b.kind))}</button>
