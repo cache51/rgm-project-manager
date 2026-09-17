@@ -65,13 +65,15 @@ const DOCS = {
             <tr><td>4b</td><td>Tester</td><td>Vẫn còn lỗi — trả lại (kèm ghi chú)</td><td><b>Đang sửa</b></td></tr>
           </table>
           ${img(L, 'buglist', 'Danh sách lỗi: bốn trạng thái, bốn màu nhãn')}
-          <p>Developer cũng có thể <b>đóng</b> một lỗi kèm lý do (không sửa, trùng lặp…)
-          hoặc <b>mở lại</b> lỗi đã đóng.</p>
-          ${img(L, 'bugdetail', 'Chi tiết lỗi: mô tả gốc, bản dịch, ảnh chụp, lịch sử')}
-          <p>Khi lỗi ở trạng thái chờ xác nhận, tester thấy hai nút
-          <b>Xác nhận đã sửa</b> và <b>Vẫn còn lỗi — trả lại</b>; ghi chú trả lại được dịch
-          cho developer.</p>
-          ${img(L, 'retest-controls', 'Nút xác nhận / trả lại trên chi tiết lỗi')}`
+          <p>Developer đóng lỗi bằng một trong hai nút: <b>🔁 Trùng với báo cáo khác</b> —
+          chọn báo cáo gốc trong danh sách, hoặc <b>🚫 Từ chối</b>. Cả hai đều cần lý do;
+          quyết định được ghi vào chi tiết lỗi và lịch sử hoạt động.</p>
+          ${img(L, 'closepanel', 'Bảng đóng lỗi: chọn lý do đóng và báo cáo gốc')}
+          <p>Xác nhận là việc của tester: khi lỗi chờ xác nhận, tester (hoặc quản trị) thấy
+          nút <b>Xác nhận đã sửa</b> và <b>Vẫn còn lỗi — trả lại</b>; ghi chú trả lại được dịch
+          cho developer. Developer đã đánh dấu sửa xong thì không tự xác nhận được.</p>
+          ${img(L, 'bugdetail', 'Chi tiết lỗi dưới mắt tester: nút xác nhận và ô bình luận')}
+          <p>Ô bình luận nhận nhiều dòng; bấm Ctrl+Enter để gửi.</p>`
       },
       {
         h: '5. Ảnh chụp màn hình và gói packet',
@@ -146,11 +148,14 @@ const DOCS = {
             <tr><td>4b</td><td>測試人員</td><td>仍有問題——退回（附註記）</td><td><b>修復中</b></td></tr>
           </table>
           ${img(L, 'buglist', 'Bug 列表：四種狀態、四種標籤顏色')}
-          <p>開發人員也可以附理由<b>關閉</b>問題（不修、重複…），或<b>重新開啟</b>已關閉的問題。</p>
-          ${img(L, 'bugdetail', '問題詳情：原文、譯文、截圖、歷史')}
-          <p>問題待確認時，測試人員會看到 <b>確認已修復</b> 與 <b>仍有問題——退回</b> 兩個按鈕；
-          退回註記會翻譯給開發人員。</p>
-          ${img(L, 'retest-controls', '問題詳情上的確認／退回按鈕')}`
+          <p>開發人員以兩個按鈕之一關閉問題：<b>🔁 與其他回報重複</b>——從清單選擇原回報，
+          或 <b>🚫 拒絕</b>。兩者都需要原因；決定會記錄在問題詳情與歷史中。</p>
+          ${img(L, 'closepanel', '關閉面板：選擇關閉原因與原回報')}
+          <p>確認是測試人員的工作：問題待確認時，測試人員（或管理員）會看到
+          <b>確認已修復</b> 與 <b>仍有問題——退回</b> 兩個按鈕；退回註記會翻譯給開發人員。
+          標記已修復的開發人員不能自己確認。</p>
+          ${img(L, 'bugdetail', '測試人員視角的問題詳情：確認按鈕與留言欄')}
+          <p>留言欄可輸入多行；按 Ctrl+Enter 送出。</p>`
       },
       {
         h: '5. 螢幕截圖與 packet 檔',

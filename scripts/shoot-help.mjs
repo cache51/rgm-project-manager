@@ -51,11 +51,13 @@ for (const lang of ['vi', 'zh']) {
   await settle(page);
   await shot(page, `${lang}-buglist`);
 
-  // The first row is the newest bug; open the one in retest instead, by its
-  // chip class (BUG_CLASS maps retest → 'fixed'), so the detail shot always
-  // shows attachments and a live verdict.
+  // The retest-state bug, as the tester sees it: the verify buttons and the
+  // multi-line comment box are the point of this shot — and they live at the
+  // bottom of a long page, so scroll the Actions card into view first.
   await page.click('[data-action="openbug"]:has(.st.fixed)');
   await settle(page, 600);
+  await page.$eval('#commentnote', (e) => e.scrollIntoView({ block: 'center' }));
+  await settle(page);
   await shot(page, `${lang}-bugdetail`);
 
   await page.click('[data-action="closebug"]');
@@ -69,16 +71,26 @@ for (const lang of ['vi', 'zh']) {
   await page.click('[data-action="cancelreport"]');
   await settle(page);
 
-  // ── developer's side: the retest verdict controls ──
+  // ── developer's side: the close panel, open on "duplicate" ──
+  // A bug in the retest state offers a developer nothing (verification is the
+  // tester's), so the close panel is shot on the one being fixed.
   await page.click('[data-action="signout"]');
   await page.waitForSelector('#email', { timeout: 15000 });
   await signIn(page, 'wei@rgm.example');
   await setLang(page, lang);
   await page.click('[data-action="view"][data-view="bugs"]');
   await settle(page);
-  await page.click('[data-action="openbug"]:has(.st.fixed)');
+  await page.click('[data-action="openbug"]:has-text("BUG-2")');
   await settle(page, 600);
-  await shot(page, `${lang}-retest-controls`);
+  await page.click('[data-action="openclose"][data-kind="duplicate"]');
+  await page.waitForSelector('#close-kind');
+  // The panel sits at the bottom of a long page; a viewport shot of the top
+  // would show a bug detail with no panel in it.
+  await page.$eval('#close-kind', (e) => e.scrollIntoView({ block: 'center' }));
+  await settle(page);
+  await shot(page, `${lang}-closepanel`);
+  await page.click('[data-action="cancelclose"]');
+  await settle(page);
 
   await page.click('[data-action="closebug"]');
   await settle(page);
