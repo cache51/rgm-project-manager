@@ -1013,10 +1013,15 @@ export function buildRoutes() {
            FROM bugs WHERE id = $1 FOR UPDATE`, [ctx.params.id]);
       const b = cur.rows[0];
 
-      // A tester may record a result only if unassigned or assigned to them;
-      // developers and admins may always record one (RGM3-012).
-      const isDev = role === 'admin' || role === 'developer';
-      if (!isDev && b.retest_assignee_id && b.retest_assignee_id !== ctx.actor.userId) {
+      // A tester may record a result only if unassigned or assigned to them.
+      // Admins may always record one; developers may not record a result at
+      // all — verification belongs to the tester side of the loop, so the
+      // developer who marked a bug fixed cannot also sign it off.
+      if (role === 'developer') {
+        throw new HttpError(403, 'forbidden',
+          'a developer cannot verify their own fix — a tester or an admin records the result');
+      }
+      if (role !== 'admin' && b.retest_assignee_id && b.retest_assignee_id !== ctx.actor.userId) {
         throw new HttpError(403, 'forbidden', 'this retest is assigned to another tester');
       }
 

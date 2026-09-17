@@ -36,6 +36,14 @@ test('roles are enforced', () => {
   // a tester MAY record a retest result (RGM-019 / RGM2-011)
   assert.doesNotThrow(() => resolveTransition('bug', 'retest_pass', 'retest', tester.role,
     { expectedAttempt: 1, actualAttempt: 1 }));
+  // ...but the developer who marked it fixed may NOT sign it off: verification
+  // is the tester's half of the loop, with an admin as the fallback.
+  assert.throws(() => resolveTransition('bug', 'retest_pass', 'retest', dev.role,
+    { expectedAttempt: 1, actualAttempt: 1 }), (e) => e.code === 'FORBIDDEN_ROLE');
+  assert.throws(() => resolveTransition('bug', 'retest_fail', 'retest', dev.role,
+    { expectedAttempt: 1, actualAttempt: 1 }), (e) => e.code === 'FORBIDDEN_ROLE');
+  assert.doesNotThrow(() => resolveTransition('bug', 'retest_pass', 'retest', admin.role,
+    { expectedAttempt: 1, actualAttempt: 1 }));
   // only an admin may reset a milestone
   assert.throws(() => resolveTransition('milestone', 'reset', 'ready', dev.role, { reason: 'x' }),
     (e) => e.code === 'FORBIDDEN_ROLE');
@@ -97,6 +105,12 @@ test('availableTransitions reflects status and role', () => {
     availableTransitions('bug', 'retest', tester.role, { expectedAttempt: 1, actualAttempt: 1 })
       .map(t => t.action).sort(),
     ['retest_fail', 'retest_pass']
+  );
+  // and a developer in the same state is offered neither
+  assert.deepEqual(
+    availableTransitions('bug', 'retest', dev.role, { expectedAttempt: 1, actualAttempt: 1 })
+      .map(t => t.action),
+    []
   );
 });
 

@@ -16,6 +16,10 @@ export const BUG_STATES = Object.freeze(['new', 'fixing', 'retest', 'closed']);
 /** Roles are project-scoped membership roles; `site_admin` also satisfies `admin`. */
 const DEV = ['admin', 'developer'];
 const ANY_MEMBER = ['admin', 'developer', 'tester'];
+// Verification is the tester's half of the loop: the developer who marked a bug
+// fixed must not also be the one who signs it off. An admin verifies when no
+// tester is available.
+const VERIFY = ['admin', 'tester'];
 
 export const MILESTONE_TRANSITIONS = Object.freeze([
   { action: 'start',  from: ['planned'],     to: 'in_progress', roles: DEV },
@@ -30,9 +34,9 @@ export const BUG_TRANSITIONS = Object.freeze([
   { action: 'start_fixing',   from: ['new'],          to: 'fixing', roles: DEV },
   { action: 'request_retest', from: ['fixing'],       to: 'retest', roles: DEV,
     recordsAssignee: true, bumpsAttempt: true },
-  { action: 'retest_fail',    from: ['retest'],       to: 'fixing', roles: ANY_MEMBER,
+  { action: 'retest_fail',    from: ['retest'],       to: 'fixing', roles: VERIFY,
     requiresCurrentAttempt: true },
-  { action: 'retest_pass',    from: ['retest'],       to: 'closed', roles: ANY_MEMBER,
+  { action: 'retest_pass',    from: ['retest'],       to: 'closed', roles: VERIFY,
     requiresCurrentAttempt: true },
   { action: 'close',          from: ['new', 'fixing'], to: 'closed', roles: DEV,
     requiresReason: true },

@@ -871,7 +871,7 @@ function bugDetail() {
       ${(b.availableActions ?? []).length ? '' : `<div class="tag">—</div>`}
       ${closePanel()}
 
-      ${['retest'].includes(b.status) ? `
+      ${['retest'].includes(b.status) && ['tester', 'admin'].includes(myRole()) ? `
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
           <input id="retestnote" placeholder="${t('noteL')} (${S.lang === 'vi' ? 'Tiếng Việt' : '…'})"
                  style="flex:1;min-width:220px">

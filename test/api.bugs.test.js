@@ -108,6 +108,24 @@ describe('bugs: lifecycle transitions', () => {
     assert.equal(res.json.status, 'closed');
   });
 
+  test('the developer who marked a bug fixed cannot verify it', async () => {
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await w.devClient.post(`/api/bugs/${bug.id}/status`, { action: 'start_fixing' });
+    await w.devClient.post(`/api/bugs/${bug.id}/status`, { action: 'request_retest' });
+
+    for (const result of ['pass', 'fail']) {
+      const res = await w.devClient.post(`/api/bugs/${bug.id}/retest`,
+        { result, expectedAttempt: 1 });
+      assert.equal(res.status, 403, `${result} must be refused to the developer`);
+      assert.equal(res.json.error, 'forbidden');
+    }
+    // still waiting for a tester, and the admin fallback works
+    assert.equal((await w.devClient.get(`/api/bugs/${bug.id}`)).json.status, 'retest');
+    const byAdmin = await w.adminClient.post(`/api/bugs/${bug.id}/retest`,
+      { result: 'pass', expectedAttempt: 1 });
+    assert.equal(byAdmin.json.status, 'closed');
+  });
+
   test('a retest failure returns the bug to fixing', async () => {
     const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
     await w.devClient.post(`/api/bugs/${bug.id}/status`, { action: 'start_fixing' });
