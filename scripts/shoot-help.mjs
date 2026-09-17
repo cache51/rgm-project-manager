@@ -92,6 +92,17 @@ for (const lang of ['vi', 'zh']) {
   await page.click('[data-action="cancelclose"]');
   await settle(page);
 
+  // The notification list, with a couple of addresses on it — shot from the UI
+  // so the picture is of a real list rather than an empty panel.
+  for (const email of ['linh@rgm.example', 'thiquynguyen@rgmdn.com']) {
+    await page.fill('#watcheremail', email);
+    await page.click('[data-action="addwatcher"]');
+    await page.waitForTimeout(900);
+  }
+  await page.$eval('#watcheremail', (e) => e.scrollIntoView({ block: 'center' }));
+  await settle(page);
+  await shot(page, `${lang}-notify`);
+
   await page.click('[data-action="closebug"]');
   await settle(page);
   await page.click('[data-action="view"][data-view="team"]');

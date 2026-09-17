@@ -578,6 +578,11 @@ describe('ui (dom): every action reaches the API it should', () => {
     [`POST /api/bugs/${bug.id}/status`]: (c) => { seen.push(c); return { body: {} }; },
     [`POST /api/bugs/${bug.id}/retest`]: (c) => { seen.push(c); return { body: {} }; },
     [`POST /api/bugs/${bug.id}/comments`]: (c) => { seen.push(c); return { body: {} }; },
+    [`POST /api/bugs/${bug.id}/watchers`]: (c) => { seen.push(c); return { body: { added: true } }; },
+    [`DELETE /api/bugs/${bug.id}/watchers/krixi%40rgmdn.com`]: (c) => {
+      seen.push(c);
+      return { body: { removed: true } };
+    },
     [`POST /api/bugs/${bug.id}/attachments/presign`]: (c) => {
       seen.push(c);
       return { body: { uploadUrl: 'http://bucket.test/put', storageKey: 'k/1', uploadToken: 'tok' }, status: 201 };
@@ -712,6 +717,74 @@ describe('ui (dom): every action reaches the API it should', () => {
     await zh.click('openbug', { id: bug.id });
     assert.match(zh.html(), /已回報/, 'and Chinese for a Chinese reader');
     assert.doesNotMatch(zh.html(), />filed</, 'not the raw event kind');
+  });
+
+  test('a developer attaches an email, and sees the ones already there', async () => {
+    seen.length = 0;
+    const app = loadApp({ routes: {
+      ...routes(),
+      [`GET /api/bugs/${bug.id}`]: {
+        ...payloads.bug,
+        watchers: [{ email: 'krixi@rgmdn.com', addedAt: '2026-09-17T00:00:00.000Z',
+                     addedBy: 'dev@rgm.example' }]
+      }
+    } });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+
+    assert.match(app.html(), /krixi@rgmdn\.com/, 'the existing address is listed');
+    assert.ok(app.field('watcheremail'), 'and there is a field to add one');
+
+    app.input('watcheremail', 'tuongvi@rgmdn.com');
+    await app.click('addwatcher', { id: bug.id });
+    const post = seen.find((c) => c.path === `/api/bugs/${bug.id}/watchers`);
+    assert.ok(post, 'the address is posted');
+    assert.equal(post.body.email, 'tuongvi@rgmdn.com');
+  });
+
+  test('a malformed email is refused here, not by a round trip', async () => {
+    seen.length = 0;
+    const app = loadApp({ routes: routes() });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+    app.input('watcheremail', 'not-an-address');
+    await app.click('addwatcher', { id: bug.id });
+
+    assert.equal(seen.filter((c) => c.path === `/api/bugs/${bug.id}/watchers`).length, 0);
+    assert.match(app.html(), /email hợp lệ|valid email address|有效的電郵/,
+      'and the reader is told why');
+  });
+
+  test('an address can be taken off the bug', async () => {
+    seen.length = 0;
+    const app = loadApp({ routes: {
+      ...routes(),
+      [`GET /api/bugs/${bug.id}`]: {
+        ...payloads.bug, watchers: [{ email: 'krixi@rgmdn.com', addedAt: null, addedBy: null }]
+      }
+    } });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+    await app.click('rmwatcher', { id: bug.id, email: 'krixi@rgmdn.com' });
+
+    const del = seen.find((c) => c.method === 'DELETE');
+    assert.ok(del, 'the removal is sent');
+    assert.equal(del.path, `/api/bugs/${bug.id}/watchers/krixi%40rgmdn.com`,
+      'with the address encoded');
+  });
+
+  test('a tester is not offered the notification list', async () => {
+    const app = loadApp({ routes: {
+      ...routes(),
+      'GET /api/me': {
+        ...payloads.me,
+        projects: payloads.me.projects.map((p) => ({ ...p, role: 'tester' }))
+      }
+    } });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+    assert.doesNotMatch(app.html(), /data-action="addwatcher"/, 'no way to add an address');
+    assert.doesNotMatch(app.html(), /id="watcheremail"/, 'and no field for one');
   });
 
   test('an empty comment is not sent', async () => {

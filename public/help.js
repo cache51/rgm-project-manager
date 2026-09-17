@@ -76,7 +76,19 @@ const DOCS = {
           <p>Ô bình luận nhận nhiều dòng; bấm Ctrl+Enter để gửi.</p>`
       },
       {
-        h: '5. Ảnh chụp màn hình và gói packet',
+        h: '5. Ai nhận email khi sửa xong',
+        body: (L) => `
+          <p>Developer (hoặc quản trị) gắn một hay nhiều địa chỉ email vào từng lỗi, ở mục
+          <b>Email báo khi sửa xong</b> trong chi tiết lỗi. Khi lỗi chuyển sang
+          <b>Đã sửa — chờ xác nhận</b>, mỗi địa chỉ trong danh sách nhận một email kèm mã lỗi,
+          tiêu đề và đường dẫn vào ứng dụng.</p>
+          ${img(L, 'notify', 'Danh sách email nhận thông báo, trong chi tiết lỗi')}
+          <p>Chỉ những địa chỉ trong danh sách được báo — thêm email của tester đã báo lỗi,
+          kể cả người chưa là thành viên dự án. Bỏ một địa chỉ khỏi danh sách thì lần sửa sau
+          họ không còn nhận email nữa.</p>`
+      },
+      {
+        h: '6. Ảnh chụp màn hình và gói packet',
         body: (L) => `
           <p>Ảnh đính kèm hiện trong chi tiết lỗi và tải về từng cái được. Nút
           <b>⬇ Tải gói packet</b> lấy về một tệp ZIP gồm <code>bug.md</code> (bản prompt cho
@@ -84,14 +96,14 @@ const DOCS = {
           Tên tệp trong gói do máy chủ đặt, nên giải nén không thể ghi ra ngoài thư mục đích.</p>`
       },
       {
-        h: '6. Ngôn ngữ',
+        h: '7. Ngôn ngữ',
         body: () => `
           <p>Đổi ngôn ngữ giao diện ở cuối thanh bên: <b>Tiếng Việt / 中文 / English</b>.
           Lựa chọn được nhớ cho lần sau. Nội dung báo cáo luôn giữ bản tiếng Việt gốc kèm
           bản dịch, bất kể ngôn ngữ giao diện.</p>`
       },
       {
-        h: '7. Nhóm và vai trò',
+        h: '8. Nhóm và vai trò',
         body: (L) => `
           <p>Quản trị thêm thành viên bằng email và gán vai trò:
           <b>tester</b> (báo lỗi, xác nhận), <b>developer</b> (sửa, đóng, mở lại),
@@ -158,20 +170,30 @@ const DOCS = {
           <p>留言欄可輸入多行；按 Ctrl+Enter 送出。</p>`
       },
       {
-        h: '5. 螢幕截圖與 packet 檔',
+        h: '5. 修復後誰會收到電郵',
+        body: (L) => `
+          <p>開發人員（或管理員）可在問題詳情的 <b>修復後通知的電郵</b> 區塊，為每個問題加入
+          一個或多個電郵地址。問題轉為 <b>已修復——待確認</b> 時，名單上的每個地址都會收到一封
+          電郵，內含問題編號、標題與應用程式連結。</p>
+          ${img(L, 'notify', '問題詳情中的通知電郵名單')}
+          <p>只有名單上的地址會收到通知——可加入回報問題的測試人員，即使他尚未加入專案。
+          把地址從名單移除後，之後的修復就不再通知他。</p>`
+      },
+      {
+        h: '6. 螢幕截圖與 packet 檔',
         body: () => `
           <p>附件顯示在問題詳情中，可逐一下載。<b>⬇ 下載 packet</b> 會取得一個 ZIP，內含
           <code>bug.md</code>（給 AI agent 的 prompt）、全部截圖與中繼資料——供開發人員直接放進
           repo。檔內名稱由伺服器指派，因此解壓縮不會寫到目標資料夾以外。</p>`
       },
       {
-        h: '6. 語言',
+        h: '7. 語言',
         body: () => `
           <p>在側欄底部切換介面語言：<b>Tiếng Việt / 中文 / English</b>，選擇會被記住。
           無論介面語言為何，回報內容永遠保留越南原文與譯文。</p>`
       },
       {
-        h: '7. 團隊與角色',
+        h: '8. 團隊與角色',
         body: (L) => `
           <p>管理員以電郵加入成員並指派角色：<b>測試人員</b>（回報、確認）、
           <b>開發人員</b>（修復、關閉、重開）、<b>管理員</b>（加人、改角色、里程碑）。</p>

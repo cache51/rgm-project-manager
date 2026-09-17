@@ -25,7 +25,10 @@ const T = {
     kFiled: 'đã báo', kAttach: 'thêm ảnh', kFixing: 'đang sửa',
     kRetest: 'đã sửa — chờ xác nhận', kRetestPass: 'xác nhận đã sửa', kRetestFail: 'trả lại',
     kClosed: 'đã đóng', kComment: 'bình luận', kEdited: 'sửa báo cáo',
-    kRemoved: 'đã xoá', kRestored: 'khôi phục',
+    kRemoved: 'đã xoá', kRestored: 'khôi phục', kWatch: 'đổi email nhận tin',
+    notifyL: 'Email báo khi sửa xong', addWatcher: 'Thêm email',
+    notifyHint: 'Những địa chỉ này nhận email khi lỗi chuyển sang “Đã sửa — chờ xác nhận”.',
+    needEmail: 'Hãy nhập một địa chỉ email hợp lệ',
     lang: 'Ngôn ngữ', tester: 'Tester', dev: 'Developer', admin: 'Quản trị',
     ready: 'Sẵn sàng kiểm thử', done: 'Đã xong', wip: 'Đang làm', plan: 'Kế hoạch',
     due: 'Hạn', report: 'Báo lỗi', view: 'Xem', send: 'Gửi báo lỗi',
@@ -86,7 +89,10 @@ const T = {
     kFiled: '已回報', kAttach: '新增截圖', kFixing: '修復中',
     kRetest: '已修復——待確認', kRetestPass: '確認已修復', kRetestFail: '退回',
     kClosed: '已關閉', kComment: '留言', kEdited: '修改回報',
-    kRemoved: '已刪除', kRestored: '已還原',
+    kRemoved: '已刪除', kRestored: '已還原', kWatch: '修改通知電郵',
+    notifyL: '修復後通知的電郵', addWatcher: '新增電郵',
+    notifyHint: '問題轉為「已修復——待確認」時，這些地址會收到電郵。',
+    needEmail: '請輸入有效的電郵地址',
     tester: '測試人員', dev: '開發人員', admin: '管理員',
     ready: '待測試', done: '已完成', wip: '進行中', plan: '規劃中',
     due: '期限', report: '回報問題', view: '檢視', send: '送出',
@@ -147,7 +153,10 @@ const T = {
     kFiled: 'filed', kAttach: 'attachment added', kFixing: 'fixing',
     kRetest: 'marked fixed', kRetestPass: 'verified', kRetestFail: 'sent back',
     kClosed: 'closed', kComment: 'comment', kEdited: 'edited',
-    kRemoved: 'removed', kRestored: 'restored',
+    kRemoved: 'removed', kRestored: 'restored', kWatch: 'notification emails changed',
+    notifyL: 'Emails told when it is marked fixed', addWatcher: 'Add email',
+    notifyHint: 'These addresses get an email when the bug moves to “Fixed — awaiting verification”.',
+    needEmail: 'Enter a valid email address',
     lang: 'Language', tester: 'Tester', dev: 'Developer', admin: 'Admin',
     ready: 'Ready for testing', done: 'Done', wip: 'In progress', plan: 'Planned',
     due: 'Due', report: 'Report bug', view: 'View', send: 'Submit',
@@ -260,7 +269,7 @@ const S = {
   members: [],
   // The project's live reports, for the "duplicate of …" picker, and the close
   // panel's current choice (null until a developer opens it).
-  projectBugs: [], closePanel: null, commentDraft: null,
+  projectBugs: [], closePanel: null, commentDraft: null, watcherDraft: null,
   // Screens that are revealed on demand: the create-project form is no longer only
   // the first-run screen, and the add-milestone form is no longer only the empty
   // list. Both were dead ends once you already had one of the thing.
@@ -799,7 +808,7 @@ const KIND_KEY = {
   filed: 'kFiled', attachment_added: 'kAttach', fixing: 'kFixing',
   retest: 'kRetest', retest_pass: 'kRetestPass', retest_fail: 'kRetestFail',
   closed: 'kClosed', commented: 'kComment', edited: 'kEdited',
-  removed: 'kRemoved', restored: 'kRestored'
+  removed: 'kRemoved', restored: 'kRestored', watchers: 'kWatch'
 };
 
 function kindLabel(kind) {
@@ -926,8 +935,43 @@ function bugDetail() {
         ${myRole() === 'admin'
           ? `<span class="mini bad" data-action="removebug" data-id="${esc(b.id)}">🗑 ${t('remove')}</span>` : ''}
       </div>` : ''}
+
+      ${watchersPanel(b)}
     </div>
   </div>`;
+}
+
+/**
+ * Who hears about this bug.
+ *
+ * A developer lists the addresses that should get the "fixed — please verify"
+ * mail — the tester who reported it, or a colleague who is not in the project
+ * yet. The server mails exactly this list when the bug enters retest, so the
+ * list is the authorization, and only a developer or an admin may edit it.
+ */
+function watchersPanel(b) {
+  if (!['admin', 'developer'].includes(myRole())) return '';
+  const watchers = b.watchers ?? [];
+  return `
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line,#e2e8f0)">
+      <label>${t('notifyL')}</label>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 8px">
+        ${watchers.length
+          ? watchers.map((w) => `<span class="tag" style="display:inline-flex;align-items:center;gap:7px">
+              ${esc(w.email)}
+              <a href="#" data-action="rmwatcher" data-id="${esc(b.id)}"
+                 data-email="${esc(w.email)}" title="${t('remove')}"
+                 style="text-decoration:none">✕</a>
+            </span>`).join(' ')
+          : `<span class="tag">—</span>`}
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="watcheremail" placeholder="tester@…" style="flex:1;min-width:200px"
+               value="${esc(S.watcherDraft ?? '')}">
+        <button class="btn" data-action="addwatcher" data-id="${esc(b.id)}">${t('addWatcher')}</button>
+      </div>
+      <div class="hint" style="margin:6px 0 0">${t('notifyHint')}</div>
+    </div>`;
 }
 
 /** Who may correct a report: whoever filed it, or an admin, and only while it is open. */
@@ -1153,6 +1197,7 @@ document.getElementById('app').addEventListener('change', syncReportDraft);
  */
 document.getElementById('app').addEventListener('input', (event) => {
   if (event.target.id === 'commentnote') S.commentDraft = event.target.value;
+  if (event.target.id === 'watcheremail') S.watcherDraft = event.target.value;
   if (!S.closePanel) return;
   if (event.target.id === 'close-kind') {
     S.closePanel = { ...S.closePanel, kind: event.target.value, ref: '' };
@@ -1337,7 +1382,7 @@ document.getElementById('app').addEventListener('click', async (event) => {
       }
       case 'project':
         S.projectId = el.dataset.id; S.bug = null; S.prompt = null; S.closePanel = null;
-        S.commentDraft = null;
+        S.commentDraft = null; S.watcherDraft = null;
         // Leaving the report screen abandons any half-uploaded report (IR-036):
         // the next Send is a fresh one, not a silent edit of the old bug.
         S.reporting = false; abandonPendingReport();
@@ -1345,7 +1390,7 @@ document.getElementById('app').addEventListener('click', async (event) => {
         break;
       case 'view':
         S.view = el.dataset.view; S.bug = null; S.reporting = false; S.closePanel = null;
-        S.commentDraft = null;
+        S.commentDraft = null; S.watcherDraft = null;
         abandonPendingReport();
         await refresh();
         break;
@@ -1418,11 +1463,12 @@ document.getElementById('app').addEventListener('click', async (event) => {
         break;
       }
       case 'openbug':
-        S.commentDraft = null; S.closePanel = null;
+        S.commentDraft = null; S.closePanel = null; S.watcherDraft = null;
         await openBug(el.dataset.id);
         break;
       case 'closebug':
         S.bug = null; S.prompt = null; S.closePanel = null; S.commentDraft = null;
+        S.watcherDraft = null;
         await refresh();
         break;
       case 'report':
@@ -1454,6 +1500,12 @@ document.getElementById('app').addEventListener('click', async (event) => {
         break;
       case 'confirmclose':
         await confirmClose(el.dataset.id);
+        break;
+      case 'addwatcher':
+        await addWatcher(el.dataset.id);
+        break;
+      case 'rmwatcher':
+        await removeWatcher(el.dataset.id, el.dataset.email);
         break;
       case 'retest':
         await retest(el.dataset.id, el.dataset.result);
@@ -1656,6 +1708,29 @@ async function confirmClose(id) {
     notice(t('saved'));
     await openBug(id);
     await loadProjects();
+  } finally { S.busy = false; }
+}
+
+async function addWatcher(id) {
+  const email = (document.getElementById('watcheremail')?.value ?? '').trim();
+  // The same shape check the server applies, so a typo is answered here rather
+  // than by a round trip that also loses what was typed.
+  if (!/^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(email)) return notice(t('needEmail'), 'bad');
+  S.busy = true;
+  try {
+    await api('POST', `/api/bugs/${id}/watchers`, { email });
+    S.watcherDraft = null;
+    notice(t('saved'));
+    await openBug(id);
+  } finally { S.busy = false; }
+}
+
+async function removeWatcher(id, email) {
+  S.busy = true;
+  try {
+    await api('DELETE', `/api/bugs/${id}/watchers/${encodeURIComponent(email)}`);
+    notice(t('saved'));
+    await openBug(id);
   } finally { S.busy = false; }
 }
 

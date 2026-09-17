@@ -59,6 +59,36 @@ export async function enqueueReadyNotifications(db, {
 const backoffSeconds = (attempts) => Math.min(300, 2 ** Math.min(attempts, 8));
 
 /**
+ * Queue "this fix is ready to verify" for every address attached to the bug.
+ * Call INSIDE the transition transaction, so a crash cannot mark a bug fixed
+ * without queueing the notice that says so.
+ *
+ * The attempt number is part of the dedupe key: a genuinely new fix cycle
+ * notifies again, while a retry of the same transition stays one message.
+ */
+export async function enqueueRetestNotifications(db, {
+  projectId, bugId, code, titleVi = null, projectName = null, attempt
+}) {
+  const watchers = await db.query(
+    `SELECT email FROM bug_watchers WHERE bug_id = $1 ORDER BY added_at, email`, [bugId]);
+
+  let queued = 0;
+  for (const w of watchers.rows) {
+    const key = `bug.retest:${bugId}:attempt${attempt}:${w.email}`;
+    const res = await db.query(
+      `INSERT INTO notifications_outbox
+         (kind, project_id, subject_id, recipient_email, dedupe_key, payload)
+       VALUES ('bug.retest', $1, $2, $3, $4, $5)
+       ON CONFLICT (dedupe_key) DO NOTHING
+       RETURNING id`,
+      [projectId, bugId, w.email, key,
+        JSON.stringify({ code, title: titleVi, projectName, attempt })]);
+    queued += res.rows.length;
+  }
+  return { recipients: watchers.rows.length, queued };
+}
+
+/**
  * Compose the human-facing message.
  *
  * This belongs here rather than in the mailer: what a notification says is a
@@ -88,6 +118,25 @@ export function composeNotification(n, { baseUrl = null } = {}) {
       ].join('\n')
     };
   }
+  if (n.kind === 'bug.retest') {
+    const code = payload.code ?? 'bug';
+    return {
+      subject: `[RGM] ${code} đã sửa — chờ xác nhận`,
+      body: [
+        payload.projectName ? `Dự án: ${payload.projectName}` : null,
+        `${code}${payload.title ? ` — ${payload.title}` : ''}`,
+        '',
+        'Developer đã đánh dấu lỗi này là đã sửa. Hãy kiểm tra lại trên bản dựng mới,',
+        'rồi xác nhận đã sửa hoặc trả lại kèm ghi chú.',
+        '',
+        baseUrl ?? '(chưa cấu hình địa chỉ ứng dụng)',
+        '',
+        '-- ',
+        `Thông báo: ${n.kind}`,
+        `Mã: ${n.dedupe_key}`
+      ].filter((line) => line !== null).join('\n')
+    };
+  }
   return {
     subject: `[RGM] ${n.kind}`,
     body: JSON.stringify(payload, null, 2)
@@ -106,22 +155,29 @@ export async function runOutbox(db, sender, { workerId, max = 50,
     const job = await claimOutbox(db, workerId, policy);
     if (!job) break;
 
+    // A recipient is either a user (email read from their row) or a bare address
+    // attached to the bug, so the join has to be outer.
     const r = await db.query(
-      `SELECT o.*, u.email FROM notifications_outbox o
-         JOIN users u ON u.id = o.recipient_id WHERE o.id = $1`, [job.id]);
+      `SELECT o.*, COALESCE(u.email, o.recipient_email) AS email
+         FROM notifications_outbox o
+         LEFT JOIN users u ON u.id = o.recipient_id
+        WHERE o.id = $1`, [job.id]);
     const n = r.rows[0];
 
     // Re-check at delivery time: a member removed while delivery was backlogged
-    // must not be mailed.
-    const stillActive = await db.query(
-      `SELECT 1 FROM active_memberships WHERE project_id = $1 AND user_id = $2`,
-      [n.project_id, n.recipient_id]);
-    if (!stillActive.rows.length) {
-      await db.query(
-        `UPDATE notifications_outbox SET status = 'cancelled', error = 'recipient no longer a member'
-          WHERE id = $1`, [n.id]);
-      results.push({ id: n.id, status: 'cancelled' });
-      continue;
+    // must not be mailed. An address attached to a bug has no membership to
+    // check — it was authorized when the developer added it.
+    if (n.recipient_id) {
+      const stillActive = await db.query(
+        `SELECT 1 FROM active_memberships WHERE project_id = $1 AND user_id = $2`,
+        [n.project_id, n.recipient_id]);
+      if (!stillActive.rows.length) {
+        await db.query(
+          `UPDATE notifications_outbox SET status = 'cancelled', error = 'recipient no longer a member'
+            WHERE id = $1`, [n.id]);
+        results.push({ id: n.id, status: 'cancelled' });
+        continue;
+      }
     }
 
     try {

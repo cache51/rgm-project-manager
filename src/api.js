@@ -22,7 +22,7 @@ import { makeZip } from './zip.js';
 import {
   enqueueBugTranslations, enqueueEventTranslation, retryTranslation
 } from './translate.js';
-import { enqueueReadyNotifications } from './notify.js';
+import { enqueueReadyNotifications, enqueueRetestNotifications } from './notify.js';
 import { enforce, hit, LIMITS } from './ratelimit.js';
 
 const iso = (v) => (v instanceof Date ? v.toISOString() : v);
@@ -84,6 +84,9 @@ export const SCOPE_POLICY = {
   'POST /api/projects/:id/bugs': 'bug:write',
   'POST /api/bugs/:id/status': 'bug:write',
   'POST /api/bugs/:id/comments': 'bug:write',
+  // The addresses a bug notifies when it is marked fixed.
+  'POST /api/bugs/:id/watchers': 'bug:write',
+  'DELETE /api/bugs/:id/watchers/:email': 'bug:write',
   'POST /api/bugs/:id/retest': 'bug:write',
   'POST /api/bugs/:id/translations/:lang/retry': 'bug:write',
   'POST /api/bugs/:id/attachments/presign': 'bug:write',
@@ -220,9 +223,33 @@ function projectRef(bug) {
            env: bug.project_env, timezone: bug.project_timezone };
 }
 
+/**
+ * A shape check, not a deliverability check: something@something.tld, no spaces.
+ * Rejecting a malformed address here is kinder than queueing mail that can never
+ * be sent.
+ */
+const looksLikeEmail = (e) => /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(String(e ?? ''));
+
+/** At most this many addresses on one bug — a bounded, reviewable list. */
+const WATCHER_LIMIT = 10;
+
+async function watchersFor(db, bugId) {
+  const r = await db.query(
+    `SELECT w.email, w.added_at, u.display_name AS added_by_name
+       FROM bug_watchers w
+       LEFT JOIN users u ON u.id = w.added_by
+      WHERE w.bug_id = $1
+      ORDER BY w.added_at, w.email`, [bugId]);
+  return r.rows.map((w) => ({
+    email: w.email, addedAt: iso(w.added_at), addedBy: w.added_by_name ?? null
+  }));
+}
+
 async function bugPayload(db, bug, role = 'developer') {
-  const [translations, timeline, attachments] = await Promise.all([
-    translationsFor(db, bug.id), timelineFor(db, bug.id), attachmentsFor(db, bug.id)
+  const [translations, timeline, attachments, watchers] = await Promise.all([
+    translationsFor(db, bug.id), timelineFor(db, bug.id), attachmentsFor(db, bug.id),
+    // The addresses that hear when this bug is marked fixed.
+    watchersFor(db, bug.id)
   ]);
   return {
     id: bug.id,
@@ -254,6 +281,9 @@ async function bugPayload(db, bug, role = 'developer') {
       byteSize: Number(a.byte_size), uploadedAt: iso(a.uploaded_at),
       url: `/api/attachments/${a.id}`
     })),
+    // Addresses the developer attached to this bug: they are mailed when it is
+    // marked fixed.
+    watchers,
     // Actions the CALLER can actually take — a tester must not be offered
     // developer-only transitions the server would reject.
     availableActions: availableTransitions('bug', bug.status, role)
@@ -938,7 +968,8 @@ export function buildRoutes() {
 
     const out = await withTransaction(ctx.db, async (tx) => {
       const cur = await tx.query(
-        `SELECT id, status, retest_attempt FROM bugs WHERE id = $1 FOR UPDATE`,
+        `SELECT id, status, retest_attempt, kind, bug_number, title_vi
+           FROM bugs WHERE id = $1 FOR UPDATE`,
         [ctx.params.id]);
       const b = cur.rows[0];
       const move = resolveTransition('bug', action, b.status, role,
@@ -994,7 +1025,22 @@ export function buildRoutes() {
       if (reason) {
         await enqueueEventTranslation(tx, { eventId: ev.rows[0].id, note: reason });
       }
-      return upd.rows[0];
+
+      // "Fixed — waiting for verification" is the moment the people attached to
+      // this bug need to hear about it. Queued inside this transaction: the bug
+      // cannot become verifiable without the notice that says so existing too.
+      let notified = { queued: 0, recipients: 0 };
+      if (move.to === 'retest') {
+        const p = await tx.query(`SELECT name FROM projects WHERE id = $1`, [projectId]);
+        notified = await enqueueRetestNotifications(tx, {
+          projectId, bugId: ctx.params.id,
+          code: reportCode(b.kind, b.bug_number),
+          titleVi: b.title_vi,
+          projectName: p.rows[0]?.name ?? null,
+          attempt: upd.rows[0].retest_attempt
+        });
+      }
+      return { ...upd.rows[0], notified };
     });
 
     sendJson(res, 200, out);
@@ -1172,6 +1218,74 @@ export function buildRoutes() {
       return ins.rows[0];
     });
     sendJson(res, 201, { id: ev.id });
+  }));
+
+  /**
+   * The addresses attached to one bug.
+   *
+   * A developer lists the people who should hear that the fix is ready —
+   * typically the tester who reported it, who may not be a project member yet.
+   * The retest transition mails exactly this list, and nothing else: the list is
+   * the authorization.
+   */
+  r.post('/api/bugs/:id/watchers', handle(async (req, res, ctx) => {
+    const { projectId } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id,
+      ['admin', 'developer']);
+    const { email } = await readJson(req);
+    const normalized = normalizeEmail(email);
+    if (!looksLikeEmail(normalized)) {
+      throw new HttpError(400, 'bad_email', `not an email address: ${email ?? ''}`);
+    }
+
+    const out = await withTransaction(ctx.db, async (tx) => {
+      // The row lock comes first, then the count: the other order lets two
+      // requests racing at the limit both read 9 and both insert.
+      await tx.query(`SELECT id FROM bugs WHERE id = $1 FOR UPDATE`, [ctx.params.id]);
+      const existing = await tx.query(
+        `SELECT count(*)::int AS n FROM bug_watchers WHERE bug_id = $1`, [ctx.params.id]);
+      if (existing.rows[0].n >= WATCHER_LIMIT) {
+        throw new HttpError(409, 'too_many_watchers',
+          `at most ${WATCHER_LIMIT} addresses on one bug`);
+      }
+
+      const ins = await tx.query(
+        `INSERT INTO bug_watchers (bug_id, email, added_by)
+         VALUES ($1,$2,$3)
+         ON CONFLICT (bug_id, email) DO NOTHING
+         RETURNING email`, [ctx.params.id, normalized, ctx.actor.userId]);
+
+      if (ins.rows.length) {
+        await tx.query(
+          `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
+           VALUES ($1,$2,$3,'bug.watchers',$4)`,
+          [projectId, ctx.params.id, ctx.actor.userId,
+            JSON.stringify({ added: normalized })]);
+      }
+      return { email: normalized, added: ins.rows.length === 1 };
+    });
+
+    sendJson(res, 200, out);
+  }));
+
+  r.del('/api/bugs/:id/watchers/:email', handle(async (req, res, ctx) => {
+    const { projectId } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id,
+      ['admin', 'developer']);
+    const normalized = normalizeEmail(ctx.params.email);
+
+    const out = await withTransaction(ctx.db, async (tx) => {
+      const del = await tx.query(
+        `DELETE FROM bug_watchers WHERE bug_id = $1 AND email = $2 RETURNING email`,
+        [ctx.params.id, normalized]);
+      if (!del.rows.length) throw new HttpError(404, 'no_such_watcher', 'that address is not on this bug');
+      await tx.query(
+        `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
+         VALUES ($1,$2,$3,'bug.watchers',$4)`,
+        [projectId, ctx.params.id, ctx.actor.userId,
+          JSON.stringify({ removed: normalized })]);
+      return { email: normalized, removed: true };
+    });
+
+    sendJson(res, 200, out);
   }));
 
   r.post('/api/bugs/:id/translations/:lang/retry', handle(async (req, res, ctx) => {
