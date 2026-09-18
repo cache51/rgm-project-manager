@@ -73,6 +73,33 @@ exist yet is how you get a workaround instead of the feature.
 The workflow itself is identical — one state machine, not two — because the steps are
 the same: someone reports it, someone does the work, someone checks it.
 
+## Handing a bug to a coding agent
+
+An agent can work a project's bugs directly instead of a person copying a prompt into
+it. It authenticates with an API token (`bug:read` + `bug:write`) and reaches the
+product either through the `rgm` CLI or through MCP (`mcp/rgm-mcp.mjs`), which expose
+the same loop:
+
+| Tool | What it does |
+|---|---|
+| `rgm_list_bugs` | the unresolved bugs in the configured project, oldest first |
+| `rgm_get_bug` | the handoff prompt: the tester's words, the translation, the status |
+| `rgm_get_packet` / `rgm_get_attachment` | the screenshots, written to disk so they can be looked at |
+| `rgm_ask_question` | ask the reporter (and the project's developers) to clarify |
+| `rgm_get_questions` | whether the answer has arrived |
+| `rgm_comment` | what was changed, in words a tester can act on |
+| `rgm_mark_fixed` | hand it back: *fixed — awaiting verification* |
+
+Two rules are built in rather than documented and hoped for: an agent can ask but
+**cannot verify** (only the filer closes a report), and a question stays open until a
+member answers it — by using the answer box or simply by commenting on the bug, which
+counts as the answer because that is how the testers and developers already reply.
+
+The asking agent is only as useful as the report it was given, so the prompt keeps the
+tester's text fenced as data (see `src/prompt.js`) and the question is emailed to the
+reporter *and* the project's developers, so a question nobody is on shift to answer
+still reaches someone who can act on it.
+
 ## The fix-and-verify loop
 
 ```

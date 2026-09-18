@@ -1263,6 +1263,19 @@ export function buildRoutes() {
          VALUES ($1,$2,$3,'bug.commented',$4) RETURNING id`,
         [projectId, ctx.params.id, ctx.actor.userId, JSON.stringify({ note })]);
       await enqueueEventTranslation(tx, { eventId: ins.rows[0].id, note });
+
+      // Answering in the comment box IS answering. The tester and the developer
+      // were told to reply with a comment on the bug, so leaving the question
+      // open after they have replied would tell the asking agent to keep waiting
+      // for something that already arrived. Only someone other than the asker
+      // counts: an agent adding detail must not close its own question.
+      await tx.query(
+        `UPDATE bug_questions
+            SET answered_by = $2, answered_at = now(), answer = $3
+          WHERE bug_id = $1 AND answered_at IS NULL
+            AND (asked_by IS NULL OR asked_by <> $2)`,
+        [ctx.params.id, ctx.actor.userId, note]);
+
       return ins.rows[0];
     });
     sendJson(res, 201, { id: ev.id });

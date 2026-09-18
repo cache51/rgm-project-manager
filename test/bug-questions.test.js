@@ -65,11 +65,17 @@ describe('a bug carries the questions asked about it', () => {
     await w.devClient.post(`/api/bugs/${bug.id}/watchers`, { email: 'tester@rgm.example' });
 
     const res = await ask(w.devClient, bug.id, 'Where do I see the packing list?');
-    assert.equal(res.json.notified.queued, 2, 'reporter + the one other address');
+    assert.equal(res.json.notified.queued, 4,
+      'the reporter, the developer, the admin and the bug\'s own address list');
 
     const mail = await drain(res.json.id);
-    assert.deepEqual(mail.map((m) => m.to).sort(),
-      ['krixi@rgmdn.com', 'tester@rgm.example']);
+    const to = mail.map((m) => m.to).sort();
+    // A bug has a tester and developers, so both are told: a question that reaches
+    // only one person who is off shift is a question nobody answers.
+    assert.ok(to.includes('tester@rgm.example'), 'the reporter is told');
+    assert.ok(to.includes('dev@rgm.example'), "and the project's developer");
+    assert.ok(to.includes('krixi@rgmdn.com'), 'and the bug\'s own address list');
+    assert.equal(new Set(to).size, to.length, 'nobody is mailed twice');
 
     const msg = mail[0];
     assert.match(msg.subject, /cần bạn làm rõ/, 'the subject says what is wanted');
@@ -124,6 +130,29 @@ describe('a bug carries the questions asked about it', () => {
 
     await answer(w.testerClient, bug.id, asked.json.id, 'Packing list detail.');
     assert.equal((await rowOf()).openQuestions, 0, 'and clears when it is answered');
+  });
+
+  test('a reply as a comment answers the question the asker is waiting on', async () => {
+    // The mail tells them to reply with a comment on the bug, so a comment has to
+    // count: leaving the question open would keep the agent waiting for an answer
+    // that already arrived.
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await ask(w.devClient, bug.id, 'Which warehouse is it in?');
+    await w.testerClient.post(`/api/bugs/${bug.id}/comments`, { note: 'Kho Bình Dương.' });
+
+    const d = await detail(bug.id);
+    assert.equal(d.questions.open, 0, 'the comment answered it');
+    assert.match(d.questions.questions[0].answer.text, /Bình Dương/);
+    assert.match(String(d.questions.questions[0].answer.by), /tester/i);
+  });
+
+  test('the asker\'s own comment does not answer its own question', async () => {
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await ask(w.devClient, bug.id, 'Is this the same lot as BUG-2?');
+    await w.devClient.post(`/api/bugs/${bug.id}/comments`, { note: 'Looking into it.' });
+
+    assert.equal((await detail(bug.id)).questions.open, 1,
+      'an agent adding detail must not close the question it is waiting on');
   });
 
   test('the timeline records the asking and the answering', async () => {

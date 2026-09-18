@@ -125,7 +125,9 @@ const TOOLS = [
       const header = [
         `# ${code} — ${bug.status} (${bug.severity})`,
         `project: ${bug.projectId}   milestone: ${bug.milestone?.code ?? '?'}`,
-        `available actions: ${(bug.availableActions ?? []).join(', ') || 'none'}`,
+        `available actions: ${(bug.availableActions ?? [])
+          .map((a) => (typeof a === 'string' ? a : [a.action ?? a.name, a.to].filter(Boolean).join(' → ')))
+          .join(', ') || 'none'}`,
         open.length
           ? `UNANSWERED QUESTIONS (${open.length}) — ask again or wait; do not guess:\n`
             + open.map((q) => `- ${q.body}`).join('\n')

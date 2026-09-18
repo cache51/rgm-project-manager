@@ -89,15 +89,15 @@ export async function enqueueRetestNotifications(db, {
 }
 
 /**
- * Queue "someone working this bug needs an answer" for the reporter and every
- * address attached to the bug.
+ * Queue "someone working this bug needs an answer" for everyone who can give
+ * one: the reporter, the project's developers, and the bug's own address list.
  *
- * A question is only useful if the person who can answer it is told: the agent
- * asking has no other way to reach them, and these are exactly the people who
- * either filed the report or asked to hear about it. The reporter is queued as a
- * user (so a membership removed before delivery still stops the mail) and the
- * rest as bare addresses, with the reporter's own address filtered out of that
- * list rather than mailed twice.
+ * A bug always has a tester (who filed it) and developers (who can act on it),
+ * so the question goes to both roles rather than only the reporter — a question
+ * that reaches one person who is off shift is a question nobody answers. People
+ * are queued as users where possible (so a membership removed before delivery
+ * still stops the mail) and as bare addresses otherwise, deduplicated by address
+ * so being both the reporter and a watcher does not mean two copies.
  */
 export async function enqueueQuestionNotifications(db, {
   projectId, bugId, questionId, code, titleVi = null, projectName = null, question = null
@@ -108,40 +108,46 @@ export async function enqueueQuestionNotifications(db, {
       WHERE b.id = $1`, [bugId]);
   const reporterId = who.rows[0]?.reporter_id ?? null;
   const reporterEmail = who.rows[0]?.reporter_email ?? null;
+
+  const members = await db.query(
+    `SELECT u.id AS user_id, u.email
+       FROM active_memberships m JOIN users u ON u.id = m.user_id
+      WHERE m.project_id = $1 AND m.role IN ('developer', 'admin')
+      ORDER BY u.email`, [projectId]);
   const watchers = await db.query(
     `SELECT email FROM bug_watchers WHERE bug_id = $1 ORDER BY added_at, email`, [bugId]);
 
+  const recipients = [];
+  const seen = new Set();
+  const add = (userId, email) => {
+    const key = String(email ?? '').toLowerCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    recipients.push({ userId, email });
+  };
+  add(reporterId, reporterEmail);
+  for (const m of members.rows) add(m.user_id, m.email);
+  for (const w of watchers.rows) add(null, w.email);
+
   const payload = JSON.stringify({ code, title: titleVi, projectName, questionId, question });
   let queued = 0;
-
-  if (reporterId) {
-    const key = `bug.question:${questionId}:user:${reporterId}`;
+  for (const r of recipients) {
+    const key = r.userId
+      ? `bug.question:${questionId}:user:${r.userId}`
+      : `bug.question:${questionId}:${r.email}`;
     const res = await db.query(
       `INSERT INTO notifications_outbox
-         (kind, project_id, subject_id, recipient_id, dedupe_key, payload)
-       VALUES ('bug.question', $1, $2, $3, $4, $5)
+         (kind, project_id, subject_id, recipient_id, recipient_email, dedupe_key, payload)
+       VALUES ('bug.question', $1, $2, $3, $4, $5, $6)
        ON CONFLICT (dedupe_key) DO NOTHING
        RETURNING id`,
-      [projectId, bugId, reporterId, key, payload]);
+      // The outbox carries exactly one of the two: a user id when there is one,
+      // so delivery re-checks the membership, an address otherwise.
+      [projectId, bugId, r.userId, r.userId ? null : r.email, key, payload]);
     queued += res.rows.length;
   }
 
-  let addresses = 0;
-  for (const w of watchers.rows) {
-    if (reporterEmail && w.email === reporterEmail) continue;
-    addresses += 1;
-    const key = `bug.question:${questionId}:${w.email}`;
-    const res = await db.query(
-      `INSERT INTO notifications_outbox
-         (kind, project_id, subject_id, recipient_email, dedupe_key, payload)
-       VALUES ('bug.question', $1, $2, $3, $4, $5)
-       ON CONFLICT (dedupe_key) DO NOTHING
-       RETURNING id`,
-      [projectId, bugId, w.email, key, payload]);
-    queued += res.rows.length;
-  }
-
-  return { recipients: (reporterId ? 1 : 0) + addresses, queued };
+  return { recipients: recipients.length, queued };
 }
 
 /**
@@ -205,7 +211,7 @@ export function composeNotification(n, { baseUrl = null } = {}) {
         '',
         payload.question ?? '(không có nội dung)',
         '',
-        'Trả lời trong ứng dụng:',
+        'Trả lời bằng một bình luận ngay trên lỗi này trong ứng dụng:',
         baseUrl ?? '(chưa cấu hình địa chỉ ứng dụng)',
         '',
         '-- ',
