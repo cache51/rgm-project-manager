@@ -19,6 +19,10 @@ const bool = (value, fallback = false) => {
 };
 
 const num = (value, fallback) => {
+  // An empty environment variable means "not set", not zero: `SMTP_PORT=` used to
+  // read as port 0, and `TRANSLATE_ATTEMPTS=` as zero retries — which made the
+  // retry loop unreachable and crashed the worker (see withRetry).
+  if (value === undefined || value === null || value === '') return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
 };

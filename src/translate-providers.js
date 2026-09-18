@@ -157,21 +157,34 @@ export function DeepLProvider({
  */
 export function withRetry(provider, { attempts = 3, delayMs = 250, sleep = null } = {}) {
   const wait = sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  // A run of attempts is what this wrapper is for, so zero attempts is never what
+  // a caller means: it made the loop body unreachable and `throw lastError` threw
+  // undefined, which crashed the worker's own error handler and left the row
+  // claimed but never translated (found in production, with TRANSLATE_ATTEMPTS
+  // empty in .env resolving to 0).
+  const tries = Math.max(1, Number(attempts) || 1);
   return {
     ...provider,
+    attempts: tries,
     async translate(input) {
       let lastError;
-      for (let attempt = 1; attempt <= attempts; attempt++) {
+      for (let attempt = 1; attempt <= tries; attempt++) {
         try {
           return await provider.translate(input);
         } catch (err) {
           lastError = err;
           // 4xx other than 429 will not improve on a retry.
-          if (/\b(400|401|403|404|422)\b/.test(String(err.message))) break;
-          if (attempt < attempts) await wait(delayMs * attempt);
+          if (/\b(400|401|403|404|422)\b/.test(String(err?.message ?? err))) break;
+          if (attempt < tries) await wait(delayMs * attempt);
         }
       }
-      throw lastError;
+      // Never rethrow a bare undefined, and always reject with an Error: the worker
+      // records `err.message`, and a provider that threw a string (or nothing at
+      // all) once crashed that handler outright.
+      if (lastError instanceof Error) throw lastError;
+      throw new Error(lastError === undefined
+        ? 'translation provider failed'
+        : String(lastError));
     }
   };
 }

@@ -482,6 +482,28 @@ describe('translation providers', () => {
       /403/);
     assert.equal(permanent, 1, 'a 4xx must not be retried');
   });
+
+  test('zero attempts still tries once, rather than throwing undefined', async () => {
+    // `TRANSLATE_ATTEMPTS=` in .env resolved to 0, so the loop body never ran and
+    // `throw lastError` threw undefined — the worker's own error handler then died
+    // reading err.message, and the row stayed claimed as 'running' for ever.
+    let calls = 0;
+    const provider = {
+      name: 'ok', model: 'm',
+      async translate() { calls += 1; return 'translated'; }
+    };
+    const wrapped = withRetry(provider, { attempts: 0, sleep: async () => {} });
+    assert.equal(wrapped.attempts, 1, 'no configuration can mean "never try"');
+    assert.equal(await wrapped.translate({ text: 'x', to: 'zh' }), 'translated');
+    assert.equal(calls, 1);
+  });
+
+  test('a provider that throws a non-Error is reported, not rethrown as undefined', async () => {
+    const rude = { name: 'rude', model: 'm', async translate() { throw 'nope'; } };
+    await assert.rejects(
+      () => withRetry(rude, { attempts: 1, sleep: async () => {} }).translate({ text: 'x', to: 'zh' }),
+      (err) => err instanceof Error && String(err.message).length > 0);
+  });
 });
 
 describe('providers wired into the real workers', () => {

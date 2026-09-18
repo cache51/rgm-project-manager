@@ -129,6 +129,16 @@ describe('config: translation provider', () => {
       TRANSLATE_EXTRA_BODY: '[1,2,3]'
     }), /must be a JSON object, got an array/);
   });
+
+  test('an empty numeric setting falls back instead of becoming zero', () => {
+    // The compose file passes every variable through, so an unset one arrives as
+    // '' — which Number('') turned into 0: zero retries crashed the worker, and
+    // SMTP_PORT= would have meant port 0.
+    const provider = chooseTranslationProvider({
+      TRANSLATE_PROVIDER: 'openai', TRANSLATE_API_KEY: 'sk', TRANSLATE_ATTEMPTS: ''
+    });
+    assert.equal(provider.attempts, 3, 'the documented default, not zero attempts');
+  });
 });
 
 describe('config: the deliver adapter', () => {

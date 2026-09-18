@@ -98,12 +98,16 @@ export async function runBugTranslations(db, provider, { workerId, max = 50,
       // zero rows means the lease was reclaimed by someone else — do not retry
       results.push({ bugId, field, lang, status: done.rows.length ? 'done' : 'superseded' });
     } catch (err) {
+      // A provider is third-party code: it can throw a string, or nothing at all.
+      // Reading `err.message` straight off crashed this handler once already, which
+      // lost the job's outcome and left its row claimed as 'running' forever.
+      const message = String(err?.message ?? err);
       await db.query(
         `UPDATE bug_translations
             SET status = 'failed', error = $1, updated_at = now()
           WHERE bug_id = $2 AND field = $3 AND lang = $4 AND claimed_by = $5`,
-        [String(err.message).slice(0, 500), bugId, field, lang, workerId]);
-      results.push({ bugId, field, lang, status: 'failed', error: err.message });
+        [message.slice(0, 500), bugId, field, lang, workerId]);
+      results.push({ bugId, field, lang, status: 'failed', error: message });
     }
   }
 
