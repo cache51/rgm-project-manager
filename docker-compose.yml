@@ -20,6 +20,16 @@ x-common-env: &common-env
   SECURE_COOKIES: "false"
   # The migrate service owns the schema; the app must not race it.
   MIGRATE_ON_START: "false"
+  # Mail. With no SMTP_HOST the console mailer logs each message instead of
+  # sending it, which is what a fresh install wants. Fill these in .env to send
+  # for real; TLS is required automatically once SMTP_USER is set (port 465 means
+  # implicit TLS, so also set SMTP_SECURE=true there).
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_SECURE: ${SMTP_SECURE:-false}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASS: ${SMTP_PASS:-}
+  MAIL_FROM: ${MAIL_FROM:-no-reply@rgmdn.com}
 
 x-owner-env: &owner-env
   <<: *common-env
