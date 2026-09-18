@@ -258,29 +258,48 @@ const TOOLS = [
     name: 'rgm_mark_fixed',
     description: 'Mark a bug fixed so the FILER can verify it: moves it to "fixed — awaiting '
       + 'verification" (starting the fix first if nobody had). Only call this after you have '
-      + 'verified the fix yourself — the tester\'s verification is what closes it. Optionally '
-      + 'leaves a note for the tester in the same call.',
+      + 'verified the fix yourself, and say what did the verifying: write a test that reproduces '
+      + 'the report first, watch it fail, make it pass, and pass that test file (or the exact '
+      + 'command, or how you checked it if the symptom cannot be automated) as verified_by. '
+      + 'The tester closes the bug, not you.',
     inputSchema: {
       type: 'object',
       properties: {
         number: { type: 'integer' },
+        verified_by: {
+          type: 'string',
+          description: 'what proves this is fixed — a test file and case name, or a command, or '
+            + 'how you reproduced the original symptom and showed it gone'
+        },
         note: { type: 'string', description: 'what to tell the tester about verifying this' }
       },
-      required: ['number'], additionalProperties: false
+      required: ['number', 'verified_by'], additionalProperties: false
     },
-    async run({ number, note }) {
+    async run({ number, verified_by: verifiedBy, note }) {
+      // Required, not suggested: a "fixed" with no evidence is a claim the tester
+      // has to re-do from scratch, and the report a self-test would have caught
+      // comes straight back.
+      const evidence = String(verifiedBy ?? '').trim();
+      if (!evidence) {
+        throw new Error('verified_by is required — write a test that reproduces the bug first '
+          + '(watch it fail), make it pass, then name it here (or the exact command, or how you '
+          + 'checked a symptom that cannot be automated)');
+      }
       const { id, code } = await bugId(number);
       const before = await json('GET', `/api/bugs/${id}`);
       if (before.status === 'retest') return text(`${code} is already awaiting verification`);
       if (before.status === 'closed') throw new Error(`${code} is closed — reopen it before marking it fixed`);
-      if (note) await json('POST', `/api/bugs/${id}/comments`, { note });
+      await json('POST', `/api/bugs/${id}/comments`, {
+        note: [note, `Verified by: ${evidence}`].filter(Boolean).join('\n\n')
+      });
       if (before.status === 'new') {
         await json('POST', `/api/bugs/${id}/status`, { action: 'start_fixing' });
       }
       await json('POST', `/api/bugs/${id}/status`, { action: 'request_retest' });
       const after = await json('GET', `/api/bugs/${id}`);
       return text(`${code} is now ${after.status} — awaiting verification by the filer`
-        + (after.retestAttempt ? ` (attempt ${after.retestAttempt})` : ''));
+        + (after.retestAttempt ? ` (attempt ${after.retestAttempt})` : '')
+        + `\nwhat proves it: ${evidence}`);
     }
   }
 ];

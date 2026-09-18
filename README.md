@@ -88,7 +88,7 @@ the same loop:
 | `rgm_ask_question` | ask the reporter (and the project's developers) to clarify |
 | `rgm_get_questions` | whether the answer has arrived |
 | `rgm_comment` | what was changed, in words a tester can act on |
-| `rgm_mark_fixed` | hand it back: *fixed — awaiting verification* |
+| `rgm_mark_fixed` | hand it back: *fixed — awaiting verification*, with the test that proves it |
 
 Two rules are built in rather than documented and hoped for: an agent can ask but
 **cannot verify** (only the filer closes a report), and a question stays open until a

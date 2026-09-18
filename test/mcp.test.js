@@ -66,6 +66,10 @@ describe('the rgm MCP server', () => {
       for (const tool of list.result.tools) {
         assert.ok(tool.inputSchema?.type === 'object', `${tool.name} declares a schema`);
       }
+      // Marking fixed demands evidence: the agent says what proves it.
+      const fixed = list.result.tools.find((t) => t.name === 'rgm_mark_fixed');
+      assert.ok(fixed.inputSchema.required.includes('verified_by'),
+        'rgm_mark_fixed requires the evidence, not just a number');
     } finally { s.stop(); }
   });
 
@@ -76,6 +80,19 @@ describe('the rgm MCP server', () => {
       assert.equal(res.result.isError, true, 'reported as a tool error, not a crash');
       assert.match(res.result.content[0].text, /rgm login/,
         'and it says exactly how to fix it');
+    } finally { s.stop(); }
+  });
+
+  test('marking a bug fixed without evidence is refused, and says what to do', async () => {
+    const s = session();
+    try {
+      const res = await s.request('tools/call',
+        { name: 'rgm_mark_fixed', arguments: { number: 1 } });
+      assert.equal(res.result.isError, true);
+      assert.match(res.result.content[0].text, /verified_by is required/,
+        'the agent is told the evidence is not optional');
+      assert.match(res.result.content[0].text, /test that reproduces/,
+        'and what to do about it');
     } finally { s.stop(); }
   });
 

@@ -27,20 +27,30 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    the bug's notification list and stays open until someone answers. Then either
    poll **`rgm_get_questions {number}`** or work another bug meanwhile; never
    invent an answer and never quietly do the wrong thing.
-5. **Fix it, and verify it yourself** before claiming anything: run the tests,
-   reproduce the original symptom and show it is gone. "I changed a line" is not
-   verification.
+5. **Write the test before the fix.** Turn the report into a case that fails on
+   the current code — the carton count, the lot with no lining row, the label that
+   prints off-centre — **watch it fail**, then change the code until it passes.
+   Keep the test: it is this bug's regression case, and it is what you hand over
+   as evidence. If the symptom genuinely cannot be automated (a layout, a printed
+   label, a screen that only misbehaves by hand), reproduce it by hand and say
+   exactly how — on which build, what you did, what you saw before and after.
 6. **`rgm_comment {number, note}`** — say what changed and where, in words a
    tester can act on ("the packing list now accepts a lot with no lining row").
-7. **`rgm_mark_fixed {number, note}`** — moves it to *fixed — awaiting
-   verification*. This is where your part ends: **you do not close the bug.** The
-   tester who filed it verifies and closes, and if they send it back it returns
-   to you with their note.
+7. **`rgm_mark_fixed {number, verified_by, note}`** — `verified_by` is **required**
+   and is the evidence: the test file and case name, or the exact command, or how
+   you checked a symptom that cannot be automated. It is posted on the bug beside
+   your note, so the tester reads what already proved it before they check it
+   themselves. This moves the bug to *fixed — awaiting verification*, and that is
+   where your part ends: **you do not close the bug.** The tester who filed it
+   verifies and closes, and if they send it back it returns to you with their note.
 
 ## Rules that matter
 
 - **Verification belongs to the filer.** Never close, never mark verified — the
   tool does not even offer it.
+- **A fix without a test that failed first is a guess.** The failing test is how
+  you know you fixed the reported thing rather than something near it, and it is
+  the evidence the tester reads.
 - **Ask early.** One question costs a mail; a wrong guess costs a rework cycle
   and the tester's trust.
 - **Attribute honestly.** Your comments and questions are recorded under the

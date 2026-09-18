@@ -12,8 +12,11 @@
  *   rgm ask 142 "which warehouse is this lot in?"   # mailed to the reporter
  *   rgm questions 142        # questions and their answers, open or answered
  *   rgm comment 142 "fixed in abc1234"              # tell the tester what changed
- *   rgm fixed 142 --note "please re-check the packing list screen"
- *                            # hand it to the filer: fixed, awaiting verification
+ *   rgm fixed 142 --verified-by "test/packing.test.js: counts the last carton" \
+ *                 --note "please re-check the packing list screen"
+ *                            # hand it to the filer: fixed, awaiting verification.
+ *                            # --verified-by is required: the tester needs to know
+ *                            # what already proved it before they check it themselves.
  *   # Host-only one-shot task (no RGM login/token):
  *   rgm admin delete-project <uuid> --actor-email admin@example.com --reason "..." --force
  *
@@ -452,14 +455,24 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
 
   if (command === 'fixed') {
     const { id, code } = await bugRef(1);
+    // Required, not suggested: a "fixed" with no evidence is a claim the tester
+    // has to redo from scratch, and the report a self-test would have caught comes
+    // straight back.
+    const verifiedBy = String(args['verified-by'] ?? '').trim();
+    if (!verifiedBy) {
+      throw new Error('fixed needs --verified-by: what proves this is fixed — a test file and '
+        + 'case name, an exact command, or how you reproduced the symptom and showed it gone');
+    }
     const note = args.note ? String(args.note) : null;
     const before = await (await call('GET', `/api/bugs/${id}`)).json();
     if (before.status === 'retest') return `${code} is already awaiting verification`;
     if (before.status === 'closed') throw new Error(`${code} is closed — reopen it first`);
-    if (note) await call('POST', `/api/bugs/${id}/comments`, { note });
+    await call('POST', `/api/bugs/${id}/comments`, {
+      note: [note, `Verified by: ${verifiedBy}`].filter(Boolean).join('\n\n')
+    });
     if (before.status === 'new') await call('POST', `/api/bugs/${id}/status`, { action: 'start_fixing' });
     await call('POST', `/api/bugs/${id}/status`, { action: 'request_retest' });
-    return `${code} is now awaiting verification by the filer`;
+    return `${code} is now awaiting verification by the filer\n  what proves it: ${verifiedBy}`;
   }
 
   throw new Error(`unknown command '${command ?? ''}'`);
