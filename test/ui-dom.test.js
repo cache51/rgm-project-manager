@@ -837,6 +837,40 @@ describe('ui (dom): every action reaches the API it should', () => {
       'the exact text the server produced — not a browser-side reconstruction');
   });
 
+  test('the copy button still copies where the clipboard API does not exist', async () => {
+    // The deployment this runs on: plain HTTP on a LAN address, which is not a
+    // secure context, so navigator.clipboard is undefined. The button used to
+    // report a failure every time there — the app's own origin was the one
+    // place the one API it reached for did not exist.
+    const app = loadApp({ routes: routes() });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+    delete app.ctx.navigator.clipboard;
+
+    await app.click('copy');
+
+    assert.equal(app.copied.length, 0, 'there was no modern API to use');
+    assert.equal(app.execCopies.length, 1, 'the fallback ran once');
+    assert.equal(app.execCopies[0].cmd, 'copy');
+    assert.equal(app.execCopies[0].text, payloads.prompt,
+      'and it carries the same server text');
+    assert.match(app.html(), /Copied|Đã sao chép|已複製/, 'success is reported');
+  });
+
+  test('a copy the browser refuses is reported, not claimed', async () => {
+    const app = loadApp({ routes: routes() });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+    delete app.ctx.navigator.clipboard;
+    app.execResult.value = false;
+
+    await app.click('copy');
+
+    assert.equal(app.copied.length, 0, 'nothing reached the clipboard');
+    assert.match(app.html(), /Copy failed|Không sao chép được|複製失敗/,
+      'and the reader is told so rather than congratulated');
+  });
+
   test('downloading the packet uses the filename the server chose', async () => {
     const app = loadApp({ routes: routes() });
     await settle();

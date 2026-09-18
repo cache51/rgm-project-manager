@@ -1763,24 +1763,50 @@ async function comment(id) {
   } finally { S.busy = false; }
 }
 
+/**
+ * Put `text` on the clipboard, and answer whether it really went.
+ *
+ * `navigator.clipboard` exists only in a secure context, and this app is served
+ * over plain HTTP on a LAN address (http://192.168.x.x:3000), which is not one —
+ * so the one API the button used was missing precisely where the app runs, and
+ * every copy reported a failure. When it is absent (or refuses), fall back to a
+ * hidden textarea plus execCommand('copy'), which still works on an insecure
+ * origin. The caller is told the truth either way.
+ */
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(text); return true; } catch { /* fall through */ }
+  }
+  const box = document.createElement('textarea');
+  box.value = text;
+  box.setAttribute('readonly', '');
+  box.style.position = 'fixed';
+  box.style.top = '-1000px';
+  box.style.opacity = '0';
+  document.body.appendChild(box);
+  box.select();
+  box.setSelectionRange(0, text.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { ok = false; }
+  box.remove();
+  return ok;
+}
+
 async function copyPrompt() {
   const text = S.prompt ?? '';
   if (!text) return;
-  try {
-    await navigator.clipboard.writeText(text);
-    notice(t('copied'));
-  } catch {
-    // Clipboard access can be denied (insecure origin, permissions). Say so
-    // rather than claiming a copy that did not happen.
-    const pre = document.getElementById('prompttext');
-    if (pre) {
-      const range = document.createRange();
-      range.selectNodeContents(pre);
-      const sel = getSelection();
-      sel.removeAllRanges(); sel.addRange(range);
-    }
-    notice(t('copyFail'), 'bad');
+  if (await copyText(text)) { notice(t('copied')); return; }
+
+  // Nothing was copied. Put the text in front of the reader and tell them what
+  // to press, rather than claiming a copy that did not happen.
+  const pre = document.getElementById('prompttext');
+  if (pre) {
+    const range = document.createRange();
+    range.selectNodeContents(pre);
+    const sel = getSelection();
+    sel.removeAllRanges(); sel.addRange(range);
   }
+  notice(t('copyFail'), 'bad');
 }
 
 async function downloadPacket(id) {

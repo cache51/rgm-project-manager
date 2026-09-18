@@ -34,6 +34,12 @@ export function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
   const fields = new Map();
   const copied = [];
   const downloads = [];
+  // The fallback copy path: a hidden textarea is appended, selected, and handed
+  // to execCommand('copy'). Recorded so a test can see what would have gone on
+  // the clipboard, and `result` lets a test model the browser refusing.
+  const execCopies = [];
+  const execResult = { value: true };
+  const attached = [];
   const listeners = {};
   const timers = [];
   const redirects = [];
@@ -96,10 +102,15 @@ export function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
     // Reads as '' unless a test sets a cookie; without this key every api() call
     // throws before a request is even made.
     cookie: '',
-    body: { appendChild() {} },
+    body: { appendChild(node) { attached.push(node); } },
+    execCommand: (cmd) => {
+      execCopies.push({ cmd, text: attached[attached.length - 1]?.value ?? null });
+      return execResult.value;
+    },
     createRange: () => ({ selectNodeContents() {} }),
     createElement: () => ({
-      href: '', download: '', style: {},
+      href: '', download: '', style: {}, value: '',
+      setAttribute() {}, select() { this.selected = true; }, setSelectionRange() {},
       click() { downloads.push({ href: this.href, download: this.download }); },
       remove() {}, appendChild() {}
     })
@@ -168,6 +179,7 @@ export function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
 
   return {
     calls, copied, downloads, listeners, fields, redirects, promptAnswer, confirmAnswer, store,
+    execCopies, execResult,
     ctx,
     html: () => appEl.innerHTML,
     field: (id) => field(id),
