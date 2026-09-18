@@ -742,6 +742,18 @@ describe('ui (dom): every action reaches the API it should', () => {
     assert.equal(post.body.email, 'tuongvi@rgmdn.com');
   });
 
+  test('an empty notification list says so, rather than showing a stray mark', async () => {
+    const app = loadApp({ routes: {
+      ...routes(),
+      [`GET /api/bugs/${bug.id}`]: { ...payloads.bug, watchers: [] }
+    } });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+
+    assert.match(app.html(), /Chưa có ai|Nobody yet|尚未設定/, 'the empty list is explained');
+    assert.doesNotMatch(app.html(), /<span class="tag">—<\/span>/, 'not left as a bare dash');
+  });
+
   test('a malformed email is refused here, not by a round trip', async () => {
     seen.length = 0;
     const app = loadApp({ routes: routes() });

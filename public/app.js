@@ -27,6 +27,7 @@ const T = {
     kClosed: 'đã đóng', kComment: 'bình luận', kEdited: 'sửa báo cáo',
     kRemoved: 'đã xoá', kRestored: 'khôi phục', kWatch: 'đổi email nhận tin',
     notifyL: 'Email báo khi sửa xong', addWatcher: 'Thêm email',
+    noWatchers: 'Chưa có ai — thêm địa chỉ tester đã báo lỗi.',
     notifyHint: 'Những địa chỉ này nhận email khi lỗi chuyển sang “Đã sửa — chờ xác nhận”.',
     needEmail: 'Hãy nhập một địa chỉ email hợp lệ',
     lang: 'Ngôn ngữ', tester: 'Tester', dev: 'Developer', admin: 'Quản trị',
@@ -91,6 +92,7 @@ const T = {
     kClosed: '已關閉', kComment: '留言', kEdited: '修改回報',
     kRemoved: '已刪除', kRestored: '已還原', kWatch: '修改通知電郵',
     notifyL: '修復後通知的電郵', addWatcher: '新增電郵',
+    noWatchers: '尚未設定——可加入回報問題的測試人員。',
     notifyHint: '問題轉為「已修復——待確認」時，這些地址會收到電郵。',
     needEmail: '請輸入有效的電郵地址',
     tester: '測試人員', dev: '開發人員', admin: '管理員',
@@ -155,6 +157,7 @@ const T = {
     kClosed: 'closed', kComment: 'comment', kEdited: 'edited',
     kRemoved: 'removed', kRestored: 'restored', kWatch: 'notification emails changed',
     notifyL: 'Emails told when it is marked fixed', addWatcher: 'Add email',
+    noWatchers: 'Nobody yet — add the tester who reported it.',
     notifyHint: 'These addresses get an email when the bug moves to “Fixed — awaiting verification”.',
     needEmail: 'Enter a valid email address',
     lang: 'Language', tester: 'Tester', dev: 'Developer', admin: 'Admin',
@@ -963,7 +966,7 @@ function watchersPanel(b) {
                  data-email="${esc(w.email)}" title="${t('remove')}"
                  style="text-decoration:none">✕</a>
             </span>`).join(' ')
-          : `<span class="tag">—</span>`}
+          : `<span class="hint">${t('noWatchers')}</span>`}
       </div>
       <div style="display:flex;gap:8px;align-items:center">
         <input id="watcheremail" placeholder="tester@…" style="flex:1;min-width:200px"
