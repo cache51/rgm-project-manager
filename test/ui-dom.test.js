@@ -754,6 +754,53 @@ describe('ui (dom): every action reaches the API it should', () => {
     assert.doesNotMatch(app.html(), /<span class="tag">—<\/span>/, 'not left as a bare dash');
   });
 
+  test('a question from whoever is fixing the bug can be answered here', async () => {
+    const app = loadApp({ routes: {
+      ...routes(),
+      [`GET /api/bugs/${bug.id}`]: {
+        ...payloads.bug,
+        questions: { open: 1, questions: [{
+          id: 'q-1', body: 'Which warehouse receives NV311-AW22?',
+          askedAt: '2026-09-18T02:00:00.000Z', askedBy: 'agent@rgmdn.com',
+          open: true, answer: null
+        }] }
+      },
+      [`POST /api/bugs/${bug.id}/questions/q-1/answer`]: (c) => { seen.push(c); return { body: {} }; }
+    } });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+
+    assert.match(app.html(), /Which warehouse receives NV311-AW22\?/, 'the question is shown');
+    assert.match(app.html(), /id="answer-q-1"/, 'with a box to answer it');
+
+    app.input('answer-q-1', 'The supplier warehouse.');
+    await app.click('answerquestion', { id: bug.id, qid: 'q-1' });
+
+    const posted = seen.find((c) => c.path === `/api/bugs/${bug.id}/questions/q-1/answer`);
+    assert.ok(posted, 'the answer is posted');
+    assert.equal(posted.body.answer, 'The supplier warehouse.');
+  });
+
+  test('an answered question reads as an answer, with no box to answer it again', async () => {
+    const app = loadApp({ routes: {
+      ...routes(),
+      [`GET /api/bugs/${bug.id}`]: {
+        ...payloads.bug,
+        questions: { open: 0, questions: [{
+          id: 'q-2', body: 'Which screen?', askedAt: '2026-09-18T02:00:00.000Z',
+          askedBy: 'agent@rgmdn.com', open: false,
+          answer: { text: 'The receiving screen.', at: '2026-09-18T03:00:00.000Z', by: 'linh@rgm.example' }
+        }] }
+      }
+    } });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+
+    assert.match(app.html(), /The receiving screen\./, 'the answer is shown');
+    assert.match(app.html(), /linh@rgm\.example/, 'and says who gave it');
+    assert.doesNotMatch(app.html(), /id="answer-q-2"/, 'nothing invites a second answer');
+  });
+
   test('a malformed email is refused here, not by a round trip', async () => {
     seen.length = 0;
     const app = loadApp({ routes: routes() });

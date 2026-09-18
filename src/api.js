@@ -22,7 +22,8 @@ import { makeZip } from './zip.js';
 import {
   enqueueBugTranslations, enqueueEventTranslation, retryTranslation
 } from './translate.js';
-import { enqueueReadyNotifications, enqueueRetestNotifications } from './notify.js';
+import { enqueueReadyNotifications, enqueueRetestNotifications,
+         enqueueQuestionNotifications } from './notify.js';
 import { enforce, hit, LIMITS } from './ratelimit.js';
 
 const iso = (v) => (v instanceof Date ? v.toISOString() : v);
@@ -84,6 +85,10 @@ export const SCOPE_POLICY = {
   'POST /api/projects/:id/bugs': 'bug:write',
   'POST /api/bugs/:id/status': 'bug:write',
   'POST /api/bugs/:id/comments': 'bug:write',
+  // The way back for whoever is working a bug: see questionsFor() in api.js.
+  'POST /api/bugs/:id/questions': 'bug:write',
+  'GET /api/bugs/:id/questions': 'bug:read',
+  'POST /api/bugs/:id/questions/:questionId/answer': 'bug:write',
   // The addresses a bug notifies when it is marked fixed.
   'POST /api/bugs/:id/watchers': 'bug:write',
   'DELETE /api/bugs/:id/watchers/:email': 'bug:write',
@@ -233,6 +238,38 @@ const looksLikeEmail = (e) => /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(String(e ??
 /** At most this many addresses on one bug — a bounded, reviewable list. */
 const WATCHER_LIMIT = 10;
 
+/**
+ * The questions asked about one bug, oldest first, each with its answer.
+ *
+ * `open` is returned alongside because it is the question both readers ask
+ * first: a person wants to know what still needs them, and the agent that asked
+ * wants to know whether it may carry on.
+ */
+async function questionsFor(db, bugId) {
+  const r = await db.query(
+    `SELECT q.id, q.body, q.created_at, q.answered_at, q.answer,
+            asker.display_name AS asked_by_name, asker.email AS asked_by_email,
+            answerer.display_name AS answered_by_name, answerer.email AS answered_by_email
+       FROM bug_questions q
+       LEFT JOIN users asker ON asker.id = q.asked_by
+       LEFT JOIN users answerer ON answerer.id = q.answered_by
+      WHERE q.bug_id = $1
+      ORDER BY q.created_at, q.id`, [bugId]);
+  const questions = r.rows.map((q) => ({
+    id: q.id,
+    body: q.body,
+    askedAt: iso(q.created_at),
+    askedBy: q.asked_by_name ?? q.asked_by_email ?? null,
+    open: q.answered_at === null,
+    answer: q.answered_at === null ? null : {
+      text: q.answer,
+      at: iso(q.answered_at),
+      by: q.answered_by_name ?? q.answered_by_email ?? null
+    }
+  }));
+  return { open: questions.filter((q) => q.open).length, questions };
+}
+
 async function watchersFor(db, bugId) {
   const r = await db.query(
     `SELECT w.email, w.added_at, u.display_name AS added_by_name
@@ -246,10 +283,12 @@ async function watchersFor(db, bugId) {
 }
 
 async function bugPayload(db, bug, role = 'developer') {
-  const [translations, timeline, attachments, watchers] = await Promise.all([
+  const [translations, timeline, attachments, watchers, questions] = await Promise.all([
     translationsFor(db, bug.id), timelineFor(db, bug.id), attachmentsFor(db, bug.id),
     // The addresses that hear when this bug is marked fixed.
-    watchersFor(db, bug.id)
+    watchersFor(db, bug.id),
+    // What whoever is working this bug had to ask, and what came back.
+    questionsFor(db, bug.id)
   ]);
   return {
     id: bug.id,
@@ -284,6 +323,9 @@ async function bugPayload(db, bug, role = 'developer') {
     // Addresses the developer attached to this bug: they are mailed when it is
     // marked fixed.
     watchers,
+    // Questions asked about this bug (usually by an agent at work on it), each
+    // with its answer or the fact that it is still open.
+    questions,
     // Actions the CALLER can actually take — a tester must not be offered
     // developer-only transitions the server would reject.
     availableActions: availableTransitions('bug', bug.status, role)
@@ -872,7 +914,11 @@ export function buildRoutes() {
               -- ::int matters: count() is int8, which node-postgres returns as a
               -- *string* (a JS number cannot hold every int8). Without the cast the
               -- row would carry "3" on PostgreSQL and 3 on PGlite.
-              (SELECT count(*) FROM bug_attachments a WHERE a.bug_id = b.id)::int AS attachments
+              (SELECT count(*) FROM bug_attachments a WHERE a.bug_id = b.id)::int AS attachments,
+              -- How many questions are still waiting for an answer, so the list
+              -- can say "the agent is blocked on this" without opening it.
+              (SELECT count(*) FROM bug_questions q
+                WHERE q.bug_id = b.id AND q.answered_at IS NULL)::int AS open_questions
          FROM bugs b
          JOIN milestones m ON m.id = b.milestone_id
          JOIN users u ON u.id = b.reporter_id
@@ -880,6 +926,8 @@ export function buildRoutes() {
         ORDER BY b.bug_number DESC`, [ctx.params.id]);
     sendJson(res, 200, {
       bugs: rows.rows.map(b => ({ ...b, code: reportCode(b.kind, b.bug_number),
+                                  // camelCase for the client; the SQL alias is snake_case.
+                                  openQuestions: b.open_questions ?? 0,
                                   isOpen: isOpenBug(b.status) })),
       openCount: rows.rows.filter(b => isOpenBug(b.status)).length
     });
@@ -1218,6 +1266,98 @@ export function buildRoutes() {
       return ins.rows[0];
     });
     sendJson(res, 201, { id: ev.id });
+  }));
+
+  // ─ questions about a bug: the agent's way back ──
+  /**
+   * Ask a question about a bug.
+   *
+   * The handoff used to be one-way — a prompt went out and work came back — so
+   * whoever was working the report had nowhere to go when it did not add up: a
+   * screenshot missing, a product code that means nothing outside the factory, a
+   * sentence only the person who wrote it understands. A question is attributed,
+   * mailed to the people who can answer it (the reporter and the bug's own
+   * address list), and stays open until one of them answers — so "the agent is
+   * waiting on us" is a fact on the bug, not something in a chat window.
+   */
+  r.post('/api/bugs/:id/questions', handle(async (req, res, ctx) => {
+    const { projectId } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
+    const { body } = await readJson(req);
+    const text = String(body ?? '').trim();
+    if (!text) throw new HttpError(400, 'body_required', 'a question needs some text');
+    if (text.length > 4000) {
+      throw new HttpError(400, 'body_too_long', 'keep a question under 4000 characters');
+    }
+
+    const out = await withTransaction(ctx.db, async (tx) => {
+      const ins = await tx.query(
+        `INSERT INTO bug_questions (bug_id, asked_by, body)
+         VALUES ($1,$2,$3) RETURNING id, created_at`,
+        [ctx.params.id, ctx.actor.userId, text]);
+
+      // Read inside the transaction: the notice names the bug and the project.
+      const meta = await tx.query(
+        `SELECT b.bug_number, b.kind, b.title_vi, p.name AS project_name
+           FROM bugs b JOIN projects p ON p.id = b.project_id
+          WHERE b.id = $1`, [ctx.params.id]);
+      const row = meta.rows[0];
+
+      await tx.query(
+        `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
+         VALUES ($1,$2,$3,'bug.question',$4)`,
+        [projectId, ctx.params.id, ctx.actor.userId,
+          JSON.stringify({ questionId: ins.rows[0].id, note: text })]);
+
+      const notified = await enqueueQuestionNotifications(tx, {
+        projectId, bugId: ctx.params.id, questionId: ins.rows[0].id,
+        code: reportCode(row.kind, row.bug_number), titleVi: row.title_vi,
+        projectName: row.project_name, question: text
+      });
+
+      return { id: ins.rows[0].id, createdAt: ins.rows[0].created_at, notified };
+    });
+
+    sendJson(res, 201, { id: out.id, askedAt: iso(out.createdAt), notified: out.notified });
+  }));
+
+  r.get('/api/bugs/:id/questions', handle(async (req, res, ctx) => {
+    await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
+    sendJson(res, 200, await questionsFor(ctx.db, ctx.params.id));
+  }));
+
+  /** Answer a question. Any member may: the tester who filed it usually knows. */
+  r.post('/api/bugs/:id/questions/:questionId/answer', handle(async (req, res, ctx) => {
+    const { projectId } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
+    const { answer } = await readJson(req);
+    const text = String(answer ?? '').trim();
+    if (!text) throw new HttpError(400, 'answer_required', 'an answer needs some text');
+    if (text.length > 4000) {
+      throw new HttpError(400, 'answer_too_long', 'keep an answer under 4000 characters');
+    }
+
+    const out = await withTransaction(ctx.db, async (tx) => {
+      // Conditional on the question still being open: two people answering at
+      // once must not silently overwrite each other.
+      const upd = await tx.query(
+        `UPDATE bug_questions
+            SET answered_by = $3, answered_at = now(), answer = $4
+          WHERE id = $1 AND bug_id = $2 AND answered_at IS NULL
+          RETURNING id, answered_at`,
+        [ctx.params.questionId, ctx.params.id, ctx.actor.userId, text]);
+      if (!upd.rows.length) {
+        throw new HttpError(409, 'already_answered', 'that question has already been answered');
+      }
+
+      await tx.query(
+        `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
+         VALUES ($1,$2,$3,'bug.question_answered',$4)`,
+        [projectId, ctx.params.id, ctx.actor.userId,
+          JSON.stringify({ questionId: ctx.params.questionId, note: text })]);
+
+      return upd.rows[0];
+    });
+
+    sendJson(res, 200, { id: out.id, answeredAt: iso(out.answered_at) });
   }));
 
   /**

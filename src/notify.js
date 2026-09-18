@@ -89,6 +89,62 @@ export async function enqueueRetestNotifications(db, {
 }
 
 /**
+ * Queue "someone working this bug needs an answer" for the reporter and every
+ * address attached to the bug.
+ *
+ * A question is only useful if the person who can answer it is told: the agent
+ * asking has no other way to reach them, and these are exactly the people who
+ * either filed the report or asked to hear about it. The reporter is queued as a
+ * user (so a membership removed before delivery still stops the mail) and the
+ * rest as bare addresses, with the reporter's own address filtered out of that
+ * list rather than mailed twice.
+ */
+export async function enqueueQuestionNotifications(db, {
+  projectId, bugId, questionId, code, titleVi = null, projectName = null, question = null
+}) {
+  const who = await db.query(
+    `SELECT b.reporter_id, u.email AS reporter_email
+       FROM bugs b LEFT JOIN users u ON u.id = b.reporter_id
+      WHERE b.id = $1`, [bugId]);
+  const reporterId = who.rows[0]?.reporter_id ?? null;
+  const reporterEmail = who.rows[0]?.reporter_email ?? null;
+  const watchers = await db.query(
+    `SELECT email FROM bug_watchers WHERE bug_id = $1 ORDER BY added_at, email`, [bugId]);
+
+  const payload = JSON.stringify({ code, title: titleVi, projectName, questionId, question });
+  let queued = 0;
+
+  if (reporterId) {
+    const key = `bug.question:${questionId}:user:${reporterId}`;
+    const res = await db.query(
+      `INSERT INTO notifications_outbox
+         (kind, project_id, subject_id, recipient_id, dedupe_key, payload)
+       VALUES ('bug.question', $1, $2, $3, $4, $5)
+       ON CONFLICT (dedupe_key) DO NOTHING
+       RETURNING id`,
+      [projectId, bugId, reporterId, key, payload]);
+    queued += res.rows.length;
+  }
+
+  let addresses = 0;
+  for (const w of watchers.rows) {
+    if (reporterEmail && w.email === reporterEmail) continue;
+    addresses += 1;
+    const key = `bug.question:${questionId}:${w.email}`;
+    const res = await db.query(
+      `INSERT INTO notifications_outbox
+         (kind, project_id, subject_id, recipient_email, dedupe_key, payload)
+       VALUES ('bug.question', $1, $2, $3, $4, $5)
+       ON CONFLICT (dedupe_key) DO NOTHING
+       RETURNING id`,
+      [projectId, bugId, w.email, key, payload]);
+    queued += res.rows.length;
+  }
+
+  return { recipients: (reporterId ? 1 : 0) + addresses, queued };
+}
+
+/**
  * Compose the human-facing message.
  *
  * This belongs here rather than in the mailer: what a notification says is a
@@ -129,6 +185,27 @@ export function composeNotification(n, { baseUrl = null } = {}) {
         'Developer đã đánh dấu lỗi này là đã sửa. Hãy kiểm tra lại trên bản dựng mới,',
         'rồi xác nhận đã sửa hoặc trả lại kèm ghi chú.',
         '',
+        baseUrl ?? '(chưa cấu hình địa chỉ ứng dụng)',
+        '',
+        '-- ',
+        `Thông báo: ${n.kind}`,
+        `Mã: ${n.dedupe_key}`
+      ].filter((line) => line !== null).join('\n')
+    };
+  }
+  if (n.kind === 'bug.question') {
+    const code = payload.code ?? 'bug';
+    return {
+      subject: `[RGM] ${code} — cần bạn làm rõ`,
+      body: [
+        payload.projectName ? `Dự án: ${payload.projectName}` : null,
+        `${code}${payload.title ? ` — ${payload.title}` : ''}`,
+        '',
+        'Người (hoặc agent) đang xử lý lỗi này cần bạn làm rõ một điểm:',
+        '',
+        payload.question ?? '(không có nội dung)',
+        '',
+        'Trả lời trong ứng dụng:',
         baseUrl ?? '(chưa cấu hình địa chỉ ứng dụng)',
         '',
         '-- ',

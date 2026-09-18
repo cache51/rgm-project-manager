@@ -26,6 +26,10 @@ const T = {
     kRetest: 'đã sửa — chờ xác nhận', kRetestPass: 'xác nhận đã sửa', kRetestFail: 'trả lại',
     kClosed: 'đã đóng', kComment: 'bình luận', kEdited: 'sửa báo cáo',
     kRemoved: 'đã xoá', kRestored: 'khôi phục', kWatch: 'đổi email nhận tin',
+    kQuestion: 'agent hỏi', kAnswered: 'đã trả lời',
+    qPanel: 'Câu hỏi cần làm rõ', qOpen: 'chưa trả lời', qAnswer: 'Gửi trả lời',
+    qAnswerPlaceholder: 'Trả lời ngắn gọn giúp…', answerMissing: 'Hãy nhập câu trả lời trước',
+    needsAnswer: 'chờ trả lời',
     notifyL: 'Email báo khi sửa xong', addWatcher: 'Thêm email',
     noWatchers: 'Chưa có ai — thêm địa chỉ tester đã báo lỗi.',
     notifyHint: 'Những địa chỉ này nhận email khi lỗi chuyển sang “Đã sửa — chờ xác nhận”.',
@@ -91,6 +95,10 @@ const T = {
     kRetest: '已修復——待確認', kRetestPass: '確認已修復', kRetestFail: '退回',
     kClosed: '已關閉', kComment: '留言', kEdited: '修改回報',
     kRemoved: '已刪除', kRestored: '已還原', kWatch: '修改通知電郵',
+    kQuestion: 'AI 提問', kAnswered: '已回答',
+    qPanel: '待釐清的問題', qOpen: '尚未回答', qAnswer: '送出回答',
+    qAnswerPlaceholder: '請簡短回答…', answerMissing: '請先輸入回答',
+    needsAnswer: '待回答',
     notifyL: '修復後通知的電郵', addWatcher: '新增電郵',
     noWatchers: '尚未設定——可加入回報問題的測試人員。',
     notifyHint: '問題轉為「已修復——待確認」時，這些地址會收到電郵。',
@@ -156,6 +164,10 @@ const T = {
     kRetest: 'marked fixed', kRetestPass: 'verified', kRetestFail: 'sent back',
     kClosed: 'closed', kComment: 'comment', kEdited: 'edited',
     kRemoved: 'removed', kRestored: 'restored', kWatch: 'notification emails changed',
+    kQuestion: 'asked a question', kAnswered: 'answered',
+    qPanel: 'Questions to clarify', qOpen: 'unanswered', qAnswer: 'Send answer',
+    qAnswerPlaceholder: 'A short answer is fine…', answerMissing: 'Enter an answer first',
+    needsAnswer: 'needs an answer',
     notifyL: 'Emails told when it is marked fixed', addWatcher: 'Add email',
     noWatchers: 'Nobody yet — add the tester who reported it.',
     notifyHint: 'These addresses get an email when the bug moves to “Fixed — awaiting verification”.',
@@ -273,6 +285,7 @@ const S = {
   // The project's live reports, for the "duplicate of …" picker, and the close
   // panel's current choice (null until a developer opens it).
   projectBugs: [], closePanel: null, commentDraft: null, watcherDraft: null,
+  answerDrafts: {},
   // Screens that are revealed on demand: the create-project form is no longer only
   // the first-run screen, and the add-milestone form is no longer only the empty
   // list. Both were dead ends once you already had one of the thing.
@@ -758,6 +771,10 @@ function bugRows() {
         <div class="tags">
           <span class="tag">${t('whenL')} ${fmt(b.updated_at)}</span>
           <span class="tag">${rel(b.updated_at)}</span>
+          <!-- Someone (usually an agent) is waiting on an answer here. -->
+          ${b.openQuestions ? `<span class="tag"
+            style="background:var(--high-bg,#fee2e2);color:var(--high,#b91c1c)"
+            >💬 ${t('needsAnswer')}</span>` : ''}
         </div>
       </div>
       <!-- The state, in its colour, so a tester scanning the list can see at a glance
@@ -811,7 +828,8 @@ const KIND_KEY = {
   filed: 'kFiled', attachment_added: 'kAttach', fixing: 'kFixing',
   retest: 'kRetest', retest_pass: 'kRetestPass', retest_fail: 'kRetestFail',
   closed: 'kClosed', commented: 'kComment', edited: 'kEdited',
-  removed: 'kRemoved', restored: 'kRestored', watchers: 'kWatch'
+  removed: 'kRemoved', restored: 'kRestored', watchers: 'kWatch',
+  question: 'kQuestion', question_answered: 'kAnswered'
 };
 
 function kindLabel(kind) {
@@ -939,9 +957,42 @@ function bugDetail() {
           ? `<span class="mini bad" data-action="removebug" data-id="${esc(b.id)}">🗑 ${t('remove')}</span>` : ''}
       </div>` : ''}
 
+      ${questionsPanel(b)}
       ${watchersPanel(b)}
     </div>
   </div>`;
+}
+
+/**
+ * Questions asked about this bug — usually by the agent working it — and the box
+ * to answer them.
+ *
+ * Deliberately not role-gated: the tester who filed the report is usually the
+ * only person who can settle a question, and whoever is fixing the bug may need
+ * to answer one too. An answered question stays on the page, because the answer
+ * is worth as much to the next reader as the report is.
+ */
+function questionsPanel(b) {
+  const list = b.questions?.questions ?? [];
+  if (!list.length) return '';
+  return `
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line,#e2e8f0)">
+      <label>${t('qPanel')}</label>
+      ${list.map((q) => (q.open ? `
+        <div class="card" style="padding:9px 11px;margin:6px 0">
+          <div style="font-size:13px"> ${esc(q.body)}</div>
+          <div class="hint" style="margin:4px 0 6px">
+            ${esc(q.askedBy ?? '')} · ${fmt(q.askedAt)} · ${t('qOpen')}</div>
+          <textarea id="answer-${esc(q.id)}" rows="2" placeholder="${t('qAnswerPlaceholder')}"
+                    style="width:100%">${esc(S.answerDrafts?.[q.id] ?? '')}</textarea>
+          <button class="btn" style="margin-top:6px"
+                  data-action="answerquestion" data-id="${esc(b.id)}" data-qid="${esc(q.id)}"
+                  >${t('qAnswer')}</button>
+        </div>` : `
+        <div class="tag" style="margin:4px 0;white-space:normal">
+          ✓ ${esc(q.answer?.text ?? '')}${q.answer?.by ? ` — ${esc(q.answer.by)}` : ''}
+        </div>`)).join('')}
+    </div>`;
 }
 
 /**
@@ -1201,6 +1252,10 @@ document.getElementById('app').addEventListener('change', syncReportDraft);
 document.getElementById('app').addEventListener('input', (event) => {
   if (event.target.id === 'commentnote') S.commentDraft = event.target.value;
   if (event.target.id === 'watcheremail') S.watcherDraft = event.target.value;
+  // An answer being typed survives a re-render (a poll can arrive mid-sentence).
+  if (event.target.id?.startsWith('answer-')) {
+    S.answerDrafts[event.target.id.slice('answer-'.length)] = event.target.value;
+  }
   if (!S.closePanel) return;
   if (event.target.id === 'close-kind') {
     S.closePanel = { ...S.closePanel, kind: event.target.value, ref: '' };
@@ -1385,7 +1440,7 @@ document.getElementById('app').addEventListener('click', async (event) => {
       }
       case 'project':
         S.projectId = el.dataset.id; S.bug = null; S.prompt = null; S.closePanel = null;
-        S.commentDraft = null; S.watcherDraft = null;
+        S.commentDraft = null; S.watcherDraft = null; S.answerDrafts = {};
         // Leaving the report screen abandons any half-uploaded report (IR-036):
         // the next Send is a fresh one, not a silent edit of the old bug.
         S.reporting = false; abandonPendingReport();
@@ -1393,7 +1448,7 @@ document.getElementById('app').addEventListener('click', async (event) => {
         break;
       case 'view':
         S.view = el.dataset.view; S.bug = null; S.reporting = false; S.closePanel = null;
-        S.commentDraft = null; S.watcherDraft = null;
+        S.commentDraft = null; S.watcherDraft = null; S.answerDrafts = {};
         abandonPendingReport();
         await refresh();
         break;
@@ -1467,11 +1522,12 @@ document.getElementById('app').addEventListener('click', async (event) => {
       }
       case 'openbug':
         S.commentDraft = null; S.closePanel = null; S.watcherDraft = null;
+        S.answerDrafts = {};
         await openBug(el.dataset.id);
         break;
       case 'closebug':
         S.bug = null; S.prompt = null; S.closePanel = null; S.commentDraft = null;
-        S.watcherDraft = null;
+        S.watcherDraft = null; S.answerDrafts = {};
         await refresh();
         break;
       case 'report':
@@ -1506,6 +1562,9 @@ document.getElementById('app').addEventListener('click', async (event) => {
         break;
       case 'addwatcher':
         await addWatcher(el.dataset.id);
+        break;
+      case 'answerquestion':
+        await answerQuestion(el.dataset.id, el.dataset.qid);
         break;
       case 'rmwatcher':
         await removeWatcher(el.dataset.id, el.dataset.email);
@@ -1711,6 +1770,20 @@ async function confirmClose(id) {
     notice(t('saved'));
     await openBug(id);
     await loadProjects();
+  } finally { S.busy = false; }
+}
+
+/** Answer a question asked about this bug — whoever asked is waiting on it. */
+async function answerQuestion(bugId, questionId) {
+  const box = document.getElementById(`answer-${questionId}`);
+  const answer = (box?.value ?? '').trim();
+  if (!answer) { notice(t('answerMissing'), 'bad'); return; }
+  S.busy = true;
+  try {
+    await api('POST', `/api/bugs/${bugId}/questions/${questionId}/answer`, { answer });
+    delete S.answerDrafts[questionId];
+    notice(t('saved'));
+    await openBug(bugId);
   } finally { S.busy = false; }
 }
 

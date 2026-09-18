@@ -8,11 +8,18 @@
  *   rgm bugs
  *   rgm prompt 142            # print the agent handoff prompt to stdout
  *   rgm pull 142              # fetch the packet and extract it under .rgm/BUG-142
+ *   # The way back for whoever is working a bug:
+ *   rgm ask 142 "which warehouse is this lot in?"   # mailed to the reporter
+ *   rgm questions 142        # questions and their answers, open or answered
+ *   rgm comment 142 "fixed in abc1234"              # tell the tester what changed
+ *   rgm fixed 142 --note "please re-check the packing list screen"
+ *                            # hand it to the filer: fixed, awaiting verification
  *   # Host-only one-shot task (no RGM login/token):
  *   rgm admin delete-project <uuid> --actor-email admin@example.com --reason "..." --force
  *
  * `pull` is the primary handoff path: it lands bug.md, meta.json and the
- * screenshots on disk, ready to hand to a coding agent.
+ * screenshots on disk, ready to hand to a coding agent. `fixed` deliberately
+ * stops at "awaiting verification": closing a report is the filer's call.
  */
 import { readFile, writeFile, mkdir, lstat, rm, chmod } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -403,6 +410,56 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
     await bindProject(root, { id: config.projectId, name: config.projectName });
     const written = await extractPacket(zip, outDir);
     return `${code} -> ${outDir}\n  ${written.join('\n  ')}`;
+  }
+
+  /**
+   * The agent's way back, from a shell: ask, read the answers, say what was
+   * done, and hand the bug to the filer for verification.
+   */
+  const bugRef = async (position) => {
+    const number = Number(args._[position]);
+    if (!Number.isInteger(number)) throw new Error(`${command} needs a bug number`);
+    const found = await call('GET', `/api/projects/${config.projectId}/bugs/by-number/${number}`);
+    return found.json();
+  };
+
+  if (command === 'ask') {
+    const question = args._.slice(2).join(' ').trim();
+    if (!question) throw new Error('ask needs a question, e.g. rgm ask 7 "which warehouse?"');
+    const { id, code } = await bugRef(1);
+    const res = await call('POST', `/api/bugs/${id}/questions`, { body: question });
+    const out = await res.json();
+    return `asked on ${code} (notified ${out.notified?.queued ?? 0} address(es))`;
+  }
+
+  if (command === 'questions') {
+    const { id, code } = await bugRef(1);
+    const res = await call('GET', `/api/bugs/${id}/questions`);
+    const { open, questions } = await res.json();
+    if (!questions.length) return `${code}: no questions`;
+    return [`${code}: ${open} open`, ...questions.map((q) => q.open
+      ? `  [open]     ${q.body}`
+      : `  [answered] ${q.body}\n             -> ${q.answer.by}: ${q.answer.text}`)].join('\n');
+  }
+
+  if (command === 'comment') {
+    const note = args._.slice(2).join(' ').trim();
+    if (!note) throw new Error('comment needs a note, e.g. rgm comment 7 "fixed in commit abc123"');
+    const { id, code } = await bugRef(1);
+    await call('POST', `/api/bugs/${id}/comments`, { note });
+    return `commented on ${code}`;
+  }
+
+  if (command === 'fixed') {
+    const { id, code } = await bugRef(1);
+    const note = args.note ? String(args.note) : null;
+    const before = await (await call('GET', `/api/bugs/${id}`)).json();
+    if (before.status === 'retest') return `${code} is already awaiting verification`;
+    if (before.status === 'closed') throw new Error(`${code} is closed — reopen it first`);
+    if (note) await call('POST', `/api/bugs/${id}/comments`, { note });
+    if (before.status === 'new') await call('POST', `/api/bugs/${id}/status`, { action: 'start_fixing' });
+    await call('POST', `/api/bugs/${id}/status`, { action: 'request_retest' });
+    return `${code} is now awaiting verification by the filer`;
   }
 
   throw new Error(`unknown command '${command ?? ''}'`);
