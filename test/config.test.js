@@ -105,6 +105,30 @@ describe('config: translation provider', () => {
     assert.equal(chooseTranslationProvider({ TRANSLATE_API_KEY: 'sk', TRANSLATE_PROVIDER: 'stub' })
       .name, 'stub');
   });
+
+  test('a local server can be told to switch its model\'s thinking off', () => {
+    const provider = chooseTranslationProvider({
+      TRANSLATE_PROVIDER: 'openai',
+      TRANSLATE_BASE_URL: 'http://127.0.0.1:8012',
+      TRANSLATE_API_KEY: 'sk-local',
+      TRANSLATE_MODEL: 'local-thinker',
+      TRANSLATE_EXTRA_BODY: '{"chat_template_kwargs":{"enable_thinking":false}}'
+    });
+    // withRetry spreads the provider, so the fields survive the wrapper.
+    assert.equal(provider.model, 'local-thinker');
+    assert.deepEqual(provider.extraBody, { chat_template_kwargs: { enable_thinking: false } });
+  });
+
+  test('a malformed extra body is refused at startup, not per translation', () => {
+    assert.throws(() => chooseTranslationProvider({
+      TRANSLATE_PROVIDER: 'openai', TRANSLATE_API_KEY: 'sk',
+      TRANSLATE_EXTRA_BODY: '{"chat_template_kwargs":'
+    }), /TRANSLATE_EXTRA_BODY must be a JSON object/);
+    assert.throws(() => chooseTranslationProvider({
+      TRANSLATE_PROVIDER: 'openai', TRANSLATE_API_KEY: 'sk',
+      TRANSLATE_EXTRA_BODY: '[1,2,3]'
+    }), /must be a JSON object, got an array/);
+  });
 });
 
 describe('config: the deliver adapter', () => {

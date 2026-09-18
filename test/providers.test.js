@@ -373,6 +373,39 @@ describe('translation providers', () => {
     } finally { await stub.close(); }
   });
 
+  test('extra body fields reach the wire without displacing the text', async () => {
+    const stub = await startHttpStub((req, res) => json(res, 200, {
+      choices: [{ message: { content: 'ok' } }]
+    }));
+    try {
+      // A local thinking model: without this the request runs for minutes.
+      const provider = OpenAiCompatibleProvider({
+        baseUrl: stub.url, apiKey: 'sk-test', model: 'local-thinker',
+        extraBody: { chat_template_kwargs: { enable_thinking: false }, max_tokens: 512 }
+      });
+      await provider.translate({ text: 'Thùng 3 thiếu 3 cái', to: 'zh' });
+
+      const [req] = stub.requests;
+      assert.deepEqual(req.json.chat_template_kwargs, { enable_thinking: false });
+      assert.equal(req.json.max_tokens, 512);
+      assert.match(req.json.messages[0].content, /Thùng 3 thiếu 3 cái/,
+        'extra fields must not be able to displace the text being translated');
+    } finally { await stub.close(); }
+  });
+
+  test('a provider that never answers is abandoned at the timeout', async () => {
+    // The socket is accepted and then ignored, which is what a hung model looks
+    // like from here: without a timeout the worker would wait forever.
+    const stub = await startHttpStub(() => {});
+    try {
+      const provider = OpenAiCompatibleProvider({
+        baseUrl: stub.url, apiKey: 'sk-test', timeoutMs: 150
+      });
+      await assert.rejects(() => provider.translate({ text: 'x', to: 'zh' }),
+        /abort/i);
+    } finally { await stub.close(); }
+  });
+
   test('a provider error surfaces its own message, so the failure is diagnosable', async () => {
     const stub = await startHttpStub((req, res) =>
       json(res, 429, { error: { message: 'rate limited, retry later' } }));

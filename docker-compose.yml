@@ -30,6 +30,18 @@ x-common-env: &common-env
   SMTP_USER: ${SMTP_USER:-}
   SMTP_PASS: ${SMTP_PASS:-}
   MAIL_FROM: ${MAIL_FROM:-no-reply@rgmdn.com}
+  # Translation. With no provider configured the app stores StubProvider's output,
+  # which is the original text with «<lang>» in front of it — a translation in
+  # name only. TRANSLATE_BASE_URL is the host part only (/v1/chat/completions is
+  # appended); TRANSLATE_EXTRA_BODY carries server-side knobs such as
+  # {"chat_template_kwargs":{"enable_thinking":false}} for a local thinking model.
+  TRANSLATE_PROVIDER: ${TRANSLATE_PROVIDER:-}
+  TRANSLATE_BASE_URL: ${TRANSLATE_BASE_URL:-}
+  TRANSLATE_API_KEY: ${TRANSLATE_API_KEY:-}
+  TRANSLATE_MODEL: ${TRANSLATE_MODEL:-}
+  TRANSLATE_EXTRA_BODY: ${TRANSLATE_EXTRA_BODY:-}
+  TRANSLATE_TIMEOUT_MS: ${TRANSLATE_TIMEOUT_MS:-}
+  TRANSLATE_ATTEMPTS: ${TRANSLATE_ATTEMPTS:-}
 
 x-owner-env: &owner-env
   <<: *common-env

@@ -23,6 +23,27 @@ const num = (value, fallback) => {
   return Number.isFinite(n) ? n : fallback;
 };
 
+/**
+ * A JSON object from an environment variable, or {} when unset.
+ *
+ * Throws on anything else rather than passing a bad value to the provider: a
+ * typo in a body knob would otherwise surface as a puzzling provider error much
+ * later, on every translation.
+ */
+const jsonObject = (value, name) => {
+  if (value === undefined || value === null || value === '') return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch (err) {
+    throw new Error(`${name} must be a JSON object: ${err.message}`);
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${name} must be a JSON object, got ${Array.isArray(parsed) ? 'an array' : typeof parsed}`);
+  }
+  return parsed;
+};
+
 export function chooseStorage(env = process.env) {
   // Every backend issues the same app-local HMAC capability. The default is
   // public knowledge, so production must provide an actual secret even when the
@@ -103,7 +124,11 @@ export function chooseTranslationProvider(env = process.env) {
     return withRetry(OpenAiCompatibleProvider({
       baseUrl: env.TRANSLATE_BASE_URL ?? env.TRANSLATE_API_URL ?? 'https://api.openai.com',
       apiKey: env.TRANSLATE_API_KEY ?? env.OPENAI_API_KEY,
-      model: env.TRANSLATE_MODEL ?? 'gpt-4o-mini'
+      model: env.TRANSLATE_MODEL ?? 'gpt-4o-mini',
+      // For a local server whose model thinks before it answers: thinking is what
+      // makes a request run for minutes, and the app needs only the translation.
+      extraBody: jsonObject(env.TRANSLATE_EXTRA_BODY, 'TRANSLATE_EXTRA_BODY'),
+      timeoutMs: num(env.TRANSLATE_TIMEOUT_MS, 120000)
     }), { attempts: num(env.TRANSLATE_ATTEMPTS, 3) });
   }
 

@@ -49,6 +49,15 @@ export function OpenAiCompatibleProvider({
   path = '/v1/chat/completions',
   fetchImpl = fetch,
   temperature = 0,
+  // Extra fields for the request body — server-side knobs that are not part of
+  // the OpenAI schema and differ per deployment (vLLM's chat_template_kwargs to
+  // switch a reasoning model's thinking off, guided decoding, and so on). They
+  // are merged before `messages`, so they can never displace the text we send.
+  extraBody = {},
+  // No response is worth waiting for indefinitely: a provider that never answers
+  // holds the worker's single queue. Matches the SMTP mailer's own default of
+  // bounding a network call.
+  timeoutMs = 120000,
   headers: extraHeaders = {}
 }) {
   if (!baseUrl) throw new Error('OpenAiCompatibleProvider needs a baseUrl');
@@ -56,10 +65,16 @@ export function OpenAiCompatibleProvider({
   return {
     name: 'openai-compatible',
     model,
+    // Exposed for the same reason SmtpMailer exposes `requireTls`: a setting that
+    // silently fails to reach the request is a configuration bug nobody sees, so
+    // the contract has to be assertable.
+    extraBody,
+    timeoutMs,
 
     async translate({ text, from = 'vi', to, glossary }) {
       const res = await fetchImpl(`${String(baseUrl).replace(/\/+$/, '')}${path}`, {
         method: 'POST',
+        signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
         headers: {
           'content-type': 'application/json',
           ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
@@ -68,6 +83,7 @@ export function OpenAiCompatibleProvider({
         body: JSON.stringify({
           model,
           temperature,
+          ...extraBody,
           // One user message: the text is delimited inside it, so the model is not
           // given a separate "system" slot an injected payload could try to fill.
           messages: [{ role: 'user', content: buildTranslationPrompt({ text, from, to, glossary }) }]
