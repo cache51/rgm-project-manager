@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# The rgm CLI, shipped as a plugin executable so it is on PATH inside a session
+# where this plugin is enabled. Credentials are the same ones the MCP server
+# reads: ~/.rgm/config.json, written by `rgm login --url ... --token ...`.
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec node "$root/src/cli.js" "$@"

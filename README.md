@@ -100,6 +100,58 @@ tester's text fenced as data (see `src/prompt.js`) and the question is emailed t
 reporter *and* the project's developers, so a question nobody is on shift to answer
 still reaches someone who can act on it.
 
+### Installing it
+
+This repository is its own plugin marketplace, so an agent gets the MCP server, the
+skill and the CLI in one install:
+
+**Claude Code**
+
+```
+/plugin marketplace add cache51/rgm-project-manager
+/plugin install rgm@rgm
+```
+
+**Codex**
+
+```
+codex plugin marketplace add cache51/rgm-project-manager
+codex plugin add rgm@rgm
+```
+
+Codex plugins carry skills, so its MCP server is registered separately (either form):
+
+```
+codex mcp add rgm -- node /path/to/rgm-project-manager/mcp/rgm-mcp.mjs
+```
+
+```toml
+# ~/.codex/config.toml
+[mcp_servers.rgm]
+command = "node"
+args = ["/path/to/rgm-project-manager/mcp/rgm-mcp.mjs"]
+```
+
+**Any other MCP client** — the server is stdio and has no dependencies, so point it at
+`mcp/rgm-mcp.mjs` directly:
+
+```json
+{ "mcpServers": { "rgm": { "command": "node", "args": ["/path/to/rgm-project-manager/mcp/rgm-mcp.mjs"] } } }
+```
+
+Then, once, the credentials the server and the CLI share. There is no password: the
+address *is* the identity, and the token is minted in the app (`POST /api/tokens`,
+scopes `bug:read` + `bug:write`).
+
+```
+rgm login --url http://192.168.168.92:3000 --token <api-token>
+rgm use "Fabric Warehouse"    # the project this agent works
+```
+
+Nothing else to configure — both entry points read the same `~/.rgm/config.json`. An
+agent that has not signed in yet gets told exactly that when it calls a tool, rather
+than an empty result.
+
 ## The fix-and-verify loop
 
 ```

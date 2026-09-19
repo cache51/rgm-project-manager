@@ -1,0 +1,17 @@
+{
+  "name": "rgm",
+  "owner": {
+    "name": "RGM",
+    "url": "https://github.com/cache51/rgm-project-manager"
+  },
+  "description": "The RGM bug hub, for coding agents: the tester's report, its translation, the screenshots, a way to ask when the report is unclear, and a way to hand the fix back for verification.",
+  "plugins": [
+    {
+      "name": "rgm",
+      "source": "./",
+      "description": "Work a project's bugs from a coding agent: list them, read one, pull its screenshots, ask the reporter, comment what changed, and mark it fixed with the test that proves it. Bundles the rgm MCP server, the bug-intake skill, and the rgm CLI.",
+      "category": "development",
+      "homepage": "https://github.com/cache51/rgm-project-manager"
+    }
+  ]
+}

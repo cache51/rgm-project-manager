@@ -1,5 +1,5 @@
 ---
-name: rgm-bug-intake
+name: bug-intake
 description: Use when asked to fix bugs tracked in RGM (the tester↔developer bug hub) — fetch the report, look at the screenshots, ask the reporter when it is unclear, comment what changed, and hand it back for the filer to verify.
 ---
 
