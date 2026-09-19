@@ -100,7 +100,8 @@ export async function enqueueRetestNotifications(db, {
  * so being both the reporter and a watcher does not mean two copies.
  */
 export async function enqueueQuestionNotifications(db, {
-  projectId, bugId, questionId, code, titleVi = null, projectName = null, question = null
+  projectId, bugId, questionId, code, titleVi = null, projectName = null, question = null,
+  askerId = null
 }) {
   const who = await db.query(
     `SELECT b.reporter_id, u.email AS reporter_email
@@ -108,6 +109,15 @@ export async function enqueueQuestionNotifications(db, {
       WHERE b.id = $1`, [bugId]);
   const reporterId = who.rows[0]?.reporter_id ?? null;
   const reporterEmail = who.rows[0]?.reporter_email ?? null;
+
+  // The asker needs no copy of its own question. Beyond the noise, an agent's
+  // address is usually not a mailbox at all: mailing it produced a 550 and a row
+  // that retried its way to parked (seen on the first production run).
+  let askerEmail = null;
+  if (askerId) {
+    const a = await db.query('SELECT email FROM users WHERE id = $1', [askerId]);
+    askerEmail = a.rows[0]?.email ?? null;
+  }
 
   const members = await db.query(
     `SELECT u.id AS user_id, u.email
@@ -120,7 +130,9 @@ export async function enqueueQuestionNotifications(db, {
   const recipients = [];
   const seen = new Set();
   const add = (userId, email) => {
+    if (askerId && userId === askerId) return;
     const key = String(email ?? '').toLowerCase();
+    if (askerEmail && key === String(askerEmail).toLowerCase()) return;
     if (!key || seen.has(key)) return;
     seen.add(key);
     recipients.push({ userId, email });

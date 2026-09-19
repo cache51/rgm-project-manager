@@ -65,23 +65,36 @@ describe('a bug carries the questions asked about it', () => {
     await w.devClient.post(`/api/bugs/${bug.id}/watchers`, { email: 'tester@rgm.example' });
 
     const res = await ask(w.devClient, bug.id, 'Where do I see the packing list?');
-    assert.equal(res.json.notified.queued, 4,
-      'the reporter, the developer, the admin and the bug\'s own address list');
+    assert.equal(res.json.notified.queued, 3,
+      'the reporter, the admin and the bug\'s own address list — not the asker');
 
     const mail = await drain(res.json.id);
     const to = mail.map((m) => m.to).sort();
-    // A bug has a tester and developers, so both are told: a question that reaches
-    // only one person who is off shift is a question nobody answers.
     assert.ok(to.includes('tester@rgm.example'), 'the reporter is told');
-    assert.ok(to.includes('dev@rgm.example'), "and the project's developer");
+    assert.ok(to.includes('admin@rgm.example'), 'and the project\'s other members');
     assert.ok(to.includes('krixi@rgmdn.com'), 'and the bug\'s own address list');
     assert.equal(new Set(to).size, to.length, 'nobody is mailed twice');
+    // The asker is a developer here, and in life an agent: mailing it its own
+    // question is noise, and its address is usually not a mailbox at all.
+    assert.ok(!to.includes('dev@rgm.example'), 'the asker is not mailed its own question');
 
     const msg = mail[0];
     assert.match(msg.subject, /cần bạn làm rõ/, 'the subject says what is wanted');
     assert.match(msg.body, /Where do I see the packing list\?/, 'the question itself is in the mail');
     assert.match(msg.body, new RegExp(bug.code), 'and the bug it is about');
     assert.match(msg.body, /http:\/\/app\.test/, 'with a way back into the app');
+  });
+
+  test('a question asked by the reporter still reaches the project\'s developers', async () => {
+    // A bug has a tester and developers, so a question goes to both roles: if only
+    // the reporter were told, a question asked by them would reach nobody.
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    const res = await ask(w.testerClient, bug.id, 'Can a developer confirm this is a bug and not a setting?');
+
+    const to = (await drain(res.json.id)).map((m) => m.to).sort();
+    assert.ok(to.includes('dev@rgm.example'), "the developer is told");
+    assert.ok(to.includes('admin@rgm.example'), 'and the admin');
+    assert.ok(!to.includes('tester@rgm.example'), 'but not the reporter who asked');
   });
 
   test('any member can answer, and the question stops being open', async () => {

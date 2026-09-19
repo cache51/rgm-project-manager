@@ -1324,7 +1324,9 @@ export function buildRoutes() {
       const notified = await enqueueQuestionNotifications(tx, {
         projectId, bugId: ctx.params.id, questionId: ins.rows[0].id,
         code: reportCode(row.kind, row.bug_number), titleVi: row.title_vi,
-        projectName: row.project_name, question: text
+        projectName: row.project_name, question: text,
+        // Whoever asked does not need to be told what it just asked.
+        askerId: ctx.actor.userId
       });
 
       return { id: ins.rows[0].id, createdAt: ins.rows[0].created_at, notified };
