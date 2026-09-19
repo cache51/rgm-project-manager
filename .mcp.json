@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "rgm": {
-      "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/rgm-mcp.mjs"]
-    }
-  }
-}
