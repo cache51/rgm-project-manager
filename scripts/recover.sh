@@ -271,7 +271,10 @@ step "provision non-owner logins and restart application"
 compose run --rm -T --no-deps runtime-role
 compose up -d app worker
 
-HEALTH_URL=${RGM_HEALTH_URL:-http://127.0.0.1:${APP_PORT:-3000}/api/health}
+# `-` not `:-`: an *empty* RGM_HEALTH_URL is the caller saying "skip the check"
+# (the test harness sets it to ''), while an *unset* one means the default port
+# below. With `:-` the default won and CI hung on a health URL nothing served.
+HEALTH_URL=${RGM_HEALTH_URL-http://127.0.0.1:${APP_PORT:-3000}/api/health}
 HEALTH_ATTEMPTS=${RGM_HEALTH_ATTEMPTS:-30}
 HEALTH_DELAY=${RGM_HEALTH_DELAY:-2}
 if [ -n "$HEALTH_URL" ]; then
