@@ -36,7 +36,18 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    exactly how — on which build, what you did, what you saw before and after.
 6. **`rgm_comment {number, note}`** — say what changed and where, in words a
    tester can act on ("the packing list now accepts a lot with no lining row").
-7. **`rgm_mark_fixed {number, verified_by, note}`** — `verified_by` is **required**
+7. **Self-check before you claim fixed (Jev, if configured).** If a `jev` MCP
+   server is connected, call its `evaluate` with state = the tester's report +
+   your diff + the test command and its fresh output, and these four Noul
+   questions in one call: *the diff addresses the symptom the tester described
+   (not something near it)*; *the cited test ran after the change and its output
+   shows the previously-failing case passing*; *no change outside the reported
+   area* (paths touched vs paths the report is about); *the comment's claims are
+   all backed by that evidence*. Treat the probabilities honestly: they gate
+   whether you look again, not whether the tester verifies. A flag you disagree
+   with is fine — say why in the comment. If `jev` is not connected, skip this
+   step; it is a second pair of eyes, never a licence to claim fixed.
+8. **`rgm_mark_fixed {number, verified_by, note}`** — `verified_by` is **required**
    and is the evidence: the test file and case name, or the exact command, or how
    you checked a symptom that cannot be automated. It is posted on the bug beside
    your note, so the tester reads what already proved it before they check it
