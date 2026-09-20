@@ -68,14 +68,26 @@ Read the request for **which bug** and **which project**, in that order:
   packing-list one": work that bug, following the loop above.
 - **Nothing was named** — `rgm_list_bugs` and take them oldest first, one at a
   time, to completion. Say which ones you did and which you left, and why.
-- **A different project was named** — the tools work the project this machine is
-  set to, not an argument: switch once with `rgm use "<project name>"` (or
-  `rgm projects` to see the options), then follow the two rules above. Never guess
-  a project: a bug in the wrong project is a fix nobody wanted.
+- **A different project was named** — check which project you are on first with
+  `rgm project` (it says where the answer came from), switch with
+  `rgm use "<project name>"` (or `rgm projects` to see the options), then follow
+  the two rules above. Never guess a project: a bug in the wrong project is a fix
+  nobody wanted.
 
-## Configuration
+## Which project you are working in
+
+**A repository is a project.** Each checkout binds itself to its RGM project in
+`.rgm/project.json`, and that binding is the first answer — before `RGM_PROJECT_ID`,
+before the machine-wide selection in `~/.rgm/config.json`. So an agent fixing bugs in
+the checkout it was started in works *that* repository's project, and a project
+someone selected in another checkout cannot redirect it; a bug in the wrong project is
+a fix nobody wanted.
+
+`rgm use "<project>"` writes both the machine-wide selection and this repository's
+binding (`--global` for the machine alone); `rgm project` prints which project applies
+here and why. Two checkouts can therefore work two projects at once, and the binding
+travels with the repository rather than with the person.
 
 Credentials come from `~/.rgm/config.json` (written by
-`rgm login --url <app> --token <api-token>`) or `RGM_URL` / `RGM_TOKEN` /
-`RGM_PROJECT_ID` in the environment. The project the agent works in is
-`rgm use <project>` or `RGM_PROJECT_ID`.
+`rgm login --url <app> --token <api-token>`) or `RGM_URL` / `RGM_TOKEN` in the
+environment.

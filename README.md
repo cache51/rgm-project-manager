@@ -154,9 +154,12 @@ than an empty result.
 
 ### Asking for work
 
-**The project is not an argument.** It is what the machine is pointed at — `rgm use
-"<project>"` — so one agent works one project's bugs, and a bug number is unambiguous
-inside it. Then ask in whatever words you normally use:
+**A repository is a project.** An agent works the project of the checkout it runs in —
+the binding in that repository's `.rgm/project.json`, written by `rgm use "<project>"` —
+so two checkouts can work two projects at once and a selection made somewhere else
+cannot redirect a fix into the wrong project. The order is: this repository, then
+`RGM_PROJECT_ID`, then the machine-wide `~/.rgm/config.json`. `rgm project` prints which
+one applies here and where it came from. Then ask in whatever words you normally use:
 
 ```
 /rgm:bug-intake                        # the project's unresolved bugs, oldest first,

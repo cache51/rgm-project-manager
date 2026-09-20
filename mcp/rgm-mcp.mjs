@@ -20,7 +20,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 // The same extractor `rgm pull` uses, so the MCP inherits its path-traversal and
 // symlink checks rather than unzipping by hand.
-import { extractPacket } from '../src/cli.js';
+import { extractPacket, resolveProject } from '../src/cli.js';
 
 const CONFIG_PATH = process.env.RGM_CONFIG ?? join(homedir(), '.rgm', 'config.json');
 const VERSION = '0.1.0';
@@ -30,7 +30,10 @@ async function loadConfig() {
   try { file = JSON.parse(await readFile(CONFIG_PATH, 'utf8')); } catch { file = {}; }
   const url = process.env.RGM_URL ?? file.url;
   const token = process.env.RGM_TOKEN ?? file.token;
-  const projectId = process.env.RGM_PROJECT_ID ?? file.projectId;
+  // The project is not decided here: resolveProject() answers from the directory
+  // this server was started in (the repository the agent is working in), then the
+  // environment, then the machine-wide selection.
+  const projectId = file.projectId ?? null;
   if (!url || !token) {
     throw new Error('no RGM credentials — run: rgm login --url <app-url> --token <api-token>'
       + ` (looked in ${CONFIG_PATH})`);
@@ -60,15 +63,36 @@ async function json(method, path, body) {
   return res.json();
 }
 
-/** The project this agent works in: configured, or the only one it can see. */
-async function project() {
+/**
+ * The project this agent works in: the repository it runs in, then
+ * RGM_PROJECT_ID, then the machine-wide selection — the same order the CLI uses,
+ * so an agent fixing a bug in a checkout works that checkout's project rather
+ * than whichever project was selected last anywhere on the machine (RGM4-003).
+ * The last resort is the only visible project, which keeps a one-project machine
+ * working with no setup at all.
+ */
+async function projectInfo() {
   const cfg = await loadConfig();
-  if (cfg.projectId) return cfg.projectId;
+  const resolved = await resolveProject({ config: { projectId: cfg.projectId }, env: process.env });
+  if (resolved) {
+    return {
+      id: resolved.id,
+      name: resolved.name ?? null,
+      where: resolved.boundAt ? `${resolved.boundAt}/.rgm/project.json`
+        : resolved.source === 'env' ? 'RGM_PROJECT_ID'
+          : '~/.rgm/config.json (machine-wide)'
+    };
+  }
   const { projects } = await json('GET', '/api/projects');
-  if (projects.length === 1) return projects[0].id;
-  throw new Error('no project selected — run `rgm use <project>`, or set RGM_PROJECT_ID.'
+  if (projects.length === 1) {
+    return { id: projects[0].id, name: projects[0].name, where: 'the only project this token sees' };
+  }
+  throw new Error('no project selected — run `rgm use <project>` in this repository, '
+    + 'or set RGM_PROJECT_ID.'
     + ` Visible projects: ${projects.map((p) => `${p.name} (${p.id})`).join(', ')}`);
 }
+
+async function project() { return (await projectInfo()).id; }
 
 async function bugId(number) {
   const pid = await project();
@@ -94,15 +118,18 @@ const TOOLS = [
       + 'Work them one at a time: fetch with rgm_get_bug, verify, then rgm_mark_fixed.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     async run() {
-      const pid = await project();
-      const { bugs, openCount } = await json('GET', `/api/projects/${pid}/bugs`);
+      const p = await projectInfo();
+      const { bugs, openCount } = await json('GET', `/api/projects/${p.id}/bugs`);
       const open = bugs.filter((b) => b.isOpen).sort((a, b) => a.bug_number - b.bug_number);
-      if (!open.length) return text(`no unresolved bugs (${openCount} open)`);
-      return text(open.map((b) => [
+      // The project and where that answer came from, first, so an agent working
+      // the wrong repository sees it in the call it was already going to make.
+      const header = `project: ${p.name ?? p.id}  (from ${p.where})`;
+      if (!open.length) return text(`${header}\nno unresolved bugs (${openCount} open)`);
+      return text([header, ...open.map((b) => [
         b.code, b.status, b.severity, b.kind === 'feature' ? 'request' : 'bug',
         b.openQuestions ? `${b.openQuestions} unanswered question(s)` : null,
         b.title_vi
-      ].filter(Boolean).join('  ')).join('\n'));
+      ].filter(Boolean).join('  '))].join('\n'));
     }
   },
   {

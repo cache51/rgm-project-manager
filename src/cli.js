@@ -4,7 +4,8 @@
  *
  *   rgm login --url http://localhost:3000 --token <api-token>
  *   rgm projects
- *   rgm use <project-id-or-name>
+ *   rgm use <project-id-or-name>   # also binds the repository it is run in
+ *   rgm project              # which project this directory works, and why
  *   rgm bugs
  *   rgm prompt 142            # print the agent handoff prompt to stdout
  *   rgm pull 142              # fetch the packet and extract it under .rgm/BUG-142
@@ -25,6 +26,7 @@
  * stops at "awaiting verification": closing a report is the filer's call.
  */
 import { readFile, writeFile, mkdir, lstat, rm, chmod } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { readZip } from './unzip.js';
@@ -129,6 +131,71 @@ async function assertNoSymlinkedAncestor(targetDir, relPath) {
       if (err.code === 'ENOENT') return;             // will be created for real
       throw err;
     }
+  }
+}
+
+/**
+ * Walk up from `startDir` for the nearest repository binding, or null.
+ *
+ * The nearest one wins, so a checkout inside another checkout belongs to the
+ * innermost project — the one someone actually bound.
+ */
+export async function findRepoBinding(startDir) {
+  let dir = startDir;
+  for (;;) {
+    try {
+      const parsed = JSON.parse(await readFile(join(dir, '.rgm', BINDING_FILE), 'utf8'));
+      if (parsed?.id) return { id: parsed.id, name: parsed.name ?? null, boundAt: dir };
+      return null;                    // a binding without an id is not a licence to guess
+    } catch (err) {
+      if (err.code !== 'ENOENT') return null;   // unreadable is also not a licence to guess
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
+ * Which project a command should work, and where that answer came from.
+ *
+ * A repository is the unit of work, and the project is a property of it: an agent
+ * fixing bugs in one checkout must not depend on whichever project someone last
+ * selected on this machine. That failure is not hypothetical — switching projects
+ * in one repository and then pulling in another fetched the wrong project's bug
+ * over the same path (RGM4-003), which is why `pull` started binding its output
+ * directory. The binding is now the first answer for every command, found by
+ * walking up from where the command runs; the environment and then the global
+ * config remain for a machine that only ever works one project.
+ */
+export async function resolveProject({ cwd = process.cwd(), config = {}, env = process.env } = {}) {
+  const bound = await findRepoBinding(cwd);
+  if (bound) return bound;
+  if (env.RGM_PROJECT_ID) return { id: env.RGM_PROJECT_ID, name: null, source: 'env' };
+  if (config.projectId) return { id: config.projectId, name: config.projectName ?? null, source: 'config' };
+  return null;
+}
+
+/** Bind this directory to a project, replacing a previous binding. */
+export async function writeBinding(rootDir, project) {
+  const path = join(rootDir, BINDING_FILE);
+  let previous = null;
+  try { previous = JSON.parse(await readFile(path, 'utf8')); } catch { previous = null; }
+
+  await mkdir(rootDir, { recursive: true });
+  await writeFile(path, `${JSON.stringify(
+    { id: project.id, name: project.name ?? null, boundAt: new Date().toISOString() }, null, 2)}\n`);
+  return previous;
+}
+
+/** The repository root, so a binding lands at the top of the checkout. */
+export function repoRoot(startDir = process.cwd()) {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--show-toplevel'],
+      { cwd: startDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return out || startDir;
+  } catch {
+    return startDir;   // not a repository: the directory itself is the unit
   }
 }
 
@@ -372,14 +439,36 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
     const match = projects.find(p => p.id === wanted || p.name === wanted);
     if (!match) throw new Error(`no project matching ${wanted}`);
     await saveConfig({ ...config, projectId: match.id, projectName: match.name });
-    return `using ${match.name}`;
+
+    // The repository remembers it too, so what an agent works is a property of the
+    // checkout rather than of the last person to run this command anywhere on the
+    // machine (resolveProject). `--global` says you meant the machine, not the repo.
+    if (args.global) return `using ${match.name}`;
+
+    const root = repoRoot(process.cwd());
+    const previous = await writeBinding(join(root, '.rgm'), { id: match.id, name: match.name });
+    const replaced = previous?.id && previous.id !== match.id
+      ? ` (was ${previous.name ?? previous.id})` : '';
+    return `using ${match.name}\n  bound ${root}/.rgm/${BINDING_FILE}${replaced}`;
   }
 
 
-  if (!config.projectId) throw new Error('no project selected — run: rgm use <project>');
+  // Which project this command works: the repository it runs in, then the
+  // environment, then the machine-wide selection (RGM4-003 — see resolveProject).
+  const project = await resolveProject({ config, env: process.env });
+  if (!project) {
+    throw new Error('no project selected — run: rgm use <project>, or pull once to bind this directory');
+  }
+  const projectId = project.id;
+
+  if (command === 'project') {
+    const where = project.boundAt ? `${project.boundAt}/.rgm/${BINDING_FILE}`
+      : project.source === 'env' ? 'RGM_PROJECT_ID' : '~/.rgm/config.json';
+    return `${project.name ?? project.id}  (${project.id})\n  from ${where}`;
+  }
 
   if (command === 'bugs') {
-    const res = await call('GET', `/api/projects/${config.projectId}/bugs`);
+    const res = await call('GET', `/api/projects/${projectId}/bugs`);
     const { bugs, openCount } = await res.json();
     return [`open: ${openCount}`, ...bugs.map(b =>
       `${b.code}  ${b.status.padEnd(7)} ${b.severity.padEnd(6)} ${b.title_vi}`)].join('\n');
@@ -389,7 +478,7 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
     const number = Number(args._[1]);
     if (!Number.isInteger(number)) throw new Error(`${command} needs a bug number`);
 
-    const found = await call('GET', `/api/projects/${config.projectId}/bugs/by-number/${number}`);
+    const found = await call('GET', `/api/projects/${projectId}/bugs/by-number/${number}`);
     const { id, code } = await found.json();
 
     if (command === 'prompt') {
@@ -400,17 +489,16 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
     const res = await call('GET', `/api/bugs/${id}/packet`, { accept: 'application/zip' });
     const zip = Buffer.from(await res.arrayBuffer());
 
-    // Before anything is written: the packet must be from the project this CLI is
-    // set to (IR-009).
-    assertPacketBelongsToProject(zip, config.projectId);
+    // Before anything is written: the packet must be from the project this
+    // directory works (IR-009).
+    assertPacketBelongsToProject(zip, projectId);
 
     const root = args.out ?? '.rgm';
     const outDir = join(root, code);
     await ensureIgnored(root);
-    // The repository's own project, before anything is written. `rgm use` is global,
-    // so this is what stops a project switch elsewhere from redirecting a pull here
-    // (RGM4-003).
-    await bindProject(root, { id: config.projectId, name: config.projectName });
+    // The repository's own project, before anything is written, so a later pull
+    // here cannot be redirected by a project selected elsewhere (RGM4-003).
+    await bindProject(root, { id: projectId, name: project.name });
     const written = await extractPacket(zip, outDir);
     return `${code} -> ${outDir}\n  ${written.join('\n  ')}`;
   }
@@ -422,7 +510,7 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
   const bugRef = async (position) => {
     const number = Number(args._[position]);
     if (!Number.isInteger(number)) throw new Error(`${command} needs a bug number`);
-    const found = await call('GET', `/api/projects/${config.projectId}/bugs/by-number/${number}`);
+    const found = await call('GET', `/api/projects/${projectId}/bugs/by-number/${number}`);
     return found.json();
   };
 
