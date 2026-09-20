@@ -6,6 +6,7 @@
  *   rgm projects
  *   rgm use <project-id-or-name>   # also binds the repository it is run in
  *   rgm project              # which project this directory works, and why
+ *   rgm bugs --project "PO Auto-import"   # name it when one repository holds several
  *   rgm bugs
  *   rgm prompt 142            # print the agent handoff prompt to stdout
  *   rgm pull 142              # fetch the packet and extract it under .rgm/BUG-142
@@ -168,7 +169,11 @@ export async function findRepoBinding(startDir) {
  * walking up from where the command runs; the environment and then the global
  * config remain for a machine that only ever works one project.
  */
-export async function resolveProject({ cwd = process.cwd(), config = {}, env = process.env } = {}) {
+export async function resolveProject({ cwd = process.cwd(), config = {}, env = process.env, explicit } = {}) {
+  // An explicit choice wins, because a name given at the call is the one piece of
+  // evidence that is not an inference: one repository can hold several projects
+  // (a feature each), and then the directory alone cannot decide.
+  if (explicit) return { id: explicit.id, name: explicit.name ?? null, source: 'argument' };
   const bound = await findRepoBinding(cwd);
   if (bound) return bound;
   if (env.RGM_PROJECT_ID) return { id: env.RGM_PROJECT_ID, name: null, source: 'env' };
@@ -425,6 +430,17 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
   if (!config.url || !config.token) throw new Error('not signed in — run: rgm login --url ... --token ...');
   const { call } = api(config);
 
+  /** A project by id or name, as the app knows it. */
+  const findProject = async (wanted) => {
+    const { projects } = await (await call('GET', '/api/projects')).json();
+    const match = projects.find((p) => p.id === wanted || p.name === wanted);
+    if (!match) {
+      throw new Error(`no project matching ${wanted} — you can see: `
+        + projects.map((p) => `${p.name} (${p.id})`).join(', '));
+    }
+    return match;
+  };
+
   if (command === 'projects') {
     const res = await call('GET', '/api/projects');
     const { projects } = await res.json();
@@ -434,10 +450,7 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
   if (command === 'use') {
     const wanted = args._[1];
     if (!wanted) throw new Error('use needs a project id or name');
-    const res = await call('GET', '/api/projects');
-    const { projects } = await res.json();
-    const match = projects.find(p => p.id === wanted || p.name === wanted);
-    if (!match) throw new Error(`no project matching ${wanted}`);
+    const match = await findProject(wanted);
     await saveConfig({ ...config, projectId: match.id, projectName: match.name });
 
     // The repository remembers it too, so what an agent works is a property of the
@@ -453,17 +466,20 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
   }
 
 
-  // Which project this command works: the repository it runs in, then the
-  // environment, then the machine-wide selection (RGM4-003 — see resolveProject).
-  const project = await resolveProject({ config, env: process.env });
+  // Which project this command works: one named at the call, else the repository it
+  // runs in, else the environment, else the machine-wide selection (see
+  // resolveProject — one repository can hold several projects, a feature each).
+  const explicit = args.project ? await findProject(args.project) : null;
+  const project = await resolveProject({ config, env: process.env, explicit });
   if (!project) {
     throw new Error('no project selected — run: rgm use <project>, or pull once to bind this directory');
   }
   const projectId = project.id;
 
   if (command === 'project') {
-    const where = project.boundAt ? `${project.boundAt}/.rgm/${BINDING_FILE}`
-      : project.source === 'env' ? 'RGM_PROJECT_ID' : '~/.rgm/config.json';
+    const where = project.source === 'argument' ? `--project (${explicit.name})`
+      : project.boundAt ? `${project.boundAt}/.rgm/${BINDING_FILE}`
+        : project.source === 'env' ? 'RGM_PROJECT_ID' : '~/.rgm/config.json';
     return `${project.name ?? project.id}  (${project.id})\n  from ${where}`;
   }
 

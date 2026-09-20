@@ -25,6 +25,19 @@ import { extractPacket, resolveProject } from '../src/cli.js';
 const CONFIG_PATH = process.env.RGM_CONFIG ?? join(homedir(), '.rgm', 'config.json');
 const VERSION = '0.1.0';
 
+/**
+ * Every tool that touches a bug takes the same optional project, because one
+ * repository can hold several projects — a feature each — and then the directory
+ * alone cannot decide which one is meant.
+ */
+const PROJECT_ARG = {
+  project: {
+    type: 'string',
+    description: 'Project name or id. Needed only when this repository works more than one '
+      + 'project; it overrides the repository binding.'
+  }
+};
+
 async function loadConfig() {
   let file = {};
   try { file = JSON.parse(await readFile(CONFIG_PATH, 'utf8')); } catch { file = {}; }
@@ -71,7 +84,20 @@ async function json(method, path, body) {
  * The last resort is the only visible project, which keeps a one-project machine
  * working with no setup at all.
  */
-async function projectInfo() {
+async function projectInfo(wanted) {
+  // A project named at the call is the one piece of evidence that is not an
+  // inference: it beats the repository binding, RGM_PROJECT_ID, and the machine-wide
+  // selection — the same order resolveProject() gives the CLI.
+  if (wanted) {
+    const { projects } = await json('GET', '/api/projects');
+    const match = projects.find((p) => p.id === wanted || p.name === wanted);
+    if (!match) {
+      throw new Error(`no project matching ${wanted} — you can see: `
+        + projects.map((p) => `${p.name} (${p.id})`).join(', '));
+    }
+    return { id: match.id, name: match.name, where: 'the project argument' };
+  }
+
   const cfg = await loadConfig();
   const resolved = await resolveProject({ config: { projectId: cfg.projectId }, env: process.env });
   if (resolved) {
@@ -92,10 +118,10 @@ async function projectInfo() {
     + ` Visible projects: ${projects.map((p) => `${p.name} (${p.id})`).join(', ')}`);
 }
 
-async function project() { return (await projectInfo()).id; }
+async function project(wanted) { return (await projectInfo(wanted)).id; }
 
-async function bugId(number) {
-  const pid = await project();
+async function bugId(number, wanted) {
+  const pid = await project(wanted);
   const found = await json('GET', `/api/projects/${pid}/bugs/by-number/${Number(number)}`);
   return { id: found.id, code: found.code, projectId: pid };
 }
@@ -116,9 +142,9 @@ const TOOLS = [
     name: 'rgm_list_bugs',
     description: 'List the unresolved bugs in this agent\'s project, oldest first, one line each. '
       + 'Work them one at a time: fetch with rgm_get_bug, verify, then rgm_mark_fixed.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    async run() {
-      const p = await projectInfo();
+    inputSchema: { type: 'object', properties: { ...PROJECT_ARG }, additionalProperties: false },
+    async run({ project: wanted }) {
+      const p = await projectInfo(wanted);
       const { bugs, openCount } = await json('GET', `/api/projects/${p.id}/bugs`);
       const open = bugs.filter((b) => b.isOpen).sort((a, b) => a.bug_number - b.bug_number);
       // The project and where that answer came from, first, so an agent working
@@ -138,11 +164,14 @@ const TOOLS = [
       + 'status, attachments, and any questions still unanswered). Read this before starting.',
     inputSchema: {
       type: 'object',
-      properties: { number: { type: 'integer', description: 'BUG number, e.g. 7 for BUG-7' } },
+      properties: {
+        number: { type: 'integer', description: 'BUG number, e.g. 7 for BUG-7' },
+        ...PROJECT_ARG
+      },
       required: ['number'], additionalProperties: false
     },
-    async run({ number }) {
-      const { id, code } = await bugId(number);
+    async run({ number, project: wanted }) {
+      const { id, code } = await bugId(number, wanted);
       const [promptRes, bug] = await Promise.all([
         call('GET', `/api/bugs/${id}/prompt`),
         json('GET', `/api/bugs/${id}`)
@@ -179,12 +208,13 @@ const TOOLS = [
       type: 'object',
       properties: {
         number: { type: 'integer' },
-        dir: { type: 'string', description: 'where to unpack (default: .rgm)' }
+        dir: { type: 'string', description: 'where to unpack (default: .rgm)' },
+        ...PROJECT_ARG
       },
       required: ['number'], additionalProperties: false
     },
-    async run({ number, dir }) {
-      const { id, code } = await bugId(number);
+    async run({ number, dir, project: wanted }) {
+      const { id, code } = await bugId(number, wanted);
       const res = await call('GET', `/api/bugs/${id}/packet`);
       const zip = Buffer.from(await res.arrayBuffer());
       const outDir = join(dir ?? '.rgm', code);
@@ -204,12 +234,13 @@ const TOOLS = [
       properties: {
         number: { type: 'integer' },
         name: { type: 'string', description: 'attachment name, e.g. screenshot_01.png' },
-        out: { type: 'string', description: 'where to write it (default: .rgm/<CODE>/<name>)' }
+        out: { type: 'string', description: 'where to write it (default: .rgm/<CODE>/<name>)' },
+        ...PROJECT_ARG
       },
       required: ['number', 'name'], additionalProperties: false
     },
-    async run({ number, name, out }) {
-      const { id, code } = await bugId(number);
+    async run({ number, name, out, project: wanted }) {
+      const { id, code } = await bugId(number, wanted);
       const bug = await json('GET', `/api/bugs/${id}`);
       const all = bug.attachments ?? [];
       const att = all.find((a) => a.name === name || a.originalFilename === name);
@@ -234,12 +265,13 @@ const TOOLS = [
       type: 'object',
       properties: {
         number: { type: 'integer' },
-        question: { type: 'string', description: 'what you need to know, as plainly as you can' }
+        question: { type: 'string', description: 'what you need to know, as plainly as you can' },
+        ...PROJECT_ARG
       },
       required: ['number', 'question'], additionalProperties: false
     },
-    async run({ number, question }) {
-      const { id, code } = await bugId(number);
+    async run({ number, question, project: wanted }) {
+      const { id, code } = await bugId(number, wanted);
       const out = await json('POST', `/api/bugs/${id}/questions`, { body: question });
       return text(`asked on ${code} (id ${out.id}); notified ${out.notified?.queued ?? 0} address(es)`);
     }
@@ -250,11 +282,11 @@ const TOOLS = [
       + 'asked earlier has been answered before you carry on.',
     inputSchema: {
       type: 'object',
-      properties: { number: { type: 'integer' } },
+      properties: { number: { type: 'integer' }, ...PROJECT_ARG },
       required: ['number'], additionalProperties: false
     },
-    async run({ number }) {
-      const { id, code } = await bugId(number);
+    async run({ number, project: wanted }) {
+      const { id, code } = await bugId(number, wanted);
       const { open, questions } = await json('GET', `/api/bugs/${id}/questions`);
       if (!questions.length) return text(`${code}: no questions`);
       return text(`${code}: ${open} open\n` + questions.map((q) => {
@@ -271,12 +303,13 @@ const TOOLS = [
       type: 'object',
       properties: {
         number: { type: 'integer' },
-        note: { type: 'string' }
+        note: { type: 'string' },
+        ...PROJECT_ARG
       },
       required: ['number', 'note'], additionalProperties: false
     },
-    async run({ number, note }) {
-      const { id, code } = await bugId(number);
+    async run({ number, note, project: wanted }) {
+      const { id, code } = await bugId(number, wanted);
       await json('POST', `/api/bugs/${id}/comments`, { note });
       return text(`commented on ${code}`);
     }
@@ -298,11 +331,12 @@ const TOOLS = [
           description: 'what proves this is fixed — a test file and case name, or a command, or '
             + 'how you reproduced the original symptom and showed it gone'
         },
-        note: { type: 'string', description: 'what to tell the tester about verifying this' }
+        note: { type: 'string', description: 'what to tell the tester about verifying this' },
+        ...PROJECT_ARG
       },
       required: ['number', 'verified_by'], additionalProperties: false
     },
-    async run({ number, verified_by: verifiedBy, note }) {
+    async run({ number, verified_by: verifiedBy, note, project: wanted }) {
       // Required, not suggested: a "fixed" with no evidence is a claim the tester
       // has to re-do from scratch, and the report a self-test would have caught
       // comes straight back.
@@ -312,7 +346,7 @@ const TOOLS = [
           + '(watch it fail), make it pass, then name it here (or the exact command, or how you '
           + 'checked a symptom that cannot be automated)');
       }
-      const { id, code } = await bugId(number);
+      const { id, code } = await bugId(number, wanted);
       const before = await json('GET', `/api/bugs/${id}`);
       if (before.status === 'retest') return text(`${code} is already awaiting verification`);
       if (before.status === 'closed') throw new Error(`${code} is closed — reopen it before marking it fixed`);

@@ -172,6 +172,26 @@ Or skip the slash command: *"work the RGM bugs the testers filed"* invokes the s
 itself, because that is what its description says it is for. To switch project, say so —
 the agent runs `rgm use "<project>"` first.
 
+### One repository, several projects
+
+A project is often a *feature*, and one repository can hold several — so the binding is
+per directory, not per repository, and a "project name" is only a label on the app's
+side. Two shapes, both covered:
+
+- **The features live in their own directories.** `rgm use "<project>"` inside that
+  directory binds the subtree. The nearest binding wins, so `apps/packing/` can work
+  one project while `apps/projection/` works another inside the same checkout, and two
+  agents can work both at once.
+- **Two projects share one directory.** Name the project at the call:
+  `rgm bugs --project "PO Auto-import"`, or the same `project` argument on any MCP tool.
+  An explicit name beats the binding, and the output says where the answer came from
+  (`from the project argument`), so the wrong project is visible rather than inferred —
+  a name that matches nothing is an error, never a silent fallback.
+
+Pulling packets for two projects into one directory would put both under `.rgm/<CODE>`,
+which is exactly the collision `pull` refuses, so give the second one its own root:
+`rgm pull 12 --out .rgm/po-auto-import`.
+
 From a shell, the same loop without an agent in the middle:
 
 ```

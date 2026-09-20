@@ -153,6 +153,44 @@ test('`use` binds the repository it is run in', async () => {
   }
 });
 
+test('a project named at the call beats the repository binding', async () => {
+  await saveConfig({ url: 'http://127.0.0.1:9', token: 't', projectId: null });
+  const { root } = await repo('named', { id: 'p-warehouse', name: 'Fabric Warehouse' });
+  const cwd = process.cwd();
+
+  const fetchBefore = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    json: async () => ({ projects: [{ id: 'p-other', name: 'Project Other' }] })
+  });
+
+  try {
+    process.chdir(root);
+    const out = await run(['project', '--project', 'Project Other']);
+
+    assert.match(out, /^Project Other\s+\(p-other\)/, 'the named project is the one reported');
+    assert.match(out, /from --project/, 'and it says the answer came from the call');
+  } finally {
+    process.chdir(cwd);
+    globalThis.fetch = fetchBefore;
+  }
+});
+
+test('resolveProject: an explicit project wins over every other source', async () => {
+  const { dir } = await repo('explicit', { id: 'p-warehouse', name: 'Fabric Warehouse' });
+
+  const resolved = await resolveProject({
+    cwd: dir,
+    config: MACHINE,
+    env: { RGM_PROJECT_ID: 'p-env' },
+    explicit: { id: 'p-other', name: 'Project Other' }
+  });
+
+  assert.equal(resolved.id, 'p-other');
+  assert.equal(resolved.source, 'argument',
+    'the one piece of evidence that is not an inference is the name given at the call');
+});
+
 test('`use --global` means the machine, and leaves the repository alone', async () => {
   await saveConfig({ url: 'http://127.0.0.1:9', token: 't', projectId: null });
   const { root } = await repo('global', null);

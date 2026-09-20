@@ -88,6 +88,15 @@ binding (`--global` for the machine alone); `rgm project` prints which project a
 here and why. Two checkouts can therefore work two projects at once, and the binding
 travels with the repository rather than with the person.
 
+**When one repository holds several projects** — a feature each — the binding is per
+directory, not per repository:
+
+- Features in their own directories: `rgm use "<project>"` inside that directory binds
+  the subtree, and the nearest binding wins.
+- Two projects in one directory: name it at the call — `rgm <command> --project
+  "<name>"`, or the `project` argument on any tool here. An explicit name beats the
+  binding, and a name that matches nothing is an error rather than a silent fallback.
+
 Credentials come from `~/.rgm/config.json` (written by
 `rgm login --url <app> --token <api-token>`) or `RGM_URL` / `RGM_TOKEN` in the
 environment.

@@ -116,6 +116,14 @@ describe('the project the agent works', () => {
     const { createServer } = await import('node:http');
     const seen = [];
     const server = createServer((req, res) => {
+      if (req.url === '/api/projects') {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ projects: [
+          { id: 'p-warehouse', name: 'Fabric Warehouse' },
+          { id: 'p-other', name: 'Project Other' }
+        ] }));
+        return;
+      }
       const match = /^\/api\/projects\/([^/]+)\/bugs$/.exec(req.url);
       if (!match) { res.statusCode = 404; res.end('{}'); return; }
       seen.push(match[1]);
@@ -189,6 +197,48 @@ describe('the project the agent works', () => {
       await app.stop();
       const { rm } = await import('node:fs/promises');
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a project named at the call beats the binding: one repo, several projects', async () => {
+    const app = await stubApp();
+    const dir = await boundRepo({ id: 'p-warehouse', name: 'Fabric Warehouse' });
+    const s = session({
+      RGM_URL: app.url, RGM_TOKEN: 't', RGM_CONFIG: '/nonexistent/rgm.json'
+    }, { cwd: dir });
+    try {
+      // The checkout belongs to Fabric Warehouse, but this call asks for another
+      // project that lives in the same repository — a feature, not a directory.
+      const res = await s.request('tools/call', {
+        name: 'rgm_list_bugs', arguments: { project: 'Project Other' }
+      });
+      const out = res.result.content[0].text;
+
+      assert.deepEqual(app.seen, ['p-other'], 'the named project is the one asked for');
+      assert.match(out, /project: Project Other/, 'and the agent is told which one it got');
+      assert.match(out, /from the project argument/, 'including that it came from the call');
+    } finally {
+      s.stop();
+      await app.stop();
+      const { rm } = await import('node:fs/promises');
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a project argument that matches nothing is an error, never a guess', async () => {
+    const app = await stubApp();
+    const s = session({ RGM_URL: app.url, RGM_TOKEN: 't', RGM_CONFIG: '/nonexistent/rgm.json' });
+    try {
+      const res = await s.request('tools/call', {
+        name: 'rgm_list_bugs', arguments: { project: 'No Such Project' }
+      });
+
+      assert.match(res.result.content[0].text, /no project matching No Such Project/,
+        'a typo is reported, not silently resolved to the bound project');
+      assert.deepEqual(app.seen, [], 'and nothing was fetched from any project');
+    } finally {
+      s.stop();
+      await app.stop();
     }
   });
 });
