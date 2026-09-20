@@ -70,11 +70,11 @@ jobs:
       - run: npm ci
       - name: Apply every migration to a real Postgres and verify the grants
         env:
-          DATABASE_URL: postgres://postgres:***@127.0.0.1:5432/rgm
-        # A script file, not `node -e '...'`: an apostrophe in a comment inside
-        # the quoted string closed the shell string and the job died with a
-        # SyntaxError that looked like a code failure (it was the word
-        # "application's"). See scripts/ci-postgres-check.mjs.
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/rgm
+        # A script file, not `node -e '...'`: an apostrophe in a comment
+        # inside the quoted string closed it early and the job died with a
+        # SyntaxError that looked like a code failure. See
+        # scripts/ci-postgres-check.mjs.
         run: node scripts/ci-postgres-check.mjs
       - name: The app suite runs against real Postgres too
         env:
