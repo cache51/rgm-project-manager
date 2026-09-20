@@ -13,7 +13,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 
 const home = await mkdtemp(join(tmpdir(), 'rgm-cli-post-'));
 process.env.RGM_CONFIG = join(home, '.rgm', 'config.json');
@@ -104,4 +104,36 @@ test('GET-shaped calls still send no body and no content-type', async () => {
     assert.equal(get.body, undefined);
     assert.equal(get.contentType, null, 'JSON content-type on a GET invites the server to await a body that is not there');
   } finally { r.restore(); }
+});
+
+test('the CLI runs when launched through a symlink, the way npm link installs it', async () => {
+  // The direct-invocation guard compares import.meta.url to argv[1]. A symlinked
+  // launcher (npm link, ~/.local/bin/rgm) names the link, and the old strict
+  // string match exited 0 silently — perfectly configured, visibly dead.
+  // No server here on purpose: an unsignable config must still produce a real
+  // complaint ("not signed in"), which is what proves the command ran at all.
+  const { symlink } = await import('node:fs/promises');
+  const { spawn: spawnChild } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const dir = await mkdtemp(join(tmpdir(), 'rgm-cli-symlink-'));
+  const link = join(dir, 'rgm');
+  await symlink(join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli.js'), link);
+
+  const out = await new Promise((resolve, reject) => {
+    const child = spawnChild(process.execPath, [link, 'projects'], {
+      env: { ...process.env, RGM_CONFIG: join(dir, 'no-such-config.json') },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let stdout = ''; let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+
+  assert.ok(out.stdout || out.stderr,
+    'a symlinked CLI that prints nothing and exits 0 is invisible death: every npm-link user has it');
+  assert.match(out.stdout + out.stderr, /not signed in|Fabric Warehouse|http/,
+    'the command ran and said something about the world it expected');
+  await rm(dir, { recursive: true, force: true });
 });

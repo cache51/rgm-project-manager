@@ -28,7 +28,9 @@
  */
 import { readFile, writeFile, mkdir, lstat, rm, chmod } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
+import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { join, dirname } from 'node:path';
 import { readZip } from './unzip.js';
 import { assertSafeRelativePath, packetPathFor } from './packet.js';
@@ -605,7 +607,12 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
 }
 
 // Only run as a CLI when invoked directly, so tests can import the pieces.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Resolve symlinks before comparing: npm link and ~/.local/bin/rgm launch this
+// file through a symlink, and argv[1] then names the link, not the module —
+// the old strict comparison silently exited 0 doing nothing, the worst kind
+// of failure for an install path that is otherwise perfectly configured.
+if (process.argv[1] && import.meta.url === pathToFileURL(await realpath(process.argv[1])
+  .catch(() => process.argv[1])).href) {
   try {
     const output = await run();
     if (output) process.stdout.write(output + '\n');
