@@ -247,9 +247,21 @@ describe('smtp mailer', () => {
     // IR-024: the URL is worker configuration, not an outbox column — reading
     // `n.baseUrl` always fell back to the placeholder.
     const message = composeNotification(
+      { kind: 'milestone.ready', payload: { milestoneCode: 'M3', projectName: 'Packing Line' },
+        dedupe_key: 'k' },
+      { baseUrl: 'https://rgm.example' });
+    assert.match(message.subject, /^\[RGM\] Packing Line — M3/,
+      'the subject names the project: a tester with several projects sorts mail by it');
+    assert.match(message.body, /https:\/\/rgm\.example/);
+    assert.ok(!message.body.includes('null'),
+      'the conditional body line must not render a literal null');
+    // Rows queued before this change carry no projectName: they keep the old
+    // subject shape rather than printing "null — ".
+    const legacy = composeNotification(
       { kind: 'milestone.ready', payload: { milestoneCode: 'M3' }, dedupe_key: 'k' },
       { baseUrl: 'https://rgm.example' });
-    assert.match(message.body, /https:\/\/rgm\.example/);
+    assert.equal(legacy.subject, '[RGM] M3 sẵn sàng kiểm thử');
+    assert.ok(!legacy.body.includes('null'));
     assert.ok(!message.body.includes('chưa cấu hình'),
       'the placeholder means the configured URL never reached the composer');
   });

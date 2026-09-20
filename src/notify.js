@@ -36,6 +36,13 @@ export const FailingSender = (message = 'smtp down') => ({
 export async function enqueueReadyNotifications(db, {
   projectId, milestoneId, generation, milestoneCode = null
 }) {
+  // The name goes in here rather than through the caller's argument list: every
+  // mail needs it now, and this is the one enqueue that did not already have the
+  // project row. Read in the same transaction, so a rename mid-flight cannot
+  // mean the notice describes a project by a name that no longer matches.
+  const proj = await db.query(`SELECT name FROM projects WHERE id = $1`, [projectId]);
+  const projectName = proj.rows[0]?.name ?? null;
+
   const recipients = await db.query(
     `SELECT user_id FROM active_memberships WHERE project_id = $1 AND role = 'tester'`,
     [projectId]);
@@ -50,7 +57,7 @@ export async function enqueueReadyNotifications(db, {
        ON CONFLICT (dedupe_key) DO NOTHING
        RETURNING id`,
       [projectId, milestoneId, r.user_id, key,
-        JSON.stringify({ milestoneCode, generation })]);
+        JSON.stringify({ milestoneCode, generation, projectName })]);
     queued += res.rows.length;
   }
   return { recipients: recipients.rows.length, queued };
@@ -174,11 +181,15 @@ export async function enqueueQuestionNotifications(db, {
  */
 export function composeNotification(n, { baseUrl = null } = {}) {
   const payload = n.payload ?? {};
+  // The project leads the subject: a tester on several projects sorts mail by it,
+  // and a bare "BUG-7" means nothing across three boards.
+  const where = payload.projectName ? `[RGM] ${payload.projectName} — ` : '[RGM] ';
   if (n.kind === 'milestone.ready') {
     const code = payload.milestoneCode ?? 'milestone';
     return {
-      subject: `[RGM] ${code} sẵn sàng kiểm thử`,
+      subject: `${where}${code} sẵn sàng kiểm thử`,
       body: [
+        payload.projectName ? `Dự án: ${payload.projectName}` : null,
         `Cột mốc ${code} đã sẵn sàng để kiểm thử.`,
         '',
         'Mở ứng dụng để xem các cột mốc và gửi lỗi kèm ảnh chụp màn hình:',
@@ -189,13 +200,13 @@ export function composeNotification(n, { baseUrl = null } = {}) {
         `-- `,
         `Thông báo: ${n.kind}`,
         `Mã: ${n.dedupe_key}`
-      ].join('\n')
+      ].filter((line) => line !== null).join('\n')
     };
   }
   if (n.kind === 'bug.retest') {
     const code = payload.code ?? 'bug';
     return {
-      subject: `[RGM] ${code} đã sửa — chờ xác nhận`,
+      subject: `${where}${code} đã sửa — chờ xác nhận`,
       body: [
         payload.projectName ? `Dự án: ${payload.projectName}` : null,
         `${code}${payload.title ? ` — ${payload.title}` : ''}`,
@@ -214,7 +225,7 @@ export function composeNotification(n, { baseUrl = null } = {}) {
   if (n.kind === 'bug.question') {
     const code = payload.code ?? 'bug';
     return {
-      subject: `[RGM] ${code} — cần bạn làm rõ`,
+      subject: `${where}${code} — cần bạn làm rõ`,
       body: [
         payload.projectName ? `Dự án: ${payload.projectName}` : null,
         `${code}${payload.title ? ` — ${payload.title}` : ''}`,

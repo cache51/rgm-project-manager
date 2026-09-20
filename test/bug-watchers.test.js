@@ -113,6 +113,9 @@ describe('a bug carries the addresses that hear about the fix', () => {
 
     const msg = sent[0];
     assert.match(msg.subject, /đã sửa — chờ xác nhận/, 'the subject says why');
+    // A tester watching several projects picks the mail up by its subject; a bare
+    // BUG-7 says which bug and none about which project.
+    assert.match(msg.subject, /Packing Line/, 'the subject names the project');
     assert.match(msg.body, new RegExp(bug.code), 'and the body names the bug');
     assert.match(msg.body, /http:\/\/app\.test/, 'with a way back into the app');
     assert.equal(msg.idempotencyKey, msg.dedupeKey, 'the key is the idempotency key');

@@ -80,6 +80,7 @@ describe('a bug carries the questions asked about it', () => {
 
     const msg = mail[0];
     assert.match(msg.subject, /cần bạn làm rõ/, 'the subject says what is wanted');
+    assert.match(msg.subject, /Packing Line/, 'and names the project it is about');
     assert.match(msg.body, /Where do I see the packing list\?/, 'the question itself is in the mail');
     assert.match(msg.body, new RegExp(bug.code), 'and the bug it is about');
     assert.match(msg.body, /http:\/\/app\.test/, 'with a way back into the app');
