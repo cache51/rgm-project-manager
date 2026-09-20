@@ -558,7 +558,7 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
     // nesting; both layers used to be absent (the option was dropped entirely).
     const res = await call('POST', `/api/bugs/${id}/questions`, { body: { body: question } });
     const out = await res.json();
-    return `asked on ${code} (notified ${out.notified?.queued ?? 0} address(es))`;
+    return `asked on ${code} (one mail to ${out.notified?.recipients ?? 0} recipient(s))`;
   }
 
   if (command === 'questions') {

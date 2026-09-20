@@ -278,7 +278,8 @@ const TOOLS = [
     async run({ number, question, project: wanted }) {
       const { id, code } = await bugId(number, wanted);
       const out = await json('POST', `/api/bugs/${id}/questions`, { body: question });
-      return text(`asked on ${code} (id ${out.id}); notified ${out.notified?.queued ?? 0} address(es)`);
+      return text(`asked on ${code} (id ${out.id}); one mail to `
+        + `${out.notified?.recipients ?? 0} recipient(s)`);
     }
   },
   {
