@@ -77,17 +77,15 @@ async function json(method, path, body) {
 }
 
 /**
- * The project this agent works in: the repository it runs in, then
- * RGM_PROJECT_ID, then the machine-wide selection — the same order the CLI uses,
- * so an agent fixing a bug in a checkout works that checkout's project rather
- * than whichever project was selected last anywhere on the machine (RGM4-003).
- * The last resort is the only visible project, which keeps a one-project machine
- * working with no setup at all.
+ * The project this agent works in. In order: a project named at the call (see
+ * projectInfo's `wanted`), the repository the *client session* is open in — asked
+ * over MCP roots, because the plugin's server process starts wherever the harness
+ * felt like, not necessarily in the user's checkout — then this process's own
+ * directory, RGM_PROJECT_ID, and the machine-wide selection. A bug in the wrong
+ * project is a fix nobody wanted, so every source is reported by name in the
+ * output (RGM4-003). The last resort is the only visible project.
  */
 async function projectInfo(wanted) {
-  // A project named at the call is the one piece of evidence that is not an
-  // inference: it beats the repository binding, RGM_PROJECT_ID, and the machine-wide
-  // selection — the same order resolveProject() gives the CLI.
   if (wanted) {
     const { projects } = await json('GET', '/api/projects');
     const match = projects.find((p) => p.id === wanted || p.name === wanted);
@@ -99,12 +97,19 @@ async function projectInfo(wanted) {
   }
 
   const cfg = await loadConfig();
-  const resolved = await resolveProject({ config: { projectId: cfg.projectId }, env: process.env });
+  const resolved = await resolveProject({
+    cwd: [...clientRoots(), process.cwd()],   // session repository first
+    config: { projectId: cfg.projectId },
+    env: process.env
+  });
   if (resolved) {
+    const inSessionRepo = resolved.boundAt
+      && clientRoots().some((r) => resolved.boundAt === r || resolved.boundAt.startsWith(`${r}/`));
     return {
       id: resolved.id,
       name: resolved.name ?? null,
-      where: resolved.boundAt ? `${resolved.boundAt}/.rgm/project.json`
+      where: resolved.boundAt
+        ? `${resolved.boundAt}/.rgm/project.json${inSessionRepo ? ' (the session repository)' : ''}`
         : resolved.source === 'env' ? 'RGM_PROJECT_ID'
           : '~/.rgm/config.json (machine-wide)'
     };
@@ -367,28 +372,96 @@ const TOOLS = [
 
 const byName = new Map(TOOLS.map((t) => [t.name, t]));
 
+/**
+ * MCP roots: the client's open directories, learned once per session.
+ *
+ * A plugin's server process starts wherever the harness launched it — not
+ * necessarily inside the repository the user is working in, which is the whole
+ * point of the binding. The protocol has exactly this answer: the client
+ * advertises `roots`, the server asks `roots/list`, and the notification keeps
+ * it current if the session moves. Claude Code implements roots; a client that
+ * does not simply never gets asked, and the resolution falls through to this
+ * process's own directory as before.
+ */
+let clientRootsList = null;
+let rootsPoll = null;
+let clientHasRoots = false;
+let outboundId = 0;
+const pendingOutbound = new Map();
+
+function clientRoots() {
+  return clientRootsList ?? [];
+}
+
+function noteClient(name) {
+  process.stderr.write(`rgm-mcp: client ${name ?? 'unknown'}\n`);
+}
+
+async function pollRoots() {
+  try {
+    const { roots } = await request('roots/list');
+    clientRootsList = (roots ?? []).map((r) => rootToPath(r.uri)).filter(Boolean);
+  } catch {
+    clientRootsList = [];   // roots came and went; the fall-through order still holds
+  }
+}
+
+/** file:///Users/nelchan/... -> /Users/nelchan/..., percent-decoded. */
+function rootToPath(uri) {
+  const u = String(uri ?? '');
+  if (!u.startsWith('file://')) return null;
+  try { return decodeURIComponent(new URL(u).pathname); } catch { return null; }
+}
+
+function send(msg) {
+  process.stdout.write(`${JSON.stringify(msg)}\n`);
+}
+
+/** An outbound request to the client, correlated by id, with a timeout. */
+function request(method, params) {
+  const id = `srv-${++outboundId}`;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingOutbound.delete(id);
+      reject(new Error(`${method} timed out`));
+    }, 2000);
+    pendingOutbound.set(id, { resolve: (v) => { clearTimeout(timer); resolve(v); }, reject });
+    send({ jsonrpc: '2.0', id, method, params });
+  });
+}
+
 async function handle(msg) {
   const { id, method, params } = msg;
-  const reply = (result) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`);
-  const fail = (code, message) => process.stdout.write(
-    `${JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } })}\n`);
+  const reply = (result) => send({ jsonrpc: '2.0', id, result });
+  const fail = (code, message) => send({ jsonrpc: '2.0', id, error: { code, message } });
 
   if (method === 'initialize') {
+    noteClient(params?.clientInfo?.name);
+    // Roots are a *client* capability: this server may ask for the session's
+    // directories only if the client said it has them.
+    clientHasRoots = Boolean(params?.capabilities?.roots);
     return reply({
       protocolVersion: params?.protocolVersion ?? '2024-11-05',
       capabilities: { tools: {} },
       serverInfo: { name: 'rgm', version: VERSION }
     });
   }
-  if (method === 'notifications/initialized' || method === 'notifications/cancelled') return;
+  if (method === 'notifications/initialized') {
+    if (clientHasRoots) rootsPoll = pollRoots();   // before any tool can run
+    return;
+  }
+  if (method === 'notifications/roots/list_changed') return void pollRoots();
+  if (method === 'notifications/cancelled') return;
   if (method === 'ping') return reply({});
   if (method === 'tools/list') {
+    if (rootsPoll) await rootsPoll.catch(() => {});   // the first call must not lose the race
     return reply({ tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) });
   }
   if (method === 'tools/call') {
     const tool = byName.get(params?.name);
     if (!tool) return fail(-32602, `unknown tool: ${params?.name}`);
     try {
+      if (rootsPoll) await rootsPoll.catch(() => {});
       return reply(await tool.run(params?.arguments ?? {}));
     } catch (err) {
       // A tool failure is a result the agent can read and act on, not a crash.
@@ -404,6 +477,19 @@ rl.on('line', (line) => {
   if (!trimmed) return;
   let msg;
   try { msg = JSON.parse(trimmed); } catch { return; }
+
+  // A response to one of our outbound requests (roots/list) resolves it;
+  // anything else is a request/notification from the client.
+  if (msg.id !== undefined && !msg.method && (msg.result !== undefined || msg.error !== undefined)) {
+    const waiter = pendingOutbound.get(String(msg.id));
+    if (waiter) {
+      pendingOutbound.delete(String(msg.id));
+      if (msg.error) waiter.reject(new Error(msg.error.message ?? 'client error'));
+      else waiter.resolve(msg.result);
+    }
+    return;
+  }
+
   handle(msg).catch((err) => {
     process.stderr.write(`rgm-mcp: ${String(err?.message ?? err)}\n`);
   });

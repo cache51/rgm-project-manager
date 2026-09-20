@@ -141,20 +141,24 @@ async function assertNoSymlinkedAncestor(targetDir, relPath) {
  * The nearest one wins, so a checkout inside another checkout belongs to the
  * innermost project — the one someone actually bound.
  */
-export async function findRepoBinding(startDir) {
-  let dir = startDir;
-  for (;;) {
-    try {
-      const parsed = JSON.parse(await readFile(join(dir, '.rgm', BINDING_FILE), 'utf8'));
-      if (parsed?.id) return { id: parsed.id, name: parsed.name ?? null, boundAt: dir };
-      return null;                    // a binding without an id is not a licence to guess
-    } catch (err) {
-      if (err.code !== 'ENOENT') return null;   // unreadable is also not a licence to guess
+export async function findRepoBinding(dirs) {
+  const list = typeof dirs === 'string' ? [dirs] : (dirs?.length ? dirs : [process.cwd()]);
+  for (const start of list) {          // earlier directories take precedence
+    let dir = start;
+    for (;;) {
+      try {
+        const parsed = JSON.parse(await readFile(join(dir, '.rgm', BINDING_FILE), 'utf8'));
+        if (parsed?.id) return { id: parsed.id, name: parsed.name ?? null, boundAt: dir };
+        break;                         // a binding without an id is not a licence to guess
+      } catch (err) {
+        if (err.code !== 'ENOENT') break;         // unreadable is also not a licence to guess
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
     }
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
   }
+  return null;
 }
 
 /**
@@ -174,7 +178,11 @@ export async function resolveProject({ cwd = process.cwd(), config = {}, env = p
   // evidence that is not an inference: one repository can hold several projects
   // (a feature each), and then the directory alone cannot decide.
   if (explicit) return { id: explicit.id, name: explicit.name ?? null, source: 'argument' };
-  const bound = await findRepoBinding(cwd);
+  // `cwd` may be a single directory or an ordered list — the MCP server passes the
+  // session's repository first and its own process directory second, because it
+  // may be launched from anywhere. (One level of nesting is flattened, so a
+  // caller may pass `[rootsDir, ...more]` without spreading.)
+  const bound = await findRepoBinding([].concat(cwd).flat(Infinity));
   if (bound) return bound;
   if (env.RGM_PROJECT_ID) return { id: env.RGM_PROJECT_ID, name: null, source: 'env' };
   if (config.projectId) return { id: config.projectId, name: config.projectName ?? null, source: 'config' };
@@ -333,10 +341,19 @@ async function readTokenFromStdin() {
 
 function api(config) {
   const base = config.url.replace(/\/+$/, '');
-  const call = async (method, path, { accept = 'application/json' } = {}) => {
+  const call = async (method, path, { accept = 'application/json', body } = {}) => {
     const res = await fetch(base + path, {
       method,
-      headers: { authorization: `Bearer ${config.token}`, accept }
+      headers: {
+        authorization: `Bearer ${config.token}`,
+        accept,
+        ...(body === undefined ? {} : { 'content-type': 'application/json' })
+      },
+      // `body: undefined` means GET-shaped: no payload at all. Before this, the
+      // option was silently dropped and every CLI POST arrived empty — the server
+      // rejected it for a missing field, which reads as "the API changed" when
+      // what happened is that nothing was ever sent.
+      body: body === undefined ? undefined : JSON.stringify(body)
     });
     if (!res.ok) {
       let message = res.statusText;
@@ -534,7 +551,10 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
     const question = args._.slice(2).join(' ').trim();
     if (!question) throw new Error('ask needs a question, e.g. rgm ask 7 "which warehouse?"');
     const { id, code } = await bugRef(1);
-    const res = await call('POST', `/api/bugs/${id}/questions`, { body: question });
+    // The payload goes under `body:` — the option, whose value becomes the JSON
+    // envelope. The questions route reads the envelope's `body` field, hence the
+    // nesting; both layers used to be absent (the option was dropped entirely).
+    const res = await call('POST', `/api/bugs/${id}/questions`, { body: { body: question } });
     const out = await res.json();
     return `asked on ${code} (notified ${out.notified?.queued ?? 0} address(es))`;
   }
@@ -553,7 +573,7 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
     const note = args._.slice(2).join(' ').trim();
     if (!note) throw new Error('comment needs a note, e.g. rgm comment 7 "fixed in commit abc123"');
     const { id, code } = await bugRef(1);
-    await call('POST', `/api/bugs/${id}/comments`, { note });
+    await call('POST', `/api/bugs/${id}/comments`, { body: { note } });
     return `commented on ${code}`;
   }
 
@@ -572,10 +592,12 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
     if (before.status === 'retest') return `${code} is already awaiting verification`;
     if (before.status === 'closed') throw new Error(`${code} is closed — reopen it first`);
     await call('POST', `/api/bugs/${id}/comments`, {
-      note: [note, `Verified by: ${verifiedBy}`].filter(Boolean).join('\n\n')
+      body: { note: [note, `Verified by: ${verifiedBy}`].filter(Boolean).join('\n\n') }
     });
-    if (before.status === 'new') await call('POST', `/api/bugs/${id}/status`, { action: 'start_fixing' });
-    await call('POST', `/api/bugs/${id}/status`, { action: 'request_retest' });
+    if (before.status === 'new') {
+      await call('POST', `/api/bugs/${id}/status`, { body: { action: 'start_fixing' } });
+    }
+    await call('POST', `/api/bugs/${id}/status`, { body: { action: 'request_retest' } });
     return `${code} is now awaiting verification by the filer\n  what proves it: ${verifiedBy}`;
   }
 

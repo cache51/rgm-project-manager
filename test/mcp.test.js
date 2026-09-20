@@ -3,16 +3,18 @@
  * failure arrives as something the agent can read and act on rather than a
  * crash it has to guess about.
  */
-import { describe, test } from 'node:test';
+import { describe, test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 const SERVER = join(dirname(fileURLToPath(import.meta.url)), '..', 'mcp', 'rgm-mcp.mjs');
 
 /** Start the server against a chosen environment and speak JSON-RPC to it. */
-function session(env = {}, { cwd } = {}) {
+function session(env = {}, { cwd, roots } = {}) {
   const child = spawn(process.execPath, [SERVER], {
     env: { ...process.env, RGM_URL: '', RGM_TOKEN: '', RGM_CONFIG: '/nonexistent/rgm.json', ...env },
     cwd,
@@ -21,6 +23,7 @@ function session(env = {}, { cwd } = {}) {
   let buf = '';
   const waiters = new Map();
   const errors = [];
+  const serverRequests = [];   // outbound requests the server made, in order
   child.stdout.on('data', (d) => {
     buf += String(d);
     let i;
@@ -29,6 +32,17 @@ function session(env = {}, { cwd } = {}) {
       buf = buf.slice(i + 1);
       if (!line) continue;
       const msg = JSON.parse(line);
+      if (msg.method && String(msg.id ?? '').startsWith('srv-')) {
+        serverRequests.push(msg);
+        if (msg.method === 'roots/list') {
+          // The client answers with whatever repositories it was told about.
+          const answer = roots === undefined
+            ? { error: { code: -32601, message: 'unsupported' } }   // a client without roots
+            : { result: { roots: roots.map((r) => ({ uri: `file://${encodeURI(r)}` })) } };
+          child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: msg.id, ...answer })}\n`);
+        }
+        continue;
+      }
       const resolve = waiters.get(msg.id);
       if (resolve) { waiters.delete(msg.id); resolve(msg); }
     }
@@ -42,6 +56,10 @@ function session(env = {}, { cwd } = {}) {
       child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: mine, method, params })}\n`);
       return answer;
     },
+    notify(method, params) {
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`);
+    },
+    serverRequests,
     stop() { child.kill(); },
     errors
   };
@@ -111,6 +129,22 @@ describe('the rgm MCP server', () => {
 
 // ── Which project the agent works (RGM4-003) ───────────────────────────────
 describe('the project the agent works', () => {
+  /**
+   * Speak the handshake the real clients speak: initialize advertises the
+   * client's capabilities, and `notifications/initialized` triggers the roots
+   * poll before any tool can run.
+   */
+  async function open(env, opts = {}) {
+    const s = session(env, opts);
+    await s.request('initialize', {
+      protocolVersion: '2024-11-05',
+      clientInfo: { name: 'test-client', version: '0' },
+      capabilities: opts.roots === undefined ? {} : { roots: {} }
+    });
+    s.notify('notifications/initialized', {});
+    return s;
+  }
+
   /** A stand-in for the app that records which project was asked for. */
   async function stubApp() {
     const { createServer } = await import('node:http');
@@ -142,11 +176,21 @@ describe('the project the agent works', () => {
     };
   }
 
+  /** Temp directories, cleaned in one sweep after this suite. */
+  const tempDirs = [];
+  const mkTmp = async (prefix) => {
+    const dir = await mkdtemp(join(tmpdir(), prefix));
+    tempDirs.push(dir);
+    return dir;
+  };
+  after(async () => {
+    for (const dir of tempDirs) await rm(dir, { recursive: true, force: true }).catch(() => {});
+  });
+
   /** A checkout bound to a project, the way `rgm use` leaves one. */
-  async function boundRepo(project) {
-    const { mkdtemp, mkdir, writeFile } = await import('node:fs/promises');
-    const { tmpdir } = await import('node:os');
-    const dir = await mkdtemp(join(tmpdir(), 'rgm-mcp-repo-'));
+  async function boundRepo(project, name = 'repo') {
+    const base = await mkTmp(`rgm-mcp-${name}-`);
+    const dir = join(base, name);
     await mkdir(join(dir, '.rgm'), { recursive: true });
     await writeFile(join(dir, '.rgm', 'project.json'), JSON.stringify(project));
     return dir;
@@ -155,7 +199,9 @@ describe('the project the agent works', () => {
   test('a bound checkout decides, not the environment or the machine', async () => {
     const app = await stubApp();
     const dir = await boundRepo({ id: 'p-warehouse', name: 'Fabric Warehouse' });
-    const s = session({
+    // No roots advertised: an older or plain client, and the server must keep
+    // working off its own process directory exactly as before.
+    const s = await open({
       RGM_URL: app.url, RGM_TOKEN: 't',
       RGM_PROJECT_ID: 'p-elsewhere',                    // a stale selection elsewhere
       RGM_CONFIG: '/nonexistent/rgm.json'
@@ -164,6 +210,8 @@ describe('the project the agent works', () => {
       const res = await s.request('tools/call', { name: 'rgm_list_bugs', arguments: {} });
       const out = res.result.content[0].text;
 
+      assert.deepEqual(s.serverRequests.filter((r) => r.method === 'roots/list'), [],
+        'a client that never advertised roots is never asked');
       assert.deepEqual(app.seen, ['p-warehouse'],
         'bugs must come from the repository the agent is working in');
       assert.match(out, /project: Fabric Warehouse/, 'the agent is told which project it is on');
@@ -172,17 +220,13 @@ describe('the project the agent works', () => {
     } finally {
       s.stop();
       await app.stop();
-      const { rm } = await import('node:fs/promises');
-      await rm(dir, { recursive: true, force: true });
     }
   });
 
   test('without a binding, the environment decides and says so', async () => {
     const app = await stubApp();
-    const { mkdtemp } = await import('node:fs/promises');
-    const { tmpdir } = await import('node:os');
-    const dir = await mkdtemp(join(tmpdir(), 'rgm-mcp-plain-'));
-    const s = session({
+    const dir = await mkTmp('rgm-mcp-plain-');
+    const s = await open({
       RGM_URL: app.url, RGM_TOKEN: 't', RGM_PROJECT_ID: 'p-projection',
       RGM_CONFIG: '/nonexistent/rgm.json'
     }, { cwd: dir });
@@ -195,15 +239,77 @@ describe('the project the agent works', () => {
     } finally {
       s.stop();
       await app.stop();
-      const { rm } = await import('node:fs/promises');
-      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('the session repository is found over MCP roots, not the server cwd', async () => {
+    const app = await stubApp();
+    // The plugin's server process is launched from a directory with no binding
+    // at all (the harness's own), while the *session* sits in a bound checkout —
+    // exactly the production situation that made the binding useless in Claude.
+    const plain = await mkTmp('rgm-mcp-plain-');
+    const sessionRepo = await boundRepo({ id: 'p-warehouse', name: 'Fabric Warehouse' });
+    const s = await open({
+      RGM_URL: app.url, RGM_TOKEN: 't',
+      RGM_PROJECT_ID: 'p-elsewhere',                    // a stale machine-wide pick
+      RGM_CONFIG: '/nonexistent/rgm.json'
+    }, { cwd: plain, roots: [sessionRepo] });
+    try {
+      const res = await s.request('tools/call', { name: 'rgm_list_bugs', arguments: {} });
+      const out = res.result.content[0].text;
+
+      assert.ok(s.serverRequests.some((r) => r.method === 'roots/list'),
+        'a client that advertises roots is asked for them');
+      assert.deepEqual(app.seen, ['p-warehouse'],
+        'the session repository decides, wherever the server process happens to run');
+      assert.match(out, /\(the session repository\)/, 'and the agent is told it came from there');
+    } finally {
+      s.stop();
+      await app.stop();
+    }
+  });
+
+  test('a session path with Vietnamese characters survives the file URI', async () => {
+    const app = await stubApp();
+    const plain = await mkdtemp(join(tmpdir(), 'rgm-mcp-plain-'));
+    // The real user directories look like this; a naive slice() of the file://
+    // prefix leaves %C3%A2... behind and the binding is simply never found.
+    const sessionRepo = await boundRepo(
+      { id: 'p-warehouse', name: 'Fabric Warehouse' }, 'Dự Án 2026');
+    const s = await open({
+      RGM_URL: app.url, RGM_TOKEN: 't', RGM_CONFIG: '/nonexistent/rgm.json'
+    }, { cwd: plain, roots: [sessionRepo] });
+    try {
+      await s.request('tools/call', { name: 'rgm_list_bugs', arguments: {} });
+      assert.deepEqual(app.seen, ['p-warehouse'], 'percent-decoded, not half-decoded');
+    } finally {
+      s.stop();
+      await app.stop();
+    }
+  });
+
+  test('a session that offers several repositories prefers the first', async () => {
+    const app = await stubApp();
+    const plain = await mkTmp('rgm-mcp-plain-');
+    const first = await boundRepo({ id: 'p-warehouse', name: 'Fabric Warehouse' }, 'first');
+    const second = await boundRepo({ id: 'p-other', name: 'Project Other' }, 'second');
+    const s = await open({
+      RGM_URL: app.url, RGM_TOKEN: 't', RGM_CONFIG: '/nonexistent/rgm.json'
+    }, { cwd: plain, roots: [first, second] });
+    try {
+      await s.request('tools/call', { name: 'rgm_list_bugs', arguments: {} });
+      assert.deepEqual(app.seen, ['p-warehouse'],
+        'the client ordered its roots; honouring that order beats inventing one');
+    } finally {
+      s.stop();
+      await app.stop();
     }
   });
 
   test('a project named at the call beats the binding: one repo, several projects', async () => {
     const app = await stubApp();
     const dir = await boundRepo({ id: 'p-warehouse', name: 'Fabric Warehouse' });
-    const s = session({
+    const s = await open({
       RGM_URL: app.url, RGM_TOKEN: 't', RGM_CONFIG: '/nonexistent/rgm.json'
     }, { cwd: dir });
     try {

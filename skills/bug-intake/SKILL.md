@@ -76,17 +76,18 @@ Read the request for **which bug** and **which project**, in that order:
 
 ## Which project you are working in
 
-**A repository is a project.** Each checkout binds itself to its RGM project in
-`.rgm/project.json`, and that binding is the first answer — before `RGM_PROJECT_ID`,
-before the machine-wide selection in `~/.rgm/config.json`. So an agent fixing bugs in
-the checkout it was started in works *that* repository's project, and a project
-someone selected in another checkout cannot redirect it; a bug in the wrong project is
-a fix nobody wanted.
+**A repository is a project.** The server tools work the project of the repository your
+*session* is open in — the client tells the MCP server its directories (MCP roots), and
+a checkout binds itself to its RGM project in `.rgm/project.json`, nearest binding
+first. Resolution order: a project named at the call (`project` argument / `--project`),
+then the session repository, then the server's own directory, then `RGM_PROJECT_ID`,
+then the machine-wide `~/.rgm/config.json`. Whatever answers, the tool output names it
+(`project: Fabric Warehouse (from …)`), so a wrong project is visible immediately
+rather than silently worked.
 
-`rgm use "<project>"` writes both the machine-wide selection and this repository's
-binding (`--global` for the machine alone); `rgm project` prints which project applies
-here and why. Two checkouts can therefore work two projects at once, and the binding
-travels with the repository rather than with the person.
+Run `rgm project` to see which project applies here and why; `rgm use "<project>"`
+binds the current directory (and, unless `--global`, records the machine-wide
+selection too). Two checkouts can therefore work two projects at once.
 
 **When one repository holds several projects** — a feature each — the binding is per
 directory, not per repository:

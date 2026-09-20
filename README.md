@@ -154,12 +154,16 @@ than an empty result.
 
 ### Asking for work
 
-**A repository is a project.** An agent works the project of the checkout it runs in —
-the binding in that repository's `.rgm/project.json`, written by `rgm use "<project>"` —
-so two checkouts can work two projects at once and a selection made somewhere else
-cannot redirect a fix into the wrong project. The order is: this repository, then
-`RGM_PROJECT_ID`, then the machine-wide `~/.rgm/config.json`. `rgm project` prints which
-one applies here and where it came from. Then ask in whatever words you normally use:
+**A repository is a project.** An agent works the project of the checkout its *session*
+is open in. Claude Code's plugin server learns that checkout over MCP roots (the client
+tells the server its open directories — the server process itself may start anywhere);
+`rgm use "<project>"` inside a directory binds it (`.rgm/project.json`), and the nearest
+binding wins, so feature directories can each bind their own project. Resolution order:
+a project named at the call, then the session repository, then this process's directory,
+then `RGM_PROJECT_ID`, then the machine-wide `~/.rgm/config.json` — and every answer
+says where it came from, so a wrong project is visible, never inferred.
+`rgm project` prints which one applies to the shell it runs in. Then ask in whatever
+words you normally use:
 
 ```
 /rgm:bug-intake                        # the project's unresolved bugs, oldest first,
