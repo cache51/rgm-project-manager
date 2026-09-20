@@ -152,6 +152,32 @@ Nothing else to configure — both entry points read the same `~/.rgm/config.jso
 agent that has not signed in yet gets told exactly that when it calls a tool, rather
 than an empty result.
 
+### Asking for work
+
+**The project is not an argument.** It is what the machine is pointed at — `rgm use
+"<project>"` — so one agent works one project's bugs, and a bug number is unambiguous
+inside it. Then ask in whatever words you normally use:
+
+```
+/rgm:bug-intake                        # the project's unresolved bugs, oldest first,
+                                       # one at a time, to completion
+/rgm:bug-intake BUG-7                  # just that one
+/rgm:bug-intake the packing-list bug   # found by its description
+```
+
+Or skip the slash command: *"work the RGM bugs the testers filed"* invokes the skill by
+itself, because that is what its description says it is for. To switch project, say so —
+the agent runs `rgm use "<project>"` first.
+
+From a shell, the same loop without an agent in the middle:
+
+```
+rgm bugs                  # the unresolved list
+rgm prompt 7              # the handoff prompt for BUG-7, on stdout
+rgm ask 7 "which warehouse?"   # question to the reporter
+rgm questions 7           # the answer, once it arrives
+```
+
 ## The fix-and-verify loop
 
 ```
