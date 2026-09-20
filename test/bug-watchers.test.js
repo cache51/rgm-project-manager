@@ -103,15 +103,20 @@ describe('a bug carries the addresses that hear about the fix', () => {
     const moved = await w.devClient.post(`/api/bugs/${bug.id}/status`,
       { action: 'request_retest' });
     assert.equal(moved.json.status, 'retest');
-    assert.equal(moved.json.notified.queued, 2, 'one notice per address');
+    // One addressed mail, not one per address: two people are told in a single
+    // notice, so no mailbox gets the same fix twice.
+    assert.equal(moved.json.notified.recipients, 2, 'the audience is still two people');
+    assert.equal(moved.json.notified.queued, 1, '...but exactly one mail is queued');
 
     const sender = RecordingSender();
     await runOutbox(w.db, sender, { workerId: randomUUID(), baseUrl: 'http://app.test' });
     const sent = retestMails(sender);
-    assert.deepEqual(sent.map((m) => m.to).sort(),
-      ['krixi@rgmdn.com', 'tuongvi@rgmdn.com']);
+    assert.equal(sent.length, 1, 'one message, not two');
+    assert.equal(sent[0].to, 'krixi@rgmdn.com', 'the first address is the addressee');
 
     const msg = sent[0];
+    assert.deepEqual(msg.cc, ['tuongvi@rgmdn.com'],
+      'the other address rides on Cc — together they get it, once each');
     assert.match(msg.subject, /đã sửa — chờ xác nhận/, 'the subject says why');
     // A tester watching several projects picks the mail up by its subject; a bare
     // BUG-7 says which bug and none about which project.

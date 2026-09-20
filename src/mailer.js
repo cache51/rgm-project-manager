@@ -15,8 +15,8 @@ import { randomUUID } from 'node:crypto';
 /** Dev mailer: prints the link. Clearly not a delivery mechanism. */
 export const ConsoleMailer = (write = (line) => process.stdout.write(line)) => ({
   name: 'console',
-  async send({ to, subject, body }) {
-    write(`[mail] to=${to} subject=${subject}\n${body}\n`);
+  async send({ to, cc = [], subject, body }) {
+    write(`[mail] to=${to}${cc.length ? ` cc=${cc.join(',')}` : ''} subject=${subject}\n${body}\n`);
     return { messageId: null };
   }
 });
@@ -38,10 +38,13 @@ export function encodeHeader(value) {
  * 7-bit transport, and dot-stuffing — base64 output can never produce a line
  * beginning with '.', so the terminating sequence cannot be forged from content.
  */
-export function buildMessage({ from, to, subject, body, messageId = null, date = new Date() }) {
+export function buildMessage({ from, to, cc = [], subject, body, messageId = null, date = new Date() }) {
   const id = messageId ?? `<${randomUUID()}@rgm>`;
   const wrapped = (Buffer.from(String(body), 'utf8').toString('base64')
     .match(/.{1,76}/g) ?? []).join('\r\n');
+  // An empty Cc list must not print a bare `Cc:` header — receivers are the
+  // envelope, and a header that promises nobody looks like a broken MUA.
+  const ccHeader = cc.length ? [`Cc: ${cc.map((c) => encodeHeader(c)).join(', ')}`] : [];
 
   return {
     messageId: id,
@@ -49,6 +52,7 @@ export function buildMessage({ from, to, subject, body, messageId = null, date =
       `Date: ${date.toUTCString()}`,
       `From: ${encodeHeader(from)}`,
       `To: ${encodeHeader(to)}`,
+      ...ccHeader,
       `Subject: ${encodeHeader(subject)}`,
       `Message-ID: ${id}`,
       'MIME-Version: 1.0',
@@ -203,9 +207,9 @@ export function SmtpMailer({
     // credentials came to be sendable in plaintext (RGM4-005).
     requireTls,
 
-    async send({ to, subject, body, idempotencyKey = null }) {
+    async send({ to, cc = [], subject, body, idempotencyKey = null }) {
       const messageId = idempotencyKey ? smtpId(idempotencyKey) : `<${randomUUID()}@rgm.local>`;
-      const message = buildMessage({ from, to, subject, body, messageId });
+      const message = buildMessage({ from, to, cc, subject, body, messageId });
 
       let session = await openSession({ host, port, secure, timeoutMs });
       try {
@@ -236,7 +240,13 @@ export function SmtpMailer({
         }
 
         await session.command(`MAIL FROM:<${from}>`, 250);
-        await session.command(`RCPT TO:<${to}>`, [250, 251]);
+        // The envelope needs every recipient, Cc included — the Cc header only
+        // says who should see it, the RCPT list says where the copy goes. A
+        // missing RCPT is a silently undelivered person.
+        const envelope = [to, ...cc].filter(Boolean);
+        for (const rcpt of new Set(envelope.map((a) => String(a).toLowerCase()))) {
+          await session.command(`RCPT TO:<${rcpt}>`, [250, 251]);
+        }
         await session.command('DATA', 354);
         await session.command(`${message.wire}\r\n.`, 250);
         await session.command('QUIT', [221, 250]);
@@ -260,14 +270,14 @@ export function HttpMailer({
   from,
   fetchImpl = fetch,
   headers: extraHeaders = {},
-  shape = ({ to, from: f, subject, text }) => ({ from: f, to, subject, text })
+  shape = ({ to, cc, from: f, subject, text }) => ({ from: f, to, ...(cc?.length ? { cc } : {}), subject, text })
 }) {
   if (!endpoint) throw new Error('HttpMailer needs an endpoint');
 
   return {
     name: 'http',
 
-    async send({ to, subject, body, idempotencyKey = null }) {
+    async send({ to, cc = [], subject, body, idempotencyKey = null }) {
       const res = await fetchImpl(endpoint, {
         method: 'POST',
         headers: {
@@ -278,7 +288,7 @@ export function HttpMailer({
           ...(idempotencyKey ? { 'idempotency-key': idempotencyKey } : {}),
           ...extraHeaders
         },
-        body: JSON.stringify(shape({ to, from, subject, text: body, idempotencyKey }))
+        body: JSON.stringify(shape({ to, cc, from, subject, text: body, idempotencyKey }))
       });
 
       if (!res.ok) {

@@ -187,6 +187,34 @@ describe('smtp mailer', () => {
     assert.equal(decoded, 'Milestone M3 sẵn sàng kiểm thử 里程碑');
   });
 
+  test('a Cc list arrives as one message addressed to everyone', async () => {
+    const mailer = SmtpMailer({
+      host: '127.0.0.1', port: smtp.port, user: 'rgm', pass: 'secret',
+      from: 'no-reply@rgm.local'
+    });
+
+    // The fake server accumulates across the suite, so count this send's own
+    // message rather than asserting on a global total.
+    const before = smtp.messages.length;
+    await mailer.send({
+      to: 'reporter@rgm.example', cc: ['dev@rgm.example', 'watcher@rgmdn.com'],
+      subject: 'REQ-12 — cần bạn làm rõ', body: 'nội dung câu hỏi'
+    });
+
+    // The whole point of Cc: ONE message, and it actually reaches everyone.
+    // A Cc header without the RCPT commands is a silently undelivered person.
+    assert.equal(smtp.messages.length - before, 1, 'exactly one message left the client');
+    const [msg] = smtp.messages.slice(before);
+    assert.deepEqual(msg.envelope.to,
+      ['reporter@rgm.example', 'dev@rgm.example', 'watcher@rgmdn.com'],
+      'the envelope lists every recipient, Cc included');
+
+    const headers = msg.wire.split('\r\n').slice(0, 8).join('\n');
+    assert.match(headers, /^To: reporter@rgm\.example$/m);
+    assert.match(headers, /^Cc: dev@rgm\.example, watcher@rgmdn\.com$/m,
+      'the header shows who else was told');
+  });
+
   test('authenticates before sending', async () => {
     assert.ok(smtp.transcript.some((l) => l === 'AUTH LOGIN'), 'AUTH LOGIN was sent');
     // The password is base64 of 'secret' — sent, not logged in the clear.

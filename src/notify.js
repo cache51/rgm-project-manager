@@ -66,7 +66,12 @@ export async function enqueueReadyNotifications(db, {
 const backoffSeconds = (attempts) => Math.min(300, 2 ** Math.min(attempts, 8));
 
 /**
- * Queue "this fix is ready to verify" for every address attached to the bug.
+ * Queue one mail per bug event: the reporter addressed in `To:` — the person
+ * the event is asking something of — and everyone else who needs to know on
+ * `cc_recipients`. One addressed mail beats N separate copies: no mailbox gets
+ * the same notice three times, and recipients can see they are not alone in
+ * being told.
+ *
  * Call INSIDE the transition transaction, so a crash cannot mark a bug fixed
  * without queueing the notice that says so.
  *
@@ -78,48 +83,24 @@ export async function enqueueRetestNotifications(db, {
 }) {
   const watchers = await db.query(
     `SELECT email FROM bug_watchers WHERE bug_id = $1 ORDER BY added_at, email`, [bugId]);
+  if (!watchers.rows.length) return { recipients: 0, queued: 0 };
 
-  let queued = 0;
-  for (const w of watchers.rows) {
-    const key = `bug.retest:${bugId}:attempt${attempt}:${w.email}`;
-    const res = await db.query(
-      `INSERT INTO notifications_outbox
-         (kind, project_id, subject_id, recipient_email, dedupe_key, payload)
-       VALUES ('bug.retest', $1, $2, $3, $4, $5)
-       ON CONFLICT (dedupe_key) DO NOTHING
-       RETURNING id`,
-      [projectId, bugId, w.email, key,
-        JSON.stringify({ code, title: titleVi, projectName, attempt })]);
-    queued += res.rows.length;
-  }
-  return { recipients: watchers.rows.length, queued };
+  const everyone = watchers.rows.map((w) => w.email);
+  const [primary, ...cc] = everyone;
+  const payload = JSON.stringify({ code, title: titleVi, projectName, attempt });
+  const res = await db.query(
+    `INSERT INTO notifications_outbox
+       (kind, project_id, subject_id, recipient_email, cc_recipients, dedupe_key, payload)
+     VALUES ('bug.retest', $1, $2, $3, $4::jsonb, $5, $6)
+     ON CONFLICT (dedupe_key) DO NOTHING
+     RETURNING id`,
+    [projectId, bugId, primary, JSON.stringify(cc),
+      `bug.retest:${bugId}:attempt${attempt}`, payload]);
+  return { recipients: everyone.length, queued: res.rows.length };
 }
 
-/**
- * Queue "someone working this bug needs an answer" for everyone who can give
- * one: the reporter, the project's developers, and the bug's own address list.
- *
- * A bug always has a tester (who filed it) and developers (who can act on it),
- * so the question goes to both roles rather than only the reporter — a question
- * that reaches one person who is off shift is a question nobody answers. People
- * are queued as users where possible (so a membership removed before delivery
- * still stops the mail) and as bare addresses otherwise, deduplicated by address
- * so being both the reporter and a watcher does not mean two copies.
- */
-export async function enqueueQuestionNotifications(db, {
-  projectId, bugId, questionId, code, titleVi = null, projectName = null, question = null,
-  askerId = null
-}) {
-  const who = await db.query(
-    `SELECT b.reporter_id, u.email AS reporter_email
-       FROM bugs b LEFT JOIN users u ON u.id = b.reporter_id
-      WHERE b.id = $1`, [bugId]);
-  const reporterId = who.rows[0]?.reporter_id ?? null;
-  const reporterEmail = who.rows[0]?.reporter_email ?? null;
-
-  // The asker needs no copy of its own question. Beyond the noise, an agent's
-  // address is usually not a mailbox at all: mailing it produced a 550 and a row
-  // that retried its way to parked (seen on the first production run).
+/** The whole audience of a question, deduplicated, asker excluded, in order. */
+async function questionAudience(db, { projectId, bugId, reporterId, reporterEmail, askerId }) {
   let askerEmail = null;
   if (askerId) {
     const a = await db.query('SELECT email FROM users WHERE id = $1', [askerId]);
@@ -134,7 +115,10 @@ export async function enqueueQuestionNotifications(db, {
   const watchers = await db.query(
     `SELECT email FROM bug_watchers WHERE bug_id = $1 ORDER BY added_at, email`, [bugId]);
 
-  const recipients = [];
+  // The asker needs no copy of its own question — and in life the asker is an
+  // agent whose address is not a mailbox at all: mailing it produced a 550 that
+  // retried its way to parked (seen on the first production run).
+  const audience = [];
   const seen = new Set();
   const add = (userId, email) => {
     if (askerId && userId === askerId) return;
@@ -142,31 +126,56 @@ export async function enqueueQuestionNotifications(db, {
     if (askerEmail && key === String(askerEmail).toLowerCase()) return;
     if (!key || seen.has(key)) return;
     seen.add(key);
-    recipients.push({ userId, email });
+    audience.push({ userId, email });
   };
-  add(reporterId, reporterEmail);
+  add(reporterId, reporterEmail);            // first = primary: the one who knows
   for (const m of members.rows) add(m.user_id, m.email);
   for (const w of watchers.rows) add(null, w.email);
+  return audience;
+}
+
+/**
+ * Queue "someone working this bug needs an answer" as ONE mail: the reporter in
+ * `To:`, the project's developers and the bug's own address list on Cc.
+ *
+ * A question that reaches one person who is off shift is a question nobody
+ * answers, so the whole audience is addressed — but in a single message, not
+ * one message per person. People ride as user ids where they have accounts (so
+ * delivery re-checks the membership, RGM3-010) and as bare addresses otherwise.
+ */
+export async function enqueueQuestionNotifications(db, {
+  projectId, bugId, questionId, code, titleVi = null, projectName = null, question = null,
+  askerId = null
+}) {
+  const who = await db.query(
+    `SELECT b.reporter_id, u.email AS reporter_email
+       FROM bugs b LEFT JOIN users u ON u.id = b.reporter_id
+      WHERE b.id = $1`, [bugId]);
+
+  const audience = await questionAudience(db, {
+    projectId, bugId,
+    reporterId: who.rows[0]?.reporter_id ?? null,
+    reporterEmail: who.rows[0]?.reporter_email ?? null,
+    askerId
+  });
+  if (!audience.length) return { recipients: 0, queued: 0 };
 
   const payload = JSON.stringify({ code, title: titleVi, projectName, questionId, question });
-  let queued = 0;
-  for (const r of recipients) {
-    const key = r.userId
-      ? `bug.question:${questionId}:user:${r.userId}`
-      : `bug.question:${questionId}:${r.email}`;
-    const res = await db.query(
-      `INSERT INTO notifications_outbox
-         (kind, project_id, subject_id, recipient_id, recipient_email, dedupe_key, payload)
-       VALUES ('bug.question', $1, $2, $3, $4, $5, $6)
-       ON CONFLICT (dedupe_key) DO NOTHING
-       RETURNING id`,
-      // The outbox carries exactly one of the two: a user id when there is one,
-      // so delivery re-checks the membership, an address otherwise.
-      [projectId, bugId, r.userId, r.userId ? null : r.email, key, payload]);
-    queued += res.rows.length;
-  }
+  const [primary, ...cc] = audience;
+  const res = await db.query(
+    `INSERT INTO notifications_outbox
+       (kind, project_id, subject_id, recipient_id, recipient_email, cc_recipients,
+        dedupe_key, payload)
+     VALUES ('bug.question', $1, $2, $3, $4, $5::jsonb, $6, $7)
+     ON CONFLICT (dedupe_key) DO NOTHING
+     RETURNING id`,
+    [projectId, bugId, primary.userId, primary.userId ? null : primary.email,
+      // The primary's bare address is already covered by the re-check; cc rows
+      // carry userId where they have one so delivery can re-check those too.
+      JSON.stringify(cc.map((c) => c.userId ? { userId: c.userId, email: c.email } : c.email)),
+      `bug.question:${questionId}`, payload]);
 
-  return { recipients: recipients.length, queued };
+  return { recipients: audience.length, queued: res.rows.length };
 }
 
 /**
@@ -270,6 +279,31 @@ export async function runOutbox(db, sender, { workerId, max = 50,
         WHERE o.id = $1`, [job.id]);
     const n = r.rows[0];
 
+    // Resolve Cc the same way the primary is resolved: a userId becomes the
+    // user's *current* address — re-checked for membership, so a member removed
+    // while delivery was backlogged drops off the list (RGM3-010) — and a bare
+    // address stays as it was queued.
+    const ccList = Array.isArray(n.cc_recipients) ? n.cc_recipients : [];
+    const ccEmails = [];
+    const ccIds = [];
+    for (const entry of ccList) {
+      if (typeof entry === 'string') { if (entry) ccEmails.push(entry); continue; }
+      if (entry?.userId) ccIds.push({ userId: entry.userId, fallback: entry.email ?? null });
+      else if (entry?.email) ccEmails.push(entry.email);
+    }
+    if (ccIds.length) {
+      const still = await db.query(
+        `SELECT m.user_id, u.email FROM active_memberships m
+           JOIN users u ON u.id = m.user_id
+          WHERE m.project_id = $1 AND m.user_id = ANY($2::uuid[])`,
+        [n.project_id, ccIds.map((c) => c.userId)]);
+      const byId = new Map(still.rows.map((row) => [String(row.user_id), row.email]));
+      for (const c of ccIds) {
+        const email = byId.get(String(c.userId)) ?? c.fallback;
+        if (byId.has(String(c.userId)) && email) ccEmails.push(email);
+      }
+    }
+
     // Re-check at delivery time: a member removed while delivery was backlogged
     // must not be mailed. An address attached to a bug has no membership to
     // check — it was authorized when the developer added it.
@@ -290,6 +324,7 @@ export async function runOutbox(db, sender, { workerId, max = 50,
       const message = composeNotification(n, { baseUrl });
       const res = await sender.send({
         to: n.email,
+        cc: ccEmails,
         kind: n.kind,
         subjectId: n.subject_id,
         // Same key as the provider idempotency key and the Message-ID.
