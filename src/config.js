@@ -216,6 +216,13 @@ export function loadConfig(env = process.env) {
     // and tester notes are never translated. A real Postgres keeps its own worker
     // process; RGM_INLINE_WORKER overrides either way.
     inlineWorker: bool(env.RGM_INLINE_WORKER, !env.DATABASE_URL),
+    // A coding agent that can be granted work should be able to see new work:
+    // when set, every project created gets this account as a developer
+    // (membership row + timeline event, in the creation transaction). Unset
+    // means no auto-add — the default, because it is a standing grant.
+    // Stored lower-case for the same reason the users table enforces it: the
+    // match at creation time is an exact email lookup.
+    agentEmail: env.RGM_AGENT_EMAIL ? String(env.RGM_AGENT_EMAIL).trim().toLowerCase() : null,
     // Surfaced so a startup log can state what was chosen, rather than leaving
     // "which mailer is this using?" to be discovered in production.
     describe() {

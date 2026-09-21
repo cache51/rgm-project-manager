@@ -512,7 +512,10 @@ export function buildRoutes() {
     // naming one later is a data change rather than a schema change.
     if (!name) throw new HttpError(400, 'missing_fields', 'name required');
     const project = await createProject(ctx.db, {
-      name, client, env, timezone, createdBy: ctx.actor.userId
+      name, client, env, timezone, createdBy: ctx.actor.userId,
+      // RGM_AGENT_EMAIL: a configured coding agent is auto-added as developer
+      // on every board, inside this same transaction (see createProject).
+      agentEmail: ctx.agentEmail ?? null
     });
     sendJson(res, 201, project);
   }));

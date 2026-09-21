@@ -42,6 +42,11 @@ x-common-env: &common-env
   TRANSLATE_EXTRA_BODY: ${TRANSLATE_EXTRA_BODY:-}
   TRANSLATE_TIMEOUT_MS: ${TRANSLATE_TIMEOUT_MS:-}
   TRANSLATE_ATTEMPTS: ${TRANSLATE_ATTEMPTS:-}
+  # When set, a new project adds this account as developer at creation, so the
+  # coding agent can see every board without a manual step (an agent that cannot
+  # see a project silently works nothing — leave-app sat invisible for a day).
+  # Empty means no auto-grant, which stays the default.
+  RGM_AGENT_EMAIL: ${RGM_AGENT_EMAIL:-}
 
 x-owner-env: &owner-env
   <<: *common-env

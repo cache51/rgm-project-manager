@@ -102,6 +102,7 @@ export function createApp({
   deliver = null,
   secureCookies = false,
   limits = null,
+  agentEmail = null,
   onError = null
 }) {
   const router = buildRoutes();
@@ -166,7 +167,7 @@ export function createApp({
     }
 
     const ctx = {
-      db, storage, deliver, secureCookies, limits, onError, url,
+      db, storage, deliver, secureCookies, limits, agentEmail, onError, url,
       params: match.params,
       actor: null
     };
@@ -280,7 +281,8 @@ export async function createAppFromEnv(env = process.env) {
     db,
     storage: config.storage,
     deliver: config.deliver,
-    secureCookies: config.secureCookies
+    secureCookies: config.secureCookies,
+    agentEmail: config.agentEmail
   });
 
   return { ...app, db, config };

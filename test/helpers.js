@@ -219,7 +219,8 @@ function makeClient(baseUrl) {
   };
 }
 
-export async function makeWorld({ limits = null, storage = null, onError = null, deliver = null } = {}) {
+export async function makeWorld({ limits = null, storage = null, onError = null,
+                                  deliver = null, agentEmail = null } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'rgm-test-'));
   const db = await freshDb();
   const mails = [];
@@ -251,6 +252,7 @@ export async function makeWorld({ limits = null, storage = null, onError = null,
     }
   };
   const app = createApp({ db, storage: storageImpl, deliver: deliverImpl, limits,
+    agentEmail,
     onError: onError ?? ((err) => console.error('[server error]', err)) });
   const { url } = await listen(app, { port: 0 });
 

@@ -617,7 +617,8 @@ export async function bootstrap(db, email) {
 
 /** Create a project plus its counter and the creator's admin membership, atomically. */
 export async function createProject(db, { name, client = 'RGM', env = 'staging',
-                                          timezone = 'Asia/Ho_Chi_Minh', createdBy }) {
+                                          timezone = 'Asia/Ho_Chi_Minh', createdBy,
+                                          agentEmail = null }) {
   return withTransaction(db, async (tx) => {
     const p = await tx.query(
       `INSERT INTO projects (name, client, env, timezone) VALUES ($1,$2,$3,$4)
@@ -629,6 +630,30 @@ export async function createProject(db, { name, client = 'RGM', env = 'staging',
     await tx.query(
       `INSERT INTO memberships (project_id, user_id, role) VALUES ($1,$2,'admin')`,
       [project.id, createdBy]);
+
+    // The coding agent works every board, and a board it cannot see is a board
+    // its bugs go unworked (rgm-leave-app sat invisible until someone noticed).
+    // In this transaction deliberately: no window where the project exists and
+    // the agent cannot see it, and no orphan if creation fails. DO NOTHING, not
+    // DO UPDATE: when the agent creates a project itself it is already the
+    // admin row, and the auto-add must never demote the account it grants.
+    if (agentEmail) {
+      const agent = await tx.query(`SELECT id FROM users WHERE email = $1`,
+        [normalizeEmail(agentEmail)]);
+      if (agent.rows.length) {
+        await tx.query(
+          `INSERT INTO memberships (project_id, user_id, role) VALUES ($1,$2,'developer')
+           ON CONFLICT (project_id, user_id) DO NOTHING`,
+          [project.id, agent.rows[0].id]);
+        await tx.query(
+          `INSERT INTO events (project_id, membership_user_id, actor_id, kind, payload)
+           VALUES ($1,$2,$3,'membership.auto_added',$4)`,
+          [project.id, agent.rows[0].id, createdBy,
+            JSON.stringify({ email: normalizeEmail(agentEmail), role: 'developer',
+                             via: 'RGM_AGENT_EMAIL' })]);
+      }
+    }
+
     await tx.query(
       `INSERT INTO events (project_id, actor_id, kind, payload)
        VALUES ($1,$2,'project.created',$3)`,
