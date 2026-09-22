@@ -41,6 +41,7 @@ function recorder(bug = {}) {
       return json({ id: 'q1', notified: { queued: 1 } });
     }
     if (path.endsWith('/questions')) return json({ open: 0, questions: [] });
+    if (path.endsWith('/comments') && opts.method === 'POST') return json({ id: 42 });
     return json({ ok: true });
   };
   return {
@@ -70,14 +71,39 @@ test('rgm ask delivers the question where the server reads it', async () => {
   } finally { r.restore(); }
 });
 
-test('rgm comment delivers the note', async () => {
+test('rgm comment delivers the note, and says which comment it made', async () => {
   const r = recorder();
   try {
-    await run(['comment', '7', 'fixed in abc1234']);
+    const out = await run(['comment', '7', 'fixed in abc1234']);
     const post = r.seen.find((s) => s.path.endsWith('/comments'));
 
     assert.deepEqual(post.body, { note: 'fixed in abc1234' });
     assert.equal(post.contentType, 'application/json');
+    // The id is the only handle `uncomment` can be given, so it has to come back.
+    assert.match(out, /\(comment 42\)/);
+  } finally { r.restore(); }
+});
+
+test('rgm uncomment takes that comment back', async () => {
+  const r = recorder();
+  try {
+    const out = await run(['uncomment', '7', '42']);
+    const del = r.seen.find((s) => s.method === 'DELETE');
+
+    assert.ok(del, 'the removal is a request; a local note to itself removes nothing');
+    assert.equal(del.path, '/api/bugs/bug-7/comments/42');
+    assert.match(out, /removed comment 42 from BUG-7/);
+  } finally { r.restore(); }
+});
+
+test('rgm uncomment without an id refuses, and sends nothing', async () => {
+  const r = recorder();
+  try {
+    await assert.rejects(() => run(['uncomment', '7']), /needs the comment id/);
+    await assert.rejects(() => run(['uncomment', '7', 'not-a-number']),
+      /needs the comment id/);
+    assert.deepEqual(r.seen.filter((s) => s.method === 'DELETE'), [],
+      'a malformed id must not become a request that removes the wrong thing');
   } finally { r.restore(); }
 });
 

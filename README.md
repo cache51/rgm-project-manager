@@ -204,6 +204,8 @@ rgm bugs                  # the unresolved list
 rgm prompt 7              # the handoff prompt for BUG-7, on stdout
 rgm ask 7 "which warehouse?"   # question to the reporter
 rgm questions 7           # the answer, once it arrives
+rgm comment 7 "fixed in abc1234"   # say what changed (it prints the comment id)
+rgm uncomment 7 42        # take that comment back, while nobody has answered it
 ```
 
 ## The fix-and-verify loop

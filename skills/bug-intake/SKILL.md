@@ -39,11 +39,12 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    tester can act on ("the packing list now accepts a lot with no lining row").
    It answers the bug's open questions and tells you the comment's id. If you
    reread that note and it is wrong, premature, or on the wrong bug, take it back
-   with **`rgm_remove_comment {number, comment_id}`** — that works only while
-   nobody has replied (the server refuses afterwards and names who answered, and a
-   withdrawn comment stops being read anywhere, including in this prompt). It
-   removes a *comment*; a question you asked cannot be withdrawn this way — a mail
-   has already gone out, so correct it by answering or by a plain comment.
+   with **`rgm_remove_comment {number, comment_id}`** (from a shell:
+   `rgm uncomment <number> <comment_id>`) — that works only while nobody has
+   replied (the server refuses afterwards and names who answered, and a withdrawn
+   comment stops being read anywhere, including in this prompt). It removes a
+   *comment*; a question you asked cannot be withdrawn this way — a mail has
+   already gone out, so correct it by answering or by a plain comment.
 7. **Self-check before you claim fixed (Jev, if configured).** If a `jev` MCP
    server is connected, call its `evaluate` with state = the tester's report +
    your diff + the test command and its fresh output, and these four Noul

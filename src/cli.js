@@ -14,6 +14,7 @@
  *   rgm ask 142 "which warehouse is this lot in?"   # mailed to the reporter
  *   rgm questions 142        # questions and their answers, open or answered
  *   rgm comment 142 "fixed in abc1234"              # tell the tester what changed
+ *   rgm uncomment 142 57       # take that comment back, while nobody has answered it
  *   rgm fixed 142 --verified-by "test/packing.test.js: counts the last carton" \
  *                 --note "please re-check the packing list screen"
  *                            # hand it to the filer: fixed, awaiting verification.
@@ -575,8 +576,24 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
     const note = args._.slice(2).join(' ').trim();
     if (!note) throw new Error('comment needs a note, e.g. rgm comment 7 "fixed in commit abc123"');
     const { id, code } = await bugRef(1);
-    await call('POST', `/api/bugs/${id}/comments`, { body: { note } });
-    return `commented on ${code}`;
+    const created = await (await call('POST', `/api/bugs/${id}/comments`,
+      { body: { note } })).json();
+    // The id is what `uncomment` names: a note that turns out to be wrong can be
+    // taken back before the tester reads it, and this is the only place the CLI
+    // learns it.
+    return `commented on ${code} (comment ${created.id})`;
+  }
+
+  if (command === 'uncomment') {
+    const commentId = String(args._[2] ?? '').trim();
+    if (!/^\d+$/.test(commentId)) {
+      throw new Error('uncomment needs the comment id, e.g. rgm uncomment 7 42 — '
+        + '`rgm comment` prints it when the note is written, and only a comment '
+        + 'nobody has answered can be taken back');
+    }
+    const { id, code } = await bugRef(1);
+    await call('DELETE', `/api/bugs/${id}/comments/${commentId}`);
+    return `removed comment ${commentId} from ${code} — nobody had answered it`;
   }
 
   if (command === 'fixed') {
