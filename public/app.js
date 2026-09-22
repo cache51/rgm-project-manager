@@ -75,6 +75,8 @@ const T = {
     confirmRemoveProject: 'Xoá dự án này? Dữ liệu vẫn được giữ và có thể khôi phục.',
     confirmRemoveMilestone: 'Xoá cột mốc này? Các lỗi vẫn được giữ.',
     confirmRemoveBug: 'Xoá lỗi này? Bằng chứng vẫn được giữ và có thể khôi phục.',
+    confirmRemoveComment: 'Xoá bình luận này? Chưa ai trả lời nên sẽ không ai thấy nữa.',
+    commentRemoved: 'Đã xoá bình luận',
     renamed: 'Đã đổi tên', removed: 'Đã xoá — có thể khôi phục', restored: 'Đã khôi phục',
     editBug: 'Sửa báo cáo này',
     editHint: 'Sửa phần tiếng Việt sẽ đưa bản dịch vào hàng đợi dịch lại.',
@@ -144,6 +146,8 @@ const T = {
     confirmRemoveProject: '刪除此專案？資料會保留，可以還原。',
     confirmRemoveMilestone: '刪除此里程碑？其錯誤報告會保留。',
     confirmRemoveBug: '刪除此錯誤報告？證據會保留，可以還原。',
+    confirmRemoveComment: '刪除這則留言？還沒有人回覆，之後不會再顯示。',
+    commentRemoved: '留言已刪除',
     renamed: '名稱已更新', removed: '已刪除——可以還原', restored: '已還原',
     editBug: '編輯此報告',
     editHint: '修改越南文內容後，翻譯會重新排入佇列。',
@@ -213,6 +217,8 @@ const T = {
     confirmRemoveProject: 'Remove this project? The data is kept and can be restored.',
     confirmRemoveMilestone: 'Remove this milestone? Its bug reports are kept.',
     confirmRemoveBug: 'Remove this bug? The evidence is kept and can be restored.',
+    confirmRemoveComment: 'Remove this comment? Nobody has answered it, so nobody will see it again.',
+    commentRemoved: 'Comment removed',
     renamed: 'Name updated', removed: 'Removed — it can be restored', restored: 'Restored',
     editBug: 'Edit this report',
     editHint: 'Changing the Vietnamese text puts its translation back in the queue.',
@@ -850,6 +856,8 @@ function timelineBlock() {
           <div class="tl-h">
             <b>${esc(e.actor)}</b> · <span class="tag">${esc(kindLabel(e.kind))}</span>
             <span class="rel" style="margin-left:auto">${fmt(e.at)} · ${rel(e.at)}</span>
+            ${e.canRemove ? `<span class="mini bad" data-action="removecomment"
+              data-id="${esc(e.id)}">🗑 ${t('remove')}</span>` : ''}
           </div>
           ${note ? `<div class="tl-n">${esc(note)}</div>` : ''}
           ${tr?.status === 'done' ? `<div class="tl-t">↳ ${esc(tr.text)}</div>` : ''}
@@ -1575,6 +1583,9 @@ document.getElementById('app').addEventListener('click', async (event) => {
       case 'comment':
         await comment(el.dataset.id);
         break;
+      case 'removecomment':
+        await removeComment(S.bug.id, el.dataset.id);
+        break;
       case 'copy':
         await copyPrompt();
         break;
@@ -1833,6 +1844,24 @@ async function comment(id) {
     S.commentDraft = null;
     notice(t('saved'));
     await openBug(id);
+  } finally { S.busy = false; }
+}
+
+/**
+ * Take back a comment nobody has answered yet.
+ *
+ * The server decides whether this is allowed — the author, or a project admin, and
+ * only while no one has replied — and its refusal names who answered it, so a "no"
+ * here explains itself instead of just being a no. The button only renders for the
+ * comments it would accept (see canRemove in timelineFor).
+ */
+async function removeComment(bugId, eventId) {
+  if (!window.confirm(t('confirmRemoveComment'))) return;
+  S.busy = true;
+  try {
+    await api('DELETE', `/api/bugs/${bugId}/comments/${eventId}`);
+    notice(t('commentRemoved'));
+    await openBug(bugId);
   } finally { S.busy = false; }
 }
 

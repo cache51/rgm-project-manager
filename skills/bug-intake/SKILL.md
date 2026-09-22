@@ -16,7 +16,8 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    you skipped.
 2. **`rgm_get_bug {number}`** — the handoff prompt: the tester's original words
    beside the translation, the status, the attachments, and any question still
-   unanswered. Read all of it.
+   unanswered. Read all of it. It also lists **your own comments that nobody has
+   answered**, with the id that takes one back (step 6).
 3. **`rgm_get_packet {number}`** — saves the screenshots into `.rgm/<CODE>/`.
    **Look at them.** Half of these bugs are "this number on this screen is
    wrong", and the screenshot is the only place that number appears. An
@@ -36,6 +37,13 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    exactly how — on which build, what you did, what you saw before and after.
 6. **`rgm_comment {number, note}`** — say what changed and where, in words a
    tester can act on ("the packing list now accepts a lot with no lining row").
+   It answers the bug's open questions and tells you the comment's id. If you
+   reread that note and it is wrong, premature, or on the wrong bug, take it back
+   with **`rgm_remove_comment {number, comment_id}`** — that works only while
+   nobody has replied (the server refuses afterwards and names who answered, and a
+   withdrawn comment stops being read anywhere, including in this prompt). It
+   removes a *comment*; a question you asked cannot be withdrawn this way — a mail
+   has already gone out, so correct it by answering or by a plain comment.
 7. **Self-check before you claim fixed (Jev, if configured).** If a `jev` MCP
    server is connected, call its `evaluate` with state = the tester's report +
    your diff + the test command and its fresh output, and these four Noul
@@ -64,6 +72,10 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
   the evidence the tester reads.
 - **Ask early.** One question costs a mail; a wrong guess costs a rework cycle
   and the tester's trust.
+- **A retracted sentence beats a contradiction.** If a note of yours is wrong and
+  nobody has answered it, take it back and say the right thing once — two
+  contradictory comments leave the tester guessing which to believe. Once someone
+  has replied, the pair *is* the record: correct yourself in a comment instead.
 - **Attribute honestly.** Your comments and questions are recorded under the
   agent account, so write them as work notes, not as chat.
 - **One bug at a time, to completion**, unless you are blocked on an answer —

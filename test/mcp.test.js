@@ -79,7 +79,7 @@ describe('the rgm MCP server', () => {
       // read the answer, say what changed, hand it back for verification.
       for (const tool of ['rgm_list_bugs', 'rgm_get_bug', 'rgm_get_packet',
                           'rgm_get_attachment', 'rgm_ask_question', 'rgm_get_questions',
-                          'rgm_comment', 'rgm_mark_fixed']) {
+                          'rgm_comment', 'rgm_remove_comment', 'rgm_mark_fixed']) {
         assert.ok(names.includes(tool), `missing tool: ${tool}`);
       }
       for (const tool of list.result.tools) {
@@ -346,5 +346,122 @@ describe('the project the agent works', () => {
       s.stop();
       await app.stop();
     }
+  });
+});
+
+// ── Taking a comment back (018) ────────────────────────────────────────────
+describe('the agent taking a comment back', () => {
+  /**
+   * A stub of the real app for this feature: one project, one bug, a comment the
+   * tester wrote that has been answered (41, locked) and the agent's own that has
+   * not (42, withdrawable), exactly as the server now marks them.
+   */
+  async function stub() {
+    const { createServer } = await import('node:http');
+    const seen = [];
+    const server = createServer((req, res) => {
+      seen.push(`${req.method} ${req.url}`);
+      const send = (body, status = 200) => {
+        res.statusCode = status;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(body));
+      };
+      if (req.url === '/api/projects') {
+        return send({ projects: [{ id: 'p-1', name: 'Fabric Warehouse', role: 'developer' }] });
+      }
+      if (req.url === '/api/projects/p-1/bugs/by-number/7') {
+        return send({ id: 'b-1', code: 'BUG-7' });
+      }
+      if (req.url === '/api/bugs/b-1/prompt') {
+        res.setHeader('content-type', 'text/plain');
+        return res.end('# BUG-7\n');
+      }
+      if (req.url === '/api/bugs/b-1') {
+        return send({
+          status: 'fixing', severity: 'high', projectId: 'p-1', milestone: { code: 'M1' },
+          availableActions: [], questions: { questions: [] }, attachments: [],
+          timeline: [
+            { id: 41, kind: 'bug.commented', actor: 'tester', canRemove: false, note: 'vẫn còn lỗi' },
+            { id: 42, kind: 'bug.commented', actor: 'agent', canRemove: true, note: 'fixed in abc1234' }
+          ]
+        });
+      }
+      if (req.url === '/api/bugs/b-1/comments' && req.method === 'POST') {
+        return send({ id: 99 }, 201);
+      }
+      if (req.url === '/api/bugs/b-1/comments/42' && req.method === 'DELETE') {
+        return send({ ok: true, id: 42 });
+      }
+      if (req.url === '/api/bugs/b-1/comments/41' && req.method === 'DELETE') {
+        return send({ error: 'comment_answered',
+                      message: 'this comment has been answered by tester — it stays on the record' }, 409);
+      }
+      return send({ error: 'not_found' }, 404);
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    return {
+      url: `http://127.0.0.1:${server.address().port}`,
+      seen,
+      stop: () => new Promise((r) => server.close(r))
+    };
+  }
+
+  const call = (s, name, args) => s.request('tools/call', { name, arguments: args });
+
+  // Not async: session() returns the handle directly, and a Promise here would make
+  // every `s.request` below a TypeError — and the stub server would never be closed.
+  const open = (url) => session({ RGM_URL: url, RGM_TOKEN: 't',
+    RGM_CONFIG: '/nonexistent/rgm.json' });
+
+  test('rgm_get_bug names the comments it may take back, and only those', async () => {
+    const app = await stub();
+    const s = open(app.url);
+    try {
+      const out = (await call(s, 'rgm_get_bug', { number: 7, project: 'Fabric Warehouse' }))
+        .result.content[0].text;
+
+      assert.match(out, /42: fixed in abc1234/, 'its own unanswered comment, with the id');
+      assert.match(out, /rgm_remove_comment/, 'and the tool that acts on it');
+      assert.doesNotMatch(out, /41: vẫn còn lỗi/,
+        'the answered one is not offered — the server already said canRemove: false');
+    } finally { s.stop(); await app.stop(); }
+  });
+
+  test('rgm_remove_comment deletes the comment it was given', async () => {
+    const app = await stub();
+    const s = open(app.url);
+    try {
+      const res = await call(s, 'rgm_remove_comment',
+        { number: 7, comment_id: 42, project: 'Fabric Warehouse' });
+
+      assert.notEqual(res.result.isError, true, res.result.content[0].text);
+      assert.match(res.result.content[0].text, /removed comment 42/);
+      assert.ok(app.seen.includes('DELETE /api/bugs/b-1/comments/42'),
+        'it is a request to the app, not a local note to itself');
+    } finally { s.stop(); await app.stop(); }
+  });
+
+  test('a refusal arrives as a sentence the agent can act on', async () => {
+    const app = await stub();
+    const s = open(app.url);
+    try {
+      const res = await call(s, 'rgm_remove_comment',
+        { number: 7, comment_id: 41, project: 'Fabric Warehouse' });
+
+      assert.equal(res.result.isError, true);
+      assert.match(res.result.content[0].text, /answered by tester/,
+        'the agent is told why it is locked, not just that it failed');
+    } finally { s.stop(); await app.stop(); }
+  });
+
+  test('rgm_comment reports the id, so a wrong note can be taken straight back', async () => {
+    const app = await stub();
+    const s = open(app.url);
+    try {
+      const res = await call(s, 'rgm_comment',
+        { number: 7, note: 'fixed in abc1250', project: 'Fabric Warehouse' });
+      assert.match(res.result.content[0].text, /comment 99/,
+        'otherwise the agent has no way to name what it just wrote');
+    } finally { s.stop(); await app.stop(); }
   });
 });

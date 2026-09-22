@@ -183,6 +183,10 @@ const TOOLS = [
       ]);
       const prompt = await promptRes.text();
       const open = (bug.questions?.questions ?? []).filter((q) => q.open);
+      // The agent's own comments that nobody has answered — the only ones it may take
+      // back, and the ids rgm_remove_comment names. Read from the payload's canRemove,
+      // so the server's rule is the one applied rather than a second copy of it here.
+      const removable = (bug.timeline ?? []).filter((e) => e.canRemove);
       const header = [
         `# ${code} — ${bug.status} (${bug.severity})`,
         `project: ${bug.projectId}   milestone: ${bug.milestone?.code ?? '?'}`,
@@ -193,6 +197,12 @@ const TOOLS = [
           ? `UNANSWERED QUESTIONS (${open.length}) — ask again or wait; do not guess:\n`
             + open.map((q) => `- ${q.body}`).join('\n')
           : 'no unanswered questions',
+        ...(removable.length
+          ? [`YOUR COMMENTS NOBODY HAS ANSWERED (${removable.length}) — if one of these is wrong, `
+             + 'take it back with rgm_remove_comment before the tester acts on it; anything '
+             + 'someone has replied to below stays:\n'
+             + removable.map((e) => `- ${e.id}: ${e.note}`).join('\n')]
+          : []),
         bug.attachments?.length
           ? `ATTACHMENTS (${bug.attachments.length}) — save these and look at them before deciding `
             + 'the report is clear; a screenshot often answers what the text does not:\n'
@@ -316,8 +326,36 @@ const TOOLS = [
     },
     async run({ number, note, project: wanted }) {
       const { id, code } = await bugId(number, wanted);
-      await json('POST', `/api/bugs/${id}/comments`, { note });
-      return text(`commented on ${code}`);
+      const out = await json('POST', `/api/bugs/${id}/comments`, { note });
+      // The id is what rgm_remove_comment names: an agent that rereads its own note and
+      // sees it is wrong can take it back before the tester reads it.
+      return text(`commented on ${code} (comment ${out.id})`);
+    }
+  },
+  {
+    name: 'rgm_remove_comment',
+    description: 'Take back a comment you left on a bug, while nobody has answered it. Use it '
+      + 'when your note was wrong, premature, or about the wrong bug — the tester should not '
+      + 'act on a sentence you have retracted. It only works until someone replies: after that '
+      + 'the exchange is the record and the server refuses, naming who answered. A withdrawn '
+      + 'comment stops being read anywhere, including in the handoff prompt.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        number: { type: 'integer' },
+        comment_id: {
+          type: 'integer',
+          description: 'the comment\'s id — from rgm_get_bug (your own comments nobody has '
+            + 'answered) or from rgm_comment\'s reply'
+        },
+        ...PROJECT_ARG
+      },
+      required: ['number', 'comment_id'], additionalProperties: false
+    },
+    async run({ number, comment_id: commentId, project: wanted }) {
+      const { id, code } = await bugId(number, wanted);
+      await json('DELETE', `/api/bugs/${id}/comments/${commentId}`);
+      return text(`removed comment ${commentId} from ${code} — nobody had answered it`);
     }
   },
   {

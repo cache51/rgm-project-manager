@@ -547,6 +547,19 @@ describe('ui (dom): the language', () => {
 describe('ui (dom): every action reaches the API it should', () => {
   let w, ms, bug, payloads;
   const seen = [];
+  // A comment id this world does not otherwise use: the removal tests declare the
+  // timeline they want rather than adding a comment to a world 30 other tests share.
+  const COMMENT_ID = 9001;
+
+  /** The bug as the server would send it, with the developer's own unanswered note. */
+  const withComment = (canRemove = true) => ({
+    ...payloads.bug,
+    timeline: [...payloads.bug.timeline, {
+      id: COMMENT_ID, at: payloads.bug.createdAt, actor: 'dev@rgm.example',
+      actorId: payloads.bug.reporter.id, kind: 'bug.commented', canRemove,
+      note: 'đã sửa ở abc1250', noteTranslations: {}
+    }]
+  });
 
   before(async () => {
     w = await makeProjectWorld();
@@ -593,7 +606,13 @@ describe('ui (dom): every action reaches the API it should', () => {
     [`GET /api/bugs/${bug.id}/packet`]: () => ({
       body: 'PK-zip-bytes',
       headers: { 'content-type': 'application/zip', 'content-disposition': 'attachment; filename="BUG-1.zip"' }
-    })
+    }),
+    // Taking back an unanswered comment. Registered for the same reason the watcher
+    // routes are: an unregistered mutation is silently not a request at all.
+    [`DELETE /api/bugs/${bug.id}/comments/${COMMENT_ID}`]: (c) => {
+      seen.push(c);
+      return { body: { ok: true } };
+    }
   });
 
   test('reporting a bug posts it against the milestone the tester chose', async () => {
@@ -700,6 +719,52 @@ describe('ui (dom): every action reaches the API it should', () => {
     const post = seen.find((c) => c.path === `/api/bugs/${bug.id}/comments`);
     assert.ok(post, 'the comment is posted');
     assert.equal(post.body.note, 'Cần ảnh rõ hơn');
+  });
+
+  test('a developer takes back their own unanswered comment from the bug page', async () => {
+    seen.length = 0;
+    const app = loadApp({
+      routes: { ...routes(), [`GET /api/bugs/${bug.id}`]: withComment() }
+    });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+
+    assert.match(app.html(), /data-action="removecomment"/,
+      'the page offers a way to take it back');
+
+    await app.click('removecomment', { id: COMMENT_ID });
+
+    const call = seen.find((c) => c.method === 'DELETE');
+    assert.ok(call, 'the removal is a request, not an edit in the browser');
+    assert.equal(call.path, `/api/bugs/${bug.id}/comments/${COMMENT_ID}`,
+      'addressed at the comment, on this bug');
+  });
+
+  test('declining the confirmation removes nothing', async () => {
+    seen.length = 0;
+    const app = loadApp({
+      routes: { ...routes(), [`GET /api/bugs/${bug.id}`]: withComment() }
+    });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+
+    app.confirmAnswer.value = false;
+    await app.click('removecomment', { id: COMMENT_ID });
+
+    assert.equal(seen.filter((c) => c.method === 'DELETE').length, 0,
+      'a declined removal is not a removal');
+  });
+
+  test('an answered comment offers no button, whoever is reading', async () => {
+    // The server decides this (canRemove), so the page must render what it is told
+    // rather than assuming the author may always withdraw.
+    const app = loadApp({
+      routes: { ...routes(), [`GET /api/bugs/${bug.id}`]: withComment(false) }
+    });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+
+    assert.doesNotMatch(app.html(), /data-action="removecomment"/);
   });
 
   test('the timeline speaks the language the reader chose', async () => {

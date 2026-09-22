@@ -85,6 +85,10 @@ export const SCOPE_POLICY = {
   'POST /api/projects/:id/bugs': 'bug:write',
   'POST /api/bugs/:id/status': 'bug:write',
   'POST /api/bugs/:id/comments': 'bug:write',
+  // Taking back a comment nobody has answered: the same scope that let it be
+  // written. Who may do it is the comment's own rule (author or project admin),
+  // enforced on the route.
+  'DELETE /api/bugs/:id/comments/:eventId': 'bug:write',
   // The way back for whoever is working a bug: see questionsFor() in api.js.
   'POST /api/bugs/:id/questions': 'bug:write',
   'GET /api/bugs/:id/questions': 'bug:read',
@@ -171,11 +175,24 @@ async function loadBug(db, bugId) {
   return r.rows[0] ?? null;
 }
 
-async function timelineFor(db, bugId) {
+/**
+ * A bug's timeline, in order.
+ *
+ * `viewer` ({ userId, role }) is optional and only decides `canRemove` on the
+ * comment entries — the rule itself lives here, next to the data, so the browser
+ * and the agent cannot disagree about who may withdraw what. With no viewer the
+ * timeline is read-only, which is what the prompt and packet want: an agent
+ * reading a bug is not being shown buttons.
+ */
+async function timelineFor(db, bugId, { viewer = null } = {}) {
   const r = await db.query(
-    `SELECT e.id, e.kind, e.payload, e.at, u.display_name AS actor
+    `SELECT e.id, e.kind, e.payload, e.at, e.actor_id, u.display_name AS actor
        FROM events e LEFT JOIN users u ON u.id = e.actor_id
-      WHERE e.bug_id = $1 ORDER BY e.id`, [bugId]);
+      WHERE e.bug_id = $1
+        -- A withdrawn comment is not shown at all: the point of withdrawing it is
+        -- that the wrong sentence stops being read. The row stays in events.
+        AND NOT EXISTS (SELECT 1 FROM comment_removals cr WHERE cr.event_id = e.id)
+      ORDER BY e.id`, [bugId]);
 
   const notes = await db.query(
     `SELECT event_id, lang, status, text FROM event_translations
@@ -187,19 +204,44 @@ async function timelineFor(db, bugId) {
     byEvent[n.event_id][n.lang] = { status: n.status, text: n.text };
   }
 
-  return r.rows.map(row => ({
-    id: row.id,
-    at: iso(row.at),
-    actor: row.actor ?? 'system',
-    kind: row.kind,
-    note: row.payload?.note ?? null,
-    reason: row.payload?.reason ?? null,
-    closeKind: row.payload?.closeKind ?? null,
-    closeRefCode: row.payload?.closeRefCode ?? null,
-    result: row.payload?.result ?? null,
-    to: row.payload?.to ?? null,
-    noteTranslations: byEvent[row.id] ?? {}
-  }));
+  // Which comments someone has answered. A comment is answered once a comment from
+  // *someone else* follows it — the same reading the question loop uses, so a
+  // person adding a second note does not count as having answered themselves.
+  // Walking backwards keeps it one pass over rows already in hand.
+  const answered = new Set();
+  const laterAuthors = new Set();
+  for (let i = r.rows.length - 1; i >= 0; i -= 1) {
+    const row = r.rows[i];
+    if (row.kind !== 'bug.commented') continue;
+    for (const a of laterAuthors) {
+      if (a !== row.actor_id) { answered.add(String(row.id)); break; }
+    }
+    laterAuthors.add(row.actor_id);
+  }
+
+  return r.rows.map(row => {
+    const mine = viewer !== null && viewer.userId === row.actor_id;
+    const admin = viewer !== null && viewer.role === 'admin';
+    return {
+      id: row.id,
+      at: iso(row.at),
+      actor: row.actor ?? 'system',
+      actorId: row.actor_id ?? null,
+      kind: row.kind,
+      // The author may take back what they said while nobody has answered it; an
+      // admin may clear any unanswered one. Answered comments are locked for
+      // everyone, admins included: the reply belongs to the record.
+      canRemove: row.kind === 'bug.commented' && (mine || admin)
+                 && !answered.has(String(row.id)),
+      note: row.payload?.note ?? null,
+      reason: row.payload?.reason ?? null,
+      closeKind: row.payload?.closeKind ?? null,
+      closeRefCode: row.payload?.closeRefCode ?? null,
+      result: row.payload?.result ?? null,
+      to: row.payload?.to ?? null,
+      noteTranslations: byEvent[row.id] ?? {}
+    };
+  });
 }
 
 async function translationsFor(db, bugId) {
@@ -282,9 +324,9 @@ async function watchersFor(db, bugId) {
   }));
 }
 
-async function bugPayload(db, bug, role = 'developer') {
+async function bugPayload(db, bug, role = 'developer', viewer = null) {
   const [translations, timeline, attachments, watchers, questions] = await Promise.all([
-    translationsFor(db, bug.id), timelineFor(db, bug.id), attachmentsFor(db, bug.id),
+    translationsFor(db, bug.id), timelineFor(db, bug.id, { viewer }), attachmentsFor(db, bug.id),
     // The addresses that hear when this bug is marked fixed.
     watchersFor(db, bug.id),
     // What whoever is working this bug had to ask, and what came back.
@@ -976,7 +1018,10 @@ export function buildRoutes() {
     const { role } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
     const bug = await loadBug(ctx.db, ctx.params.id);
     if (!bug) throw new HttpError(404, 'not_found', 'bug not found');
-    sendJson(res, 200, await bugPayload(ctx.db, bug, role));
+    // The viewer decides `canRemove` on comment entries, so the page and the API
+    // answer "may I take this back?" the same way.
+    sendJson(res, 200, await bugPayload(ctx.db, bug, role,
+      { userId: ctx.actor.userId, role }));
   }));
 
   r.get('/api/bugs/:id/prompt', handle(async (req, res, ctx) => {
@@ -1282,6 +1327,70 @@ export function buildRoutes() {
       return ins.rows[0];
     });
     sendJson(res, 201, { id: ev.id });
+  }));
+
+  /**
+   * Withdraw a comment that nobody has answered yet.
+   *
+   * A developer writes "fixed in abc1234" and it is the wrong commit, or a note on
+   * the wrong bug, or a question they then answered themselves. Until now the only
+   * way out was to add another comment and hope the tester read the correction —
+   * the wrong sentence stayed on the bug, and the tester acted on it.
+   *
+   * The gate is the answer, not seniority: once someone has replied, the two are a
+   * conversation, and both halves belong to the record. That is the same rule the
+   * question loop uses — an answer has to come from someone other than the asker —
+   * so a person adding a second note does not lock their first one. The author may
+   * withdraw their own unanswered comment; a project admin may clear any of them.
+   *
+   * Nothing is deleted. `events` is append-only by trigger, deliberately, so the
+   * removal is recorded beside the comment as its own fact (who, when) and the read
+   * paths filter it out — the timeline stops showing it, the audit still has it.
+   */
+  r.del('/api/bugs/:id/comments/:eventId', handle(async (req, res, ctx) => {
+    const { role } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
+    // A non-numeric id is not a missing comment to report on, but it is not a
+    // database error either — answering 404 keeps a probe from reading as a crash.
+    if (!/^\d+$/.test(String(ctx.params.eventId))) {
+      throw new HttpError(404, 'not_found', 'no such comment on this bug');
+    }
+
+    const target = await ctx.db.query(
+      `SELECT e.id, e.actor_id, u.display_name AS actor
+         FROM events e LEFT JOIN users u ON u.id = e.actor_id
+        WHERE e.id = $1 AND e.bug_id = $2 AND e.kind = 'bug.commented'
+          AND NOT EXISTS (SELECT 1 FROM comment_removals cr WHERE cr.event_id = e.id)`,
+      [ctx.params.eventId, ctx.params.id]);
+    if (!target.rows.length) {
+      throw new HttpError(404, 'not_found', 'no such comment on this bug');
+    }
+    const comment = target.rows[0];
+
+    if (comment.actor_id !== ctx.actor.userId && role !== 'admin') {
+      throw new HttpError(403, 'forbidden',
+        'only the author or a project admin may remove a comment');
+    }
+
+    // Who, if anyone, has answered it — named in the refusal so the person knows
+    // why it is locked rather than being told "no".
+    const replied = await ctx.db.query(
+      `SELECT u.display_name AS name FROM events e
+         LEFT JOIN users u ON u.id = e.actor_id
+        WHERE e.bug_id = $1 AND e.kind = 'bug.commented' AND e.id > $2
+          AND e.actor_id IS DISTINCT FROM $3
+          AND NOT EXISTS (SELECT 1 FROM comment_removals cr WHERE cr.event_id = e.id)
+        ORDER BY e.id LIMIT 1`,
+      [ctx.params.id, comment.id, comment.actor_id]);
+    if (replied.rows.length) {
+      throw new HttpError(409, 'comment_answered',
+        `this comment has been answered by ${replied.rows[0].name ?? 'someone'} — it stays on the record`);
+    }
+
+    await ctx.db.query(
+      `INSERT INTO comment_removals (event_id, removed_by) VALUES ($1,$2)
+       ON CONFLICT (event_id) DO NOTHING`,
+      [comment.id, ctx.actor.userId]);
+    sendJson(res, 200, { ok: true, id: comment.id, removedAt: iso(new Date()) });
   }));
 
   // ─ questions about a bug: the agent's way back ──
