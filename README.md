@@ -171,6 +171,21 @@ up in `codex debug prompt-input`. Install it **once per harness** — the plugin
 already carries this skill, and a machine with both lists it twice (Codex says so only
 indirectly, by trimming descriptions to fit its skills budget).
 
+**Or let the repository do it.** Every step above, for a machine that has none of it yet:
+
+```
+git clone https://github.com/cache51/rgm-project-manager.git ~/rgm
+node ~/rgm/scripts/install-agent.mjs --harness opencode     # or: --harness codex
+```
+
+It writes absolute paths (a relative one works only while the shell is somewhere
+convenient), merges into an existing config instead of replacing it, links the skill
+once, and finishes by asking the harness what it can actually see — `opencode mcp list`
+saying `rgm connected`, `codex debug prompt-input` naming the skill. `--check` runs just
+that verification, `--url` sets the app address, and a config it cannot parse is left
+untouched with the block printed to paste by hand. Claude Code needs none of this: it
+installs this repository as a plugin.
+
 **Codex gates MCP tool calls behind its approval policy.** The wiring is complete long
 before a call succeeds: the server starts and the tool is found
 (`mcp: rgm/rgm_projects started`), and then the call is refused — *MCP tool call requires
