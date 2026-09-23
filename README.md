@@ -171,20 +171,60 @@ up in `codex debug prompt-input`. Install it **once per harness** — the plugin
 already carries this skill, and a machine with both lists it twice (Codex says so only
 indirectly, by trimming descriptions to fit its skills budget).
 
-**Or let the repository do it.** Every step above, for a machine that has none of it yet:
+**Or let the repository do it** — the same two commands on macOS, Linux and Windows.
+Needs Node 20+ (the `engines` in `package.json`) and git; nothing else, and no `npm install`.
 
-```
+```bash
+# macOS
+brew install node git                     # if you do not have them
 git clone https://github.com/cache51/rgm-project-manager.git ~/rgm
-node ~/rgm/scripts/install-agent.mjs --harness opencode     # or: --harness codex
+node ~/rgm/scripts/install-agent.mjs --harness opencode          # or --harness codex
 ```
 
-It writes absolute paths (a relative one works only while the shell is somewhere
-convenient), merges into an existing config instead of replacing it, links the skill
-once, and finishes by asking the harness what it can actually see — `opencode mcp list`
-saying `rgm connected`, `codex debug prompt-input` naming the skill. `--check` runs just
-that verification, `--url` sets the app address, and a config it cannot parse is left
-untouched with the block printed to paste by hand. Claude Code needs none of this: it
-installs this repository as a plugin.
+```bash
+# Linux
+sudo apt install nodejs git               # or nvm, or your distribution's packages
+git clone https://github.com/cache51/rgm-project-manager.git ~/rgm
+node ~/rgm/scripts/install-agent.mjs --harness opencode
+```
+
+```powershell
+# Windows (PowerShell) — reopen the shell after winget, so `node` is on PATH
+winget install OpenJS.NodeJS.LTS Git.Git  # or the installers from nodejs.org / git-scm.com
+git clone https://github.com/cache51/rgm-project-manager.git "$env:USERPROFILE\rgm"
+node "$env:USERPROFILE\rgm\scripts\install-agent.mjs" --harness opencode
+```
+
+Same layout on all three, one level under the home directory (`%USERPROFILE%` on Windows):
+
+| | macOS / Linux | Windows |
+|---|---|---|
+| OpenCode config | `~/.config/opencode/opencode.jsonc` | `%USERPROFILE%\.config\opencode\opencode.jsonc` |
+| Codex config | `~/.codex/config.toml` | `%USERPROFILE%\.codex\config.toml` |
+| The skill | `~/.agents/skills/bug-intake`, a symlink | `%USERPROFILE%\.agents\skills\bug-intake`, a *junction* (a directory symlink there would need administrator rights) |
+| Credentials | `~/.rgm/config.json` | `%USERPROFILE%\.rgm\config.json` |
+
+By hand instead — the skill link is the part that differs by platform:
+
+```bash
+# macOS / Linux
+mkdir -p ~/.agents/skills && ln -sfn ~/rgm/skills/bug-intake ~/.agents/skills/bug-intake
+```
+
+```powershell
+# Windows
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.agents\skills" | Out-Null
+New-Item -ItemType Junction -Path "$env:USERPROFILE\.agents\skills\bug-intake" `
+  -Target "$env:USERPROFILE\rgm\skills\bug-intake"
+```
+
+Either way the script finishes by asking the harness what it can actually see — `opencode
+mcp list` saying `rgm connected`, `codex debug prompt-input` naming the skill. It writes
+absolute paths (a relative one works only while the shell is somewhere convenient),
+merges into an existing config instead of replacing it, links the skill once, refuses to
+touch a config it cannot parse (printing the block to paste instead), and takes `--check`
+to re-run just the verification and `--url` to point at another app. Claude Code needs
+none of this: it installs this repository as a plugin.
 
 **Codex gates MCP tool calls behind its approval policy.** The wiring is complete long
 before a call succeeds: the server starts and the tool is found
@@ -207,6 +247,10 @@ scopes `bug:read` + `bug:write`).
 rgm login --url http://192.168.168.92:3000 --token <api-token>
 rgm use "Fabric Warehouse"    # the project this agent works
 ```
+
+(`rgm` is `bin/rgm`, a shell wrapper around `src/cli.js`. On Windows, where that
+wrapper does not run, use `node %USERPROFILE%\rgm\src\cli.js login --url ... --token ...`
+and the same for `use` — the commands are identical otherwise.)
 
 Nothing else to configure — both entry points read the same `~/.rgm/config.json`. An
 agent that has not signed in yet gets told exactly that when it calls a tool, rather

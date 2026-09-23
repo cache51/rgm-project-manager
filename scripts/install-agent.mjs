@@ -6,6 +6,10 @@
  *   node scripts/install-agent.mjs --harness codex
  *   node scripts/install-agent.mjs --harness opencode --check
  *
+ * Runs the same on macOS, Linux and Windows: every path is built from the user's
+ * home, and the skill is linked as a junction on Windows, where a directory
+ * symlink would need administrator rights.
+ *
  * Everything here has been done by hand too many times, and every step has a way
  * of looking finished when it is not:
  *
@@ -53,7 +57,22 @@ if (!['opencode', 'codex'].includes(harness)) {
 }
 
 const say = (line = '') => process.stdout.write(`${line}\n`);
-const sh = (cmd, argv) => spawnSync(cmd, argv, { encoding: 'utf8' });
+
+/**
+ * Run another program.
+ *
+ * On Windows the agent CLIs are `.cmd` shims, and Node refuses to spawn those
+ * directly (it stopped implying a shell, and the old behaviour now raises EINVAL),
+ * so those go through cmd.exe — which is also what resolves them from PATH. `git`
+ * and `node` are real executables and are spawned as such everywhere.
+ */
+function run(cmd, argv, opts = {}) {
+  const base = { encoding: 'utf8', ...opts };
+  return process.platform === 'win32' && !['git', 'node'].includes(cmd)
+    ? spawnSync('cmd.exe', ['/c', cmd, ...argv], base)
+    : spawnSync(cmd, argv, base);
+}
+const sh = (cmd, argv) => run(cmd, argv);
 
 /** The checkout this script belongs to, cloned if it is not one. */
 async function ensureCheckout() {
@@ -139,8 +158,12 @@ async function installSkill(repo) {
   const link = join(dir, 'bug-intake');
   await mkdir(dir, { recursive: true });
   await rm(link, { recursive: true, force: true });
-  await symlink(join(repo, 'skills', 'bug-intake'), link);
-  say(`linked ${link} → ${join(repo, 'skills', 'bug-intake')}`);
+  const target = join(repo, 'skills', 'bug-intake');
+  // A junction on Windows: a directory symlink there needs administrator rights or
+  // developer mode, and neither harness cares how the directory is linked. An
+  // install that fails because of a policy setting is worse than one that links.
+  await symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+  say(`linked ${link} → ${target}`);
 }
 
 /**
@@ -158,7 +181,7 @@ function dumpToFile(cmd, argv) {
   const file = join(tmpdir(), `rgm-verify-${process.pid}.txt`);
   const fd = openSync(file, 'w');
   try {
-    spawnSync(cmd, argv, { stdio: ['ignore', fd, 'ignore'] });
+    run(cmd, argv, { stdio: ['ignore', fd, 'ignore'] });
   } finally {
     closeSync(fd);
   }
