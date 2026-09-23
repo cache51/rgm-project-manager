@@ -140,6 +140,50 @@ args = ["/path/to/rgm-project-manager/mcp/rgm-mcp.mjs"]
 { "mcpServers": { "rgm": { "command": "node", "args": ["/path/to/rgm-project-manager/mcp/rgm-mcp.mjs"] } } }
 ```
 
+**OpenCode** — its config, not a manifest (`mcp.<name>.command` is always an array):
+
+```jsonc
+// ~/.config/opencode/opencode.jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "rgm": {
+      "type": "local",
+      "command": ["node", "/path/to/rgm-project-manager/mcp/rgm-mcp.mjs"],
+      "enabled": true
+    }
+  }
+}
+```
+
+`opencode mcp list` should report `rgm connected` — it starts the server and handshakes.
+
+**The skill, where no plugin is involved.** Codex and OpenCode both read a shared skills
+directory, so one symlink serves either and keeps tracking this repository:
+
+```
+mkdir -p ~/.agents/skills
+ln -sfn /path/to/rgm-project-manager/skills/bug-intake ~/.agents/skills/bug-intake
+```
+
+Check it landed: `opencode debug skill` lists `bug-intake`, and in Codex the skill shows
+up in `codex debug prompt-input`. Install it **once per harness** — the plugin above
+already carries this skill, and a machine with both lists it twice (Codex says so only
+indirectly, by trimming descriptions to fit its skills budget).
+
+**Codex gates MCP tool calls behind its approval policy.** The wiring is complete long
+before a call succeeds: the server starts and the tool is found
+(`mcp: rgm/rgm_projects started`), and then the call is refused — *MCP tool call requires
+approval, but approval policy is never* — under `codex exec`, while an interactive
+session simply asks. To pre-approve a named tool, the same pattern this machine already
+uses for other servers:
+
+```toml
+# ~/.codex/config.toml
+[mcp_servers.rgm.tools.rgm_projects]
+approval_mode = "approve"
+```
+
 Then, once, the credentials the server and the CLI share. There is no password: the
 address *is* the identity, and the token is minted in the app (`POST /api/tokens`,
 scopes `bug:read` + `bug:write`).
