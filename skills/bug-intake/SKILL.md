@@ -17,7 +17,7 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
 2. **`rgm_get_bug {number}`** — the handoff prompt: the tester's original words
    beside the translation, the status, the attachments, and any question still
    unanswered. Read all of it. It also lists **your own comments that nobody has
-   answered**, with the id that takes one back (step 6).
+   answered**, with the id that takes one back (step 7).
 3. **`rgm_get_packet {number}`** — saves the screenshots into `.rgm/<CODE>/`.
    **Look at them.** Half of these bugs are "this number on this screen is
    wrong", and the screenshot is the only place that number appears. An
@@ -28,14 +28,39 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    the bug's notification list and stays open until someone answers. Then either
    poll **`rgm_get_questions {number}`** or work another bug meanwhile; never
    invent an answer and never quietly do the wrong thing.
-5. **Write the test before the fix.** Turn the report into a case that fails on
+5. **Find the area before you write the test.** A report names a screen or a voucher,
+   not a file — "PACKING LIST TỔNG didn't update", "the cutting table has the wrong
+   length". Two habits turn that into a place:
+   - **Look the tester's words up in the app's own translations** (`frontend/src/i18n/vi/`
+     and `en/`, and the backend's resources). Their Vietnamese phrase is usually an i18n
+     value, and its key names the screen — the shortest path from "phiếu đóng gói" to the
+     component that renders it.
+   - **One directory per area**: `frontend/src/features/<area>/`, with the backend beside
+     it (`backend/src/main/kotlin/…/{controllers,services,domain,adapters}`). The areas
+     are named in the words the testers use: `cutting`, `packing-list`, `projection-plan`,
+     `po-import`, `fabric-status`, …
+   Two that come up constantly in this product:
+   - **Cutting table** — the table itself is `features/cutting/CuttingSheetPage.tsx`
+     (with `cutting-sheet-grid.ts` and `CuttingLineEditor.tsx`); you reach it from
+     `CuttingBrowserPage.tsx`, which lists the active cuttings; backend `CuttingBrowser*`.
+     Note the two are different complaints: "the list is wrong" is the browser, "this
+     cutting is wrong" is the sheet.
+   - **Packing List** — `features/packing-list/`: the browser, `PackingListEditor`,
+     `EditableCartonMatrix`, the estimate panel, the print view, and a review panel per
+     customer workflow; backend `PackingList*` plus a workflow class per customer.
+   The checkout's own `AGENTS.md` and `docs/` hold the rest of that map and the rules
+   that come with it — how a screen must be built, how it is verified against the test
+   DB, what must not be hand-rolled. **Read it before editing.** If the report's area is
+   still not placeable, ask: a question costs one mail, an edit to the wrong screen costs
+   a rework cycle.
+6. **Write the test before the fix.** Turn the report into a case that fails on
    the current code — the carton count, the lot with no lining row, the label that
    prints off-centre — **watch it fail**, then change the code until it passes.
    Keep the test: it is this bug's regression case, and it is what you hand over
    as evidence. If the symptom genuinely cannot be automated (a layout, a printed
    label, a screen that only misbehaves by hand), reproduce it by hand and say
    exactly how — on which build, what you did, what you saw before and after.
-6. **`rgm_comment {number, note}`** — say what changed and where, in words a
+7. **`rgm_comment {number, note}`** — say what changed and where, in words a
    tester can act on ("the packing list now accepts a lot with no lining row").
    It answers the bug's open questions and tells you the comment's id. If you
    reread that note and it is wrong, premature, or on the wrong bug, take it back
@@ -45,7 +70,7 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    comment stops being read anywhere, including in this prompt). It removes a
    *comment*; a question you asked cannot be withdrawn this way — a mail has
    already gone out, so correct it by answering or by a plain comment.
-7. **Self-check before you claim fixed (Jev, if configured).** If a `jev` MCP
+8. **Self-check before you claim fixed (Jev, if configured).** If a `jev` MCP
    server is connected, call its `evaluate` with state = the tester's report +
    your diff + the test command and its fresh output, and these four Noul
    questions in one call: *the diff addresses the symptom the tester described
@@ -56,7 +81,7 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    whether you look again, not whether the tester verifies. A flag you disagree
    with is fine — say why in the comment. If `jev` is not connected, skip this
    step; it is a second pair of eyes, never a licence to claim fixed.
-8. **`rgm_mark_fixed {number, verified_by, note}`** — `verified_by` is **required**
+9. **`rgm_mark_fixed {number, verified_by, note}`** — `verified_by` is **required**
    and is the evidence: the test file and case name, or the exact command, or how
    you checked a symptom that cannot be automated. It is posted on the bug beside
    your note, so the tester reads what already proved it before they check it
