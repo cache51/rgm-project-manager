@@ -111,7 +111,7 @@ test('rgm comment can carry screenshots, one --file per picture', async () => {
   } finally { r.restore(); await rm(dir, { recursive: true, force: true }); }
 });
 
-test('rgm comment refuses a file that is not an image, before uploading it', async () => {
+test('rgm comment refuses a file the app does not take, before uploading it', async () => {
   const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
   const { tmpdir } = await import('node:os');
   const dir = await mkdtemp(join(tmpdir(), 'rgm-cli-shot-'));
@@ -121,7 +121,7 @@ test('rgm comment refuses a file that is not an image, before uploading it', asy
   const r = recorder();
   try {
     await assert.rejects(() => run(['comment', '7', 'x', '--file', file]),
-      /not an image the app accepts/);
+      /not a file the app accepts/);
     assert.deepEqual(r.seen.filter((s) => s.path.includes('/attachments/')), []);
     assert.deepEqual(r.seen.filter((s) => s.path.endsWith('/comments')), [],
       'nothing is posted either: the note would have been sent without its picture');

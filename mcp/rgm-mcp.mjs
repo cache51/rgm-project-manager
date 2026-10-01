@@ -136,7 +136,11 @@ const text = (value) => ({ content: [{ type: 'text', text: typeof value === 'str
 /** The types the app accepts, so a .jpg is not uploaded as a .png. */
 const IMAGE_TYPES = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp', '.gif': 'image/gif', '.heic': 'image/heic'
+  '.webp': 'image/webp', '.gif': 'image/gif', '.heic': 'image/heic',
+  // Not pictures, but the app takes them: the workbook a question can ask for, a PDF, a CSV.
+  '.pdf': 'application/pdf', '.csv': 'text/csv',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 };
 
 /**
@@ -150,7 +154,7 @@ async function uploadShot(bugUuid, file) {
   const bytes = await readFile(file);
   const type = IMAGE_TYPES[extname(file).toLowerCase()];
   if (!type) {
-    throw new Error(`${file} is not an image the app accepts (png, jpg, webp, gif, heic)`);
+    throw new Error(`${file} is not a file the app accepts (png, jpg, webp, gif, heic, pdf, csv, xls, xlsx)`);
   }
   const signed = await json('POST', `/api/bugs/${bugUuid}/attachments/presign`,
     { contentType: type, byteSize: bytes.length });
@@ -256,8 +260,8 @@ const TOOLS = [
   },
   {
     name: 'rgm_get_packet',
-    description: 'Download a bug\'s screenshots and bug.md into .rgm/<CODE>/ in the current '
-      + 'directory, and return the file paths so you can look at the images. Do this before '
+    description: 'Download a bug\'s screenshots and files and bug.md into .rgm/<CODE>/ in the current '
+      + 'directory, and return the file paths so you can open them. Do this before '
       + 'deciding a report is clear enough to act on.',
     inputSchema: {
       type: 'object',
@@ -282,13 +286,14 @@ const TOOLS = [
   },
   {
     name: 'rgm_get_attachment',
-    description: 'Save one attachment (a screenshot) of a bug to a file so you can look at it. '
+    description: 'Save one attachment (a screenshot, or the workbook or PDF a tester attached) of a '
+      + 'bug to a file so you can open it. '
       + 'Names come from rgm_get_bug; rgm_get_packet saves every attachment at once.',
     inputSchema: {
       type: 'object',
       properties: {
         number: { type: 'integer' },
-        name: { type: 'string', description: 'attachment name, e.g. screenshot_01.png' },
+        name: { type: 'string', description: 'attachment name, e.g. screenshot_01.png or file_01.xlsx' },
         out: { type: 'string', description: 'where to write it (default: .rgm/<CODE>/<name>)' },
         ...PROJECT_ARG
       },

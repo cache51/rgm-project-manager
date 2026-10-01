@@ -25,11 +25,35 @@ export const PACKET_IMAGE_EXTENSIONS = Object.freeze({
   'image/heic': 'heic'
 });
 
+/**
+ * Files that are not pictures — the tester's own Excel form, a PDF spec, a CSV
+ * export. Same rule as the images: the SERVER picks the extension from the
+ * validated content type, never from the uploaded filename.
+ */
+export const PACKET_FILE_EXTENSIONS = Object.freeze({
+  'application/pdf': 'pdf',
+  'text/csv': 'csv',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx'
+});
+
+/** Every type the packet can carry, images included. */
+export const PACKET_TYPES = Object.freeze({
+  ...PACKET_IMAGE_EXTENSIONS,
+  ...PACKET_FILE_EXTENSIONS
+});
+
 export function extensionFor(contentType) {
   const base = String(contentType ?? '').toLowerCase().split(';')[0].trim();
-  const ext = PACKET_IMAGE_EXTENSIONS[base];
-  if (!ext) throw new RangeError(`unsupported packet image type: ${contentType}`);
+  const ext = PACKET_TYPES[base];
+  if (!ext) throw new RangeError(`unsupported packet file type: ${contentType}`);
   return ext;
+}
+
+/** True for the types that are pictures — the ones the UI renders inline. */
+export function isImageType(contentType) {
+  const base = String(contentType ?? '').toLowerCase().split(';')[0].trim();
+  return Object.hasOwn(PACKET_IMAGE_EXTENSIONS, base);
 }
 
 /** Fixed-width, zero-padded, extension derived from the validated type. */
@@ -37,7 +61,11 @@ export function packetEntryName(index, contentType = 'image/png') {
   if (!Number.isInteger(index) || index < 1) {
     throw new RangeError(`packet entry index must be a positive integer, got ${index}`);
   }
-  return `screenshot_${String(index).padStart(2, '0')}.${extensionFor(contentType)}`;
+  // A spreadsheet handed over as an answer is not a screenshot, and calling it one
+  // in the packet, the prompt and the timeline makes the tester scroll past a name
+  // that describes something the file is not.
+  const prefix = isImageType(contentType) ? 'screenshot' : 'file';
+  return `${prefix}_${String(index).padStart(2, '0')}.${extensionFor(contentType)}`;
 }
 
 export function packetEntryNames(count, contentTypes = []) {

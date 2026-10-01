@@ -28,8 +28,46 @@ import { enforce, hit, LIMITS } from './ratelimit.js';
 
 const iso = (v) => (v instanceof Date ? v.toISOString() : v);
 const MAX_ATTACHMENTS_PER_BUG = 12;
+const MAX_FILE_BYTES = 25_000_000;
 const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/heic'];
+// The tester's own workbook, a spec PDF, a CSV export. An agent that asks "please
+// attach the Excel form you use" is asking for one of these, and until they were
+// allowed the only honest answer was "email it to me".
+const ALLOWED_FILE_TYPES = [
+  'application/pdf',
+  'text/csv',
+  'application/vnd.ms-excel',                                        // .xls, and how macOS reports .csv
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' // .xlsx
+];
+const ALLOWED_UPLOAD_TYPES = [...ALLOWED_IMAGE_TYPES, ...ALLOWED_FILE_TYPES];
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The attachments a reply names, checked against the bug it is about.
+ *
+ * An attachment id is a bare uuid, and the upload route only proves the caller may
+ * write to SOME bug. Without this check a comment or an answer could point at
+ * another report's evidence and the timeline would show a file that was never part
+ * of this bug. Returns the deduped ids; throws if any of them is foreign.
+ */
+async function checkedAttachmentIds(tx, bugId, attachmentIds) {
+  const wanted = [...new Set(
+    (Array.isArray(attachmentIds) ? attachmentIds : []).map((v) => String(v))
+  )].filter((id) => id !== '');
+  if (wanted.some((id) => !UUID_RE.test(id))) {
+    throw new HttpError(400, 'bad_attachment', 'attachmentIds must be uuids');
+  }
+  if (wanted.length) {
+    const found = await tx.query(
+      `SELECT id FROM bug_attachments WHERE bug_id = $1 AND id = ANY($2::uuid[])`,
+      [bugId, wanted]);
+    if (found.rows.length !== wanted.length) {
+      throw new HttpError(400, 'bad_attachment',
+        'every attachment must already belong to this bug');
+    }
+  }
+  return wanted;
+}
 
 /**
  * Event kinds that are operational audit rather than part of the bug's story.
@@ -1326,27 +1364,10 @@ export function buildRoutes() {
     const { note, attachmentIds } = await readJson(req);
     if (!note || !String(note).trim()) throw new HttpError(400, 'note_required', 'note required');
 
-    // Screenshots the reply carries: ids already uploaded against THIS bug (presign →
-    // PUT → complete). Checked here rather than trusted, because an id on its own is a
-    // bare uuid — without the check a comment could point at another bug's evidence and
-    // the timeline would show a picture that was never part of this report. The shape is
-    // validated first so a malformed id is a 400 rather than a cast error.
-    const wanted = [...new Set((Array.isArray(attachmentIds) ? attachmentIds : [])
-      .map((v) => String(v)))];
-    if (wanted.some((id) => !UUID_RE.test(id))) {
-      throw new HttpError(400, 'bad_attachment', 'attachmentIds must be uuids');
-    }
-
+    // Attachments the reply carries: ids already uploaded against THIS bug (presign →
+    // PUT → complete), checked inside the transaction below.
     const ev = await withTransaction(ctx.db, async (tx) => {
-      if (wanted.length) {
-        const found = await tx.query(
-          `SELECT id FROM bug_attachments WHERE bug_id = $1 AND id = ANY($2::uuid[])`,
-          [ctx.params.id, wanted]);
-        if (found.rows.length !== wanted.length) {
-          throw new HttpError(400, 'bad_attachment',
-            'every screenshot on a comment must already belong to this bug');
-        }
-      }
+      const wanted = await checkedAttachmentIds(tx, ctx.params.id, attachmentIds);
       const ins = await tx.query(
         `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
          VALUES ($1,$2,$3,'bug.commented',$4) RETURNING id`,
@@ -1497,7 +1518,7 @@ export function buildRoutes() {
   /** Answer a question. Any member may: the tester who filed it usually knows. */
   r.post('/api/bugs/:id/questions/:questionId/answer', handle(async (req, res, ctx) => {
     const { projectId } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
-    const { answer } = await readJson(req);
+    const { answer, attachmentIds } = await readJson(req);
     const text = String(answer ?? '').trim();
     if (!text) throw new HttpError(400, 'answer_required', 'an answer needs some text');
     if (text.length > 4000) {
@@ -1505,6 +1526,11 @@ export function buildRoutes() {
     }
 
     const out = await withTransaction(ctx.db, async (tx) => {
+      // A question can ask for a file — "please attach the Excel form you use" — and
+      // an answer that cannot carry it leaves the agent waiting for something the
+      // tester has no way to hand over. Same check as a comment: the ids must already
+      // belong to this bug.
+      const wanted = await checkedAttachmentIds(tx, ctx.params.id, attachmentIds);
       // Conditional on the question still being open: two people answering at
       // once must not silently overwrite each other.
       const upd = await tx.query(
@@ -1521,7 +1547,9 @@ export function buildRoutes() {
         `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
          VALUES ($1,$2,$3,'bug.question_answered',$4)`,
         [projectId, ctx.params.id, ctx.actor.userId,
-          JSON.stringify({ questionId: ctx.params.questionId, note: text })]);
+          JSON.stringify(wanted.length
+            ? { questionId: ctx.params.questionId, note: text, attachmentIds: wanted }
+            : { questionId: ctx.params.questionId, note: text })]);
 
       return upd.rows[0];
     });
@@ -1611,11 +1639,11 @@ export function buildRoutes() {
   r.post('/api/bugs/:id/attachments/presign', handle(async (req, res, ctx) => {
     const { contentType, byteSize } = await readJson(req);
 
-    if (!ALLOWED_IMAGE_TYPES.includes(String(contentType))) {
-      throw new HttpError(400, 'bad_type', `unsupported image type: ${contentType}`);
+    if (!ALLOWED_UPLOAD_TYPES.includes(String(contentType))) {
+      throw new HttpError(400, 'bad_type', `unsupported file type: ${contentType}`);
     }
-    if (!Number.isInteger(byteSize) || byteSize <= 0 || byteSize > 8_000_000) {
-      throw new HttpError(400, 'bad_size', 'byteSize must be 1..8000000');
+    if (!Number.isInteger(byteSize) || byteSize <= 0 || byteSize > MAX_FILE_BYTES) {
+      throw new HttpError(400, 'bad_size', `byteSize must be 1..${MAX_FILE_BYTES}`);
     }
 
     const issued = await withTransaction(ctx.db, async (tx) => {
@@ -1661,7 +1689,7 @@ export function buildRoutes() {
       throw new HttpError(404, 'no_upload_proxy',
         'this storage adapter does not support app-local upload capabilities');
     }
-    const bytes = await readBytes(req, { limit: 8_000_000 });
+    const bytes = await readBytes(req, { limit: MAX_FILE_BYTES });
     const claims = ctx.storage.verifyUpload(ctx.params.token);
     await withTransaction(ctx.db, async (tx) => {
       const pending = await tx.query(
@@ -1816,7 +1844,7 @@ export function buildRoutes() {
         if (!head || !head.byteSize) {
           throw new HttpError(400, 'upload_missing', 'object was never uploaded');
         }
-        if (head.byteSize > 8_000_000) {
+        if (head.byteSize > MAX_FILE_BYTES) {
           throw new HttpError(400, 'too_large', 'uploaded object exceeds the size limit');
         }
         byteSize = head.byteSize;
@@ -1825,9 +1853,9 @@ export function buildRoutes() {
         // we signed, the bucket's own metadata, then the client's claim.
         declared = String(claims?.ct ?? head.contentType ?? contentType ?? '')
           .split(';')[0].trim();
-        if (!ALLOWED_IMAGE_TYPES.includes(declared)) {
+        if (!ALLOWED_UPLOAD_TYPES.includes(declared)) {
           throw new HttpError(400, 'bad_type',
-            `unsupported image type: ${declared || '(none)'}`);
+            `unsupported file type: ${declared || '(none)'}`);
         }
         // Proves it maps to a packet entry extension before we store it.
         extensionFor(declared);

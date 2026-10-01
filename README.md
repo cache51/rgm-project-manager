@@ -84,10 +84,10 @@ the same loop:
 |---|---|
 | `rgm_list_bugs` | the unresolved bugs in the configured project, oldest first |
 | `rgm_get_bug` | the handoff prompt: the tester's words, the translation, the status |
-| `rgm_get_packet` / `rgm_get_attachment` | the screenshots, written to disk so they can be looked at |
+| `rgm_get_packet` / `rgm_get_attachment` | the screenshots and files, written to disk so they can be looked at |
 | `rgm_ask_question` | ask the reporter (and the project's developers) to clarify |
 | `rgm_get_questions` | whether the answer has arrived |
-| `rgm_comment` | what was changed, in words a tester can act on |
+| `rgm_comment` | what was changed, in words a tester can act on, with a screenshot or a file attached |
 | `rgm_remove_comment` | take back a comment of its own that nobody has answered yet |
 | `rgm_mark_fixed` | hand it back: *fixed — awaiting verification*, with the test that proves it |
 
@@ -95,6 +95,16 @@ Two rules are built in rather than documented and hoped for: an agent can ask bu
 **cannot verify** (only the filer closes a report), and a question stays open until a
 member answers it — by using the answer box or simply by commenting on the bug, which
 counts as the answer because that is how the testers and developers already reply.
+
+An answer can carry a file, and so can a comment: images, plus `pdf`, `csv`, `xls` and
+`xlsx` — 25 MB each, 12 per bug. That is what makes a question like *"please attach the
+Excel form you use"* answerable in one move instead of by email. The file becomes one of
+the bug's attachments, so it is named in the packet (`file_01.xlsx`, `screenshot_02.png`)
+and reaches the agent's prompt with the rest of the evidence. Beyond the images the app
+has always taken, anything executable is still refused — by the picker, by the presign
+check, by the completion check and by a check constraint on the table, which is four
+places because a file accepted by one and refused by another is worse than a file
+refused everywhere.
 
 The asking agent is only as useful as the report it was given, so the prompt keeps the
 tester's text fenced as data (see `src/prompt.js`) and the question is emailed to the

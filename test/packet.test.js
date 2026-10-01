@@ -130,9 +130,15 @@ test('packet entry extension is derived from the content type', () => {
   // parameters and casing are tolerated
   assert.equal(packetEntryName(1, 'IMAGE/JPEG; charset=binary'), 'screenshot_01.jpg');
   // an unsupported type is refused rather than silently mislabelled
-  assert.throws(() => packetEntryName(1, 'image/tiff'), /unsupported packet image type/);
-  assert.throws(() => packetEntryName(1, 'application/pdf'), /unsupported packet image type/);
-  assert.throws(() => packetEntryName(1, ''), /unsupported packet image type/);
+  assert.throws(() => packetEntryName(1, 'image/tiff'), /unsupported packet file type/);
+  assert.throws(() => packetEntryName(1, 'application/zip'), /unsupported packet file type/);
+  assert.throws(() => packetEntryName(1, ''), /unsupported packet file type/);
+  // ...and a file that is not a picture is named as a file, not as a screenshot
+  assert.equal(packetEntryName(1, 'application/pdf'), 'file_01.pdf');
+  assert.equal(packetEntryName(2, 'text/csv'), 'file_02.csv');
+  assert.equal(packetEntryName(3, 'application/vnd.ms-excel'), 'file_03.xls');
+  assert.equal(packetEntryName(4, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
+    'file_04.xlsx');
   assert.equal(extensionFor('image/png'), 'png');
 });
 

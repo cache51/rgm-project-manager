@@ -48,7 +48,11 @@ export const BINDING_FILE = 'project.json';
 /** Image types the app accepts, so a screenshot is uploaded as what it is. */
 const IMAGE_TYPES = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp', '.gif': 'image/gif', '.heic': 'image/heic'
+  '.webp': 'image/webp', '.gif': 'image/gif', '.heic': 'image/heic',
+  // Not pictures, but the app takes them: the workbook a question can ask for, a PDF, a CSV.
+  '.pdf': 'application/pdf', '.csv': 'text/csv',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 };
 
 /**
@@ -470,7 +474,7 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
     const bytes = await readFile(file);
     const type = IMAGE_TYPES[extname(file).toLowerCase()];
     if (!type) {
-      throw new Error(`${file} is not an image the app accepts (png, jpg, webp, gif, heic)`);
+      throw new Error(`${file} is not a file the app accepts (png, jpg, webp, gif, heic, pdf, csv, xls, xlsx)`);
     }
     const signed = await (await call('POST', `/api/bugs/${bugUuid}/attachments/presign`,
       { body: { contentType: type, byteSize: bytes.length } })).json();

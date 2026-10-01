@@ -55,7 +55,7 @@ const T = {
     cliT: 'Lấy tất cả vào repo', dlAll: '⬇ Tải gói packet', dlFile: '⬇ Tải',
     dlHint: 'Gói packet dùng tên do máy chủ đặt (screenshot_01.png…) nên giải nén không thể ghi ra ngoài thư mục đích.',
     sevL: 'Mức độ', titleL: 'Tiêu đề', bodyL: 'Mô tả chi tiết',
-    attachL: 'Ảnh chụp màn hình', submit: 'Gửi', cancel: 'Huỷ',
+    attachL: 'Ảnh chụp màn hình', attachFiles: 'Tệp đính kèm', submit: 'Gửi', cancel: 'Huỷ',
     actions: 'Hành động', reasonL: 'Lý do', noteL: 'Ghi chú', retest: 'Test lại',
     pass: 'Đạt', fail: 'Không đạt', assignee: 'Người test', anyTester: 'Bất kỳ tester nào',
     saved: 'Đã lưu', signOut: 'Đăng xuất', addNote: 'Thêm bình luận',
@@ -126,7 +126,7 @@ const T = {
     cliT: '取回 repo', dlAll: '⬇ 下載 packet', dlFile: '⬇ 下載',
     dlHint: 'packet 內使用伺服器指派的名稱(screenshot_01.png…),解壓縮不會寫出目標資料夾。',
     sevL: '嚴重程度', titleL: '標題', bodyL: '詳細描述',
-    attachL: '螢幕截圖', submit: '送出', cancel: '取消',
+    attachL: '螢幕截圖', attachFiles: '附件', submit: '送出', cancel: '取消',
     actions: '可執行動作', reasonL: '原因', noteL: '備註', retest: '回歸測試',
     pass: '通過', fail: '不通過', assignee: '測試人員', anyTester: '任何測試人員',
     saved: '已儲存', signOut: '登出', addNote: '新增留言',
@@ -197,7 +197,7 @@ const T = {
     cliT: 'Pull into your repo', dlAll: '⬇ Download packet', dlFile: '⬇ Get',
     dlHint: 'The packet uses server-assigned names (screenshot_01.png…), so extraction cannot write outside the target folder.',
     sevL: 'Severity', titleL: 'Title', bodyL: 'Description',
-    attachL: 'Screenshots', submit: 'Submit', cancel: 'Cancel',
+    attachL: 'Screenshots', attachFiles: 'Files', submit: 'Submit', cancel: 'Cancel',
     actions: 'Actions', reasonL: 'Reason', noteL: 'Note', retest: 'Retest',
     pass: 'Pass', fail: 'Fail', assignee: 'Assignee', anyTester: 'Any tester',
     saved: 'Saved', signOut: 'Sign out', addNote: 'Add comment',
@@ -277,6 +277,16 @@ function initialLang() {
 function rememberLang(lang) {
   try { localStorage.setItem('rgm.lang', lang); } catch { /* nothing to do about it */ }
 }
+
+/**
+ * What a file input offers, in one place.
+ *
+ * The images the app has always taken, plus the file a question can ask for: the
+ * tester's own Excel form, a PDF, a CSV export. The server accepts exactly these —
+ * widening one without the other would just move the failure from the picker to a
+ * 400 after the upload.
+ */
+const FILE_ACCEPT = 'image/*,.pdf,.csv,.xlsx,.xls';
 
 const S = {
   me: null, projects: [], counts: {}, projectId: null,
@@ -963,8 +973,8 @@ function bugDetail() {
         <button class="btn" data-action="comment" data-id="${esc(b.id)}">${t('addNote')}</button>
       </div>
       <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
-        <label style="margin:0">${t('attachL')}</label>
-        <input id="commentfiles" type="file" accept="image/*" multiple>
+        <label style="margin:0">${t('attachFiles')}</label>
+        <input id="commentfiles" type="file" accept="${FILE_ACCEPT}" multiple>
       </div>
       <div class="hint" style="margin:4px 0 0">${t('commentHint')}</div>
 
@@ -1004,9 +1014,13 @@ function questionsPanel(b) {
             ${esc(q.askedBy ?? '')} · ${fmt(q.askedAt)} · ${t('qOpen')}</div>
           <textarea id="answer-${esc(q.id)}" rows="2" placeholder="${t('qAnswerPlaceholder')}"
                     style="width:100%">${esc(S.answerDrafts?.[q.id] ?? '')}</textarea>
-          <button class="btn" style="margin-top:6px"
-                  data-action="answerquestion" data-id="${esc(b.id)}" data-qid="${esc(q.id)}"
-                  >${t('qAnswer')}</button>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">
+            <input id="answerfiles-${esc(q.id)}" type="file" multiple accept="${FILE_ACCEPT}">
+            <span class="hint" style="margin:0">${t('attachFiles')}</span>
+            <button class="btn"
+                    data-action="answerquestion" data-id="${esc(b.id)}" data-qid="${esc(q.id)}"
+                    >${t('qAnswer')}</button>
+          </div>
         </div>` : `
         <div class="tag" style="margin:4px 0;white-space:normal">
           ✓ ${esc(q.answer?.text ?? '')}${q.answer?.by ? ` — ${esc(q.answer.by)}` : ''}
@@ -1802,7 +1816,11 @@ async function answerQuestion(bugId, questionId) {
   if (!answer) { notice(t('answerMissing'), 'bad'); return; }
   S.busy = true;
   try {
-    await api('POST', `/api/bugs/${bugId}/questions/${questionId}/answer`, { answer });
+    // The file goes up first, so the answer and the file the question asked for are
+    // one record rather than two things the reader has to connect themselves.
+    const attachmentIds = await uploadPickedFiles(bugId, `answerfiles-${questionId}`);
+    await api('POST', `/api/bugs/${bugId}/questions/${questionId}/answer`,
+      attachmentIds.length ? { answer, attachmentIds } : { answer });
     delete S.answerDrafts[questionId];
     notice(t('saved'));
     await openBug(bugId);
@@ -1846,36 +1864,47 @@ async function retest(id, result) {
   } finally { S.busy = false; }
 }
 
+/**
+ * Upload the files picked in one input and return their attachment ids.
+ *
+ * The same three steps the report form uses (presign → PUT → complete), run BEFORE
+ * the reply that names them is posted: a reply referencing an upload that never
+ * landed would show a broken link to whoever reads it next.
+ *
+ * The type travels with the file: an .xlsx is not an image, and the app-local
+ * capability upload stores what it is told the file is.
+ */
+async function uploadPickedFiles(bugId, inputId) {
+  const files = [...(document.getElementById(inputId)?.files ?? [])];
+  const ids = [];
+  for (const file of files) {
+    const type = file.type || 'application/octet-stream';
+    const signed = await api('POST', `/api/bugs/${bugId}/attachments/presign`,
+      { contentType: type, byteSize: file.size });
+    const put = await fetch(signed.uploadUrl, {
+      method: 'PUT',
+      body: file,
+      // The signed headers must be sent verbatim, or the signature will not match.
+      headers: signed.uploadHeaders ?? { 'content-type': type }
+    });
+    if (!put.ok) throw new Error(`upload failed for ${file.name}`);
+    const done = await api('POST', `/api/bugs/${bugId}/attachments/complete`, {
+      storageKey: signed.storageKey,
+      uploadToken: signed.uploadToken ?? undefined,
+      filename: file.name,
+      contentType: type
+    });
+    ids.push(done.id);
+  }
+  return ids;
+}
+
 async function comment(id) {
   const note = document.getElementById('commentnote')?.value.trim();
   if (!note) return;
-  // Screenshots picked with the reply go up first (presign → PUT → complete), the same
-  // three steps the report form uses, and only then is the comment posted naming them:
-  // a comment that referenced an upload which had not landed would show a broken
-  // picture to whoever reads it next.
-  const files = [...(document.getElementById('commentfiles')?.files ?? [])];
   S.busy = true;
   try {
-    const attachmentIds = [];
-    for (const file of files) {
-      const signed = await api('POST', `/api/bugs/${id}/attachments/presign`,
-        { contentType: file.type || 'image/png', byteSize: file.size });
-      const put = await fetch(signed.uploadUrl, {
-        method: 'PUT',
-        body: file,
-        // The signed headers must be sent verbatim, or the signature will not match.
-        headers: signed.uploadHeaders ?? { 'content-type': file.type || 'image/png' }
-      });
-      if (!put.ok) throw new Error(`upload failed for ${file.name}`);
-      const done = await api('POST', `/api/bugs/${id}/attachments/complete`, {
-        storageKey: signed.storageKey,
-        uploadToken: signed.uploadToken ?? undefined,
-        filename: file.name,
-        contentType: file.type || 'image/png'
-      });
-      attachmentIds.push(done.id);
-    }
-
+    const attachmentIds = await uploadPickedFiles(id, 'commentfiles');
     await api('POST', `/api/bugs/${id}/comments`,
       attachmentIds.length ? { note, attachmentIds } : { note });
     S.commentDraft = null;

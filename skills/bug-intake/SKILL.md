@@ -28,7 +28,10 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
 4. **Do not guess.** If the report does not pin down what to change — which
    screen, which warehouse, which field, what "correct" would look like — call
    **`rgm_ask_question {number, question}`**. It is emailed to the reporter and
-   the bug's notification list and stays open until someone answers. Then either
+   shown on the bug until it is answered, and it stays open until someone answers.
+   Ask for what you need *specifically*: the tester can attach a file to the answer
+   (a workbook, a PDF, a CSV), so "please attach the Excel form you use" is a
+   question that can be answered rather than one that stalls. Then either
    poll **`rgm_get_questions {number}`** or work another bug meanwhile; never
    invent an answer and never quietly do the wrong thing.
 5. **Find the area before you write the test.** A report names a screen or a voucher,

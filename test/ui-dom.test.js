@@ -890,6 +890,43 @@ describe('ui (dom): every action reaches the API it should', () => {
     assert.equal(posted.body.answer, 'The supplier warehouse.');
   });
 
+  test('an answer can carry the file the question asked for', async () => {
+    // The agent asked for the tester's own Excel form. Before this there was no way
+    // to hand it over: the answer box had no picker, and the comment box took images.
+    seen.length = 0;
+    const app = loadApp({ routes: {
+      ...routes(),
+      [`GET /api/bugs/${bug.id}`]: {
+        ...payloads.bug,
+        questions: { open: 1, questions: [{
+          id: 'q-1', body: 'Please attach the Excel form you use.',
+          askedAt: '2026-09-18T02:00:00.000Z', askedBy: 'agent@rgmdn.com',
+          open: true, answer: null
+        }] }
+      },
+      [`POST /api/bugs/${bug.id}/questions/q-1/answer`]: (c) => { seen.push(c); return { body: {} }; }
+    } });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+
+    const html = app.html();
+    assert.match(html, /id="answerfiles-q-1"/, 'the answer box has a picker');
+    assert.match(html, /accept="[^"]*\.xlsx/, 'which offers a workbook, not just images');
+
+    app.input('answer-q-1', 'Đây là file Excel mẫu chúng tôi dùng.');
+    app.field('answerfiles-q-1').files = [{
+      name: 'form.xlsx', size: 4096, lastModified: 1,
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    }];
+    await app.click('answerquestion', { id: bug.id, qid: 'q-1' });
+
+    const posted = seen.find((c) => c.path === `/api/bugs/${bug.id}/questions/q-1/answer`);
+    assert.ok(posted, 'the answer is posted');
+    assert.deepEqual(posted.body.attachmentIds, ['a1'], 'naming the file it uploaded');
+    assert.equal(seen.filter((c) => c.path.endsWith('/attachments/complete')).length, 1,
+      'and the file went up before the answer that carries it');
+  });
+
   test('an answered question reads as an answer, with no box to answer it again', async () => {
     const app = loadApp({ routes: {
       ...routes(),

@@ -147,7 +147,9 @@ describe('completion validates the object that will be served (IR-013)', () => {
 
       // Report an over-limit size for the object as it is found after promotion,
       // which is the path that only exists because validation now happens there.
-      storage.setHeadSize(9_000_000);
+      // Above MAX_FILE_BYTES (25 MB), not above the 8 MB this used to be — the point
+      // is that completion re-checks the object, and that stays true at any limit.
+      storage.setHeadSize(26_000_000);
 
       const res = await client.post(`/api/bugs/${bug.id}/attachments/complete`,
         { storageKey: signed.storageKey, uploadToken: signed.uploadToken,

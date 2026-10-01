@@ -512,7 +512,7 @@ describe('the agent taking a comment back', () => {
     } finally { s.stop(); await app.stop(); await rm(dir, { recursive: true, force: true }); }
   });
 
-  test('a file that is not an image is refused before anything is uploaded', async () => {
+  test('a file the app does not take is refused before anything is uploaded', async () => {
     const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
     const dir = await mkdtemp(join(tmpdir(), 'rgm-mcp-shot-'));
@@ -525,7 +525,7 @@ describe('the agent taking a comment back', () => {
       const res = await call(s, 'rgm_comment',
         { number: 7, note: 'x', files: [file], project: 'Fabric Warehouse' });
       assert.equal(res.result.isError, true);
-      assert.match(res.result.content[0].text, /not an image the app accepts/);
+      assert.match(res.result.content[0].text, /not a file the app accepts/);
       assert.deepEqual(app.seen.filter((r) => r.includes('attachments')), [],
         'the app is never asked to store something it would reject anyway');
     } finally { s.stop(); await app.stop(); await rm(dir, { recursive: true, force: true }); }

@@ -33,9 +33,12 @@ describe('attachments: two-phase upload', () => {
   });
   after(async () => { await w.close(); });
 
-  test('presign refuses a non-image type and an implausible size', async () => {
+  test('presign refuses a type the app does not take, and an implausible size', async () => {
+    // A PDF used to be the example here. It is now one of the files an answer or a
+    // comment may carry, so the refused example has to be something that stays
+    // refused: whatever the picker and the table also refuse.
     const badType = await w.testerClient.post(`/api/bugs/${bug.id}/attachments/presign`,
-      { contentType: 'application/pdf', byteSize: 100 });
+      { contentType: 'application/x-msdownload', byteSize: 100 });
     assert.equal(badType.status, 400);
     assert.equal(badType.json.error, 'bad_type');
 
