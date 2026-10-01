@@ -42,8 +42,8 @@ function recorder(bug = {}) {
     }
     if (path.endsWith('/questions')) return json({ open: 0, questions: [] });
     if (path.endsWith('/attachments/presign')) {
-      return json({ storageKey: 'p/b/k', uploadUrl: 'http://upload.test/put', uploadToken: 'tok' },
-        201);
+      // Relative, as production returns it — the CLI resolves it against the app URL.
+      return json({ storageKey: 'p/b/k', uploadUrl: '/put', uploadToken: 'tok' }, 201);
     }
     if (path.endsWith('/attachments/complete')) return json({ id: 'att-9', filename: 'after.png' }, 201);
     if (path.endsWith('/comments') && opts.method === 'POST') return json({ id: 42 });

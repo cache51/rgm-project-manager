@@ -474,7 +474,7 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
     }
     const signed = await (await call('POST', `/api/bugs/${bugUuid}/attachments/presign`,
       { body: { contentType: type, byteSize: bytes.length } })).json();
-    const put = await fetch(signed.uploadUrl, {
+    const put = await fetch(new URL(signed.uploadUrl, config.url).toString(), {
       method: 'PUT',
       body: bytes,
       headers: signed.uploadHeaders ?? { 'content-type': type }

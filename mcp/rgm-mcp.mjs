@@ -154,7 +154,11 @@ async function uploadShot(bugUuid, file) {
   }
   const signed = await json('POST', `/api/bugs/${bugUuid}/attachments/presign`,
     { contentType: type, byteSize: bytes.length });
-  const put = await fetch(signed.uploadUrl, {
+  // The app serves its own uploads, so it hands back a path (`/api/uploads/<token>`)
+  // rather than an absolute URL. A browser resolves that against the page; this has to
+  // resolve it against the app it signed in to, or fetch() refuses the bare path.
+  const uploadUrl = new URL(signed.uploadUrl, (await loadConfig()).url).toString();
+  const put = await fetch(uploadUrl, {
     method: 'PUT',
     body: bytes,
     headers: signed.uploadHeaders ?? { 'content-type': type }

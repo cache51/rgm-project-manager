@@ -397,8 +397,9 @@ describe('the agent taking a comment back', () => {
         });
       }
       if (req.url === '/api/bugs/b-1/attachments/presign') {
-        // The capability route is app-local: the upload PUTs back to this same stub.
-        return send({ storageKey: 'p-1/b-1/k', uploadUrl: `${origin}/put`, uploadToken: 'tok' }, 201);
+        // Relative, exactly as production hands it back: the app serves its own
+        // uploads, so the caller has to resolve it against the app it signed in to.
+        return send({ storageKey: 'p-1/b-1/k', uploadUrl: '/put', uploadToken: 'tok' }, 201);
       }
       if (req.url === '/put' && req.method === 'PUT') return send({ ok: true }, 201);
       if (req.url === '/api/bugs/b-1/attachments/complete') {
