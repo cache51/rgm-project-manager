@@ -356,7 +356,7 @@ browser is never the thing enforcing that; it is told which moves are legal
 | Create a project | Sidebar → **＋ Create project** (also on the first-run screen) | site admin |
 | Rename / re-environment a project | Sidebar → **✎ Rename project** | project admin |
 | Remove a project | Sidebar → **🗑 Remove** | project admin |
-| Restore a removed project | Sidebar → **Removed** → **Restore** | project admin |
+| Restore a removed project | Not in the UI — `POST /api/projects/:id/restore` (`GET /api/projects/removed` says what is restorable). A list of removed projects in the sidebar was noise: they are gone on purpose, and the ones still there are old test projects. | project admin |
 | Create a milestone | Milestones → **＋ Add milestone** above the list | admin, developer |
 | Rename a milestone | Milestone card → **✎ Edit** | admin, developer |
 | Move a milestone along | Milestone card → its lifecycle buttons (`start → in_progress`, `ready`, `finish`, `reset`) | admin, developer |

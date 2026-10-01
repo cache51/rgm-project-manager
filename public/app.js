@@ -72,7 +72,7 @@ const T = {
     edit: 'Sửa', remove: 'Xoá', restore: 'Khôi phục', save: 'Lưu',
     showRemoved: 'Hiện mục đã xoá', removedL: 'Đã xoá',
     renameProject: 'Đổi tên dự án', projectSettings: 'Cài đặt dự án',
-    confirmRemoveProject: 'Xoá dự án này? Dữ liệu vẫn được giữ và có thể khôi phục.',
+    confirmRemoveProject: 'Xoá dự án này? Dữ liệu vẫn được giữ.',
     confirmRemoveMilestone: 'Xoá cột mốc này? Các lỗi vẫn được giữ.',
     confirmRemoveBug: 'Xoá lỗi này? Bằng chứng vẫn được giữ và có thể khôi phục.',
     confirmRemoveComment: 'Xoá bình luận này? Chưa ai trả lời nên sẽ không ai thấy nữa.',
@@ -143,7 +143,7 @@ const T = {
     edit: '編輯', remove: '刪除', restore: '還原', save: '儲存',
     showRemoved: '顯示已刪除', removedL: '已刪除',
     renameProject: '更改專案名稱', projectSettings: '專案設定',
-    confirmRemoveProject: '刪除此專案？資料會保留，可以還原。',
+    confirmRemoveProject: '刪除此專案？資料會保留。',
     confirmRemoveMilestone: '刪除此里程碑？其錯誤報告會保留。',
     confirmRemoveBug: '刪除此錯誤報告？證據會保留，可以還原。',
     confirmRemoveComment: '刪除這則留言？還沒有人回覆，之後不會再顯示。',
@@ -214,7 +214,7 @@ const T = {
     edit: 'Edit', remove: 'Remove', restore: 'Restore', save: 'Save',
     showRemoved: 'Show removed', removedL: 'Removed',
     renameProject: 'Rename project', projectSettings: 'Project settings',
-    confirmRemoveProject: 'Remove this project? The data is kept and can be restored.',
+    confirmRemoveProject: 'Remove this project? The data is kept.',
     confirmRemoveMilestone: 'Remove this milestone? Its bug reports are kept.',
     confirmRemoveBug: 'Remove this bug? The evidence is kept and can be restored.',
     confirmRemoveComment: 'Remove this comment? Nobody has answered it, so nobody will see it again.',
@@ -311,7 +311,7 @@ const S = {
   // What has been removed from this project. Fetched alongside the live lists for the
   // roles that may put something back, so removal is reversible from the app rather
   // than only from SQL.
-  removedMilestones: [], removedBugs: [], removedProjects: [],
+  removedMilestones: [], removedBugs: [],
   showRemoved: false, editing: false
 };
 
@@ -464,7 +464,7 @@ async function loadBugs() {
  * error notice — they simply never see the removed sections.
  */
 async function loadRemoved() {
-  S.removedMilestones = []; S.removedBugs = []; S.removedProjects = [];
+  S.removedMilestones = []; S.removedBugs = [];
   if (!['admin', 'developer'].includes(myRole())) return;
 
   try {
@@ -474,9 +474,6 @@ async function loadRemoved() {
     } else if (S.view === 'bugs') {
       S.removedBugs = (await api('GET',
         `/api/projects/${S.projectId}/bugs/removed`)).bugs ?? [];
-    }
-    if (myRole() === 'admin') {
-      S.removedProjects = (await api('GET', '/api/projects/removed')).projects ?? [];
     }
   } catch (err) {
     // A failure to list removed rows must not break the screen that is working.
@@ -504,7 +501,10 @@ async function openBug(id) {
 
 async function loadMembers() {
   const { members } = await api('GET', `/api/projects/${S.projectId}/members`);
-  S.members = members;
+  // Only ever a list. This used to assign whatever came back, so a response without
+  // `members` — a project not chosen yet, a request that raced the first paint —
+  // left S.members undefined and the whole team view died on `.length` of it.
+  if (Array.isArray(members)) S.members = members;
 }
 
 async function refresh() {
@@ -549,18 +549,6 @@ function sidebar() {
     <div class="padmin">
       <span class="mini" data-action="renameproject">✎ ${t('renameProject')}</span>
       <span class="mini bad" data-action="removeproject">🗑 ${t('remove')}</span>
-    </div>` : ''}
-
-    ${myRole() === 'admin' && S.removedProjects.length ? `
-    <div>
-      <h4>${t('removedL')}</h4>
-      <div class="plist">
-        ${S.removedProjects.map((p) => `
-          <div class="proj gone" title="${esc(p.name)}">
-            <span class="nm">${esc(p.name)}</span>
-            <span class="mini go" data-action="restoreproject" data-id="${esc(p.id)}">${t('restore')}</span>
-          </div>`).join('')}
-      </div>
     </div>` : ''}
 
     <div>
@@ -1371,14 +1359,6 @@ document.getElementById('app').addEventListener('click', async (event) => {
           S.projectId = null; S.bug = null;
           S.reporting = false; abandonPendingReport();
           notice(t('removed'));
-          await boot();
-        } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
-        break;
-      }
-      case 'restoreproject': {
-        try {
-          await api('POST', `/api/projects/${el.dataset.id}/restore`, {});
-          notice(t('restored'));
           await boot();
         } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
         break;

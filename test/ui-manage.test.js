@@ -439,4 +439,22 @@ describe('ui (dom): editing and removing', () => {
     assert.ok(del, 'removal is sent');
     assert.equal(del.path, `/api/projects/${w.project.id}/members/u1`);
   });
+
+  test('the team view survives a members response that is not a list', async () => {
+    // The team fetch can race the first paint — no project chosen yet means the URL
+    // is /api/projects/null/members and the answer is not a list. Assigning whatever
+    // came back left S.members undefined and took the whole view down on `.length`.
+    const meAdmin = { ...payloads.meDev,
+      projects: payloads.meDev.projects.map((p) => ({ ...p, role: 'admin' })) };
+    const app = loadApp({ routes: {
+      ...projectRoutes(meAdmin),
+      [`GET /api/projects/${w.project.id}/members`]: {}
+    } });
+
+    await app.click('view', { view: 'team' });
+
+    const html = app.html();
+    assert.match(html, /\(0\)/, 'the member count renders, so the panel rendered at all');
+    assert.match(html, /data-action="invite"/, 'and the view is usable');
+  });
 });
