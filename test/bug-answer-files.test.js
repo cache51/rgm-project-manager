@@ -54,6 +54,12 @@ describe('an answer can carry a file', () => {
       assert.equal(entry.attachments[0].name, 'file_01.xlsx',
         'named as a file, not as a screenshot — the agent reads this name in the packet');
       assert.equal(detail.questions.questions.find((q) => q.id === questionId).open, false);
+
+      // The prompt says where the file came from, and calls the reply what it is: the
+      // agent asked a question, and this is the answer — not a comment.
+      const prompt = (await w.testerClient.get(`/api/bugs/${bug.id}/prompt?format=json`)).json.prompt;
+      const line = prompt.split('\n').find((l) => l.includes('thread-form') || l.includes('form.xlsx'));
+      assert.match(line, /came with the answer by/, line);
     } finally { await w.close(); }
   });
 

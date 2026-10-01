@@ -214,20 +214,25 @@ export function buildPrompt({
 
   out.push('');
   out.push('--- Attachments ---');
-  // Which pictures arrived with a comment, and from whom. A reply's screenshot is
-  // often the frame that explains the report, and a list that does not say where a
-  // picture came from invites reading it in the wrong place.
-  const fromComment = new Map();
+  // Which files arrived with a reply, from whom, and which kind of reply. A reply's
+  // screenshot is often the frame that explains the report, and a list that does not
+  // say where a file came from invites reading it in the wrong place — calling an
+  // answer a comment is a small wrong claim about who said what.
+  const kindPhrase = {
+    'bug.commented': 'came with a comment by',
+    'bug.question_answered': 'came with the answer by'
+  };
+  const fromReply = new Map();
   for (const e of timeline) {
-    for (const a of e.attachments ?? []) fromComment.set(a.id, e.actor);
+    for (const a of e.attachments ?? []) {
+      fromReply.set(a.id, `${kindPhrase[e.kind] ?? 'came with a reply by'} ${e.actor}`);
+    }
   }
   out.push(fencedBlock(
     'ATTACHMENTS',
     attachments.length
       ? attachments.map(a => `${a.name} (original: ${sanitizeInline(a.originalFilename)})`
-          + (fromComment.has(a.id)
-            ? ` — came with a comment by ${sanitizeInline(fromComment.get(a.id))}`
-            : '')).join('\n')
+          + (fromReply.has(a.id) ? ` — ${sanitizeInline(fromReply.get(a.id))}` : '')).join('\n')
       : '(none)'
   ));
   out.push(REGION_END);
