@@ -22,6 +22,9 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    **Look at them.** Half of these bugs are "this number on this screen is
    wrong", and the screenshot is the only place that number appears. An
    attachment tool that returns a path you never opened is a tool you did not use.
+   The list also says which pictures **came with a comment**, and from whom: a
+   reply's screenshot is usually the frame that explains the report, and a tester
+   who replied with one has already answered part of what you were about to ask.
 4. **Do not guess.** If the report does not pin down what to change — which
    screen, which warehouse, which field, what "correct" would look like — call
    **`rgm_ask_question {number, question}`**. It is emailed to the reporter and
@@ -60,8 +63,12 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    as evidence. If the symptom genuinely cannot be automated (a layout, a printed
    label, a screen that only misbehaves by hand), reproduce it by hand and say
    exactly how — on which build, what you did, what you saw before and after.
-7. **`rgm_comment {number, note}`** — say what changed and where, in words a
+7. **`rgm_comment {number, note, files?}`** — say what changed and where, in words a
    tester can act on ("the packing list now accepts a lot with no lining row").
+   When the picture *is* the explanation — the screen you changed, before and after —
+   attach it: `files` takes local image paths, and they land on the bug with the
+   comment, in the tester's packet, and in the next reader's prompt. From a shell:
+   `rgm comment 142 "đã sửa" --file after.png`.
    It answers the bug's open questions and tells you the comment's id. If you
    reread that note and it is wrong, premature, or on the wrong bug, take it back
    with **`rgm_remove_comment {number, comment_id}`** (from a shell:
@@ -98,6 +105,9 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
   the evidence the tester reads.
 - **Ask early.** One question costs a mail; a wrong guess costs a rework cycle
   and the tester's trust.
+- **Read what the tester attached before asking.** A screenshot on a comment is
+  part of the report: asking a question the picture already answers costs a mail
+  and a day of waiting on an answer that was already in front of you.
 - **A retracted sentence beats a contradiction.** If a note of yours is wrong and
   nobody has answered it, take it back and say the right thing once — two
   contradictory comments leave the tester guessing which to believe. Once someone

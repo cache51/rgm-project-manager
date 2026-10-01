@@ -861,6 +861,13 @@ function timelineBlock() {
           </div>
           ${note ? `<div class="tl-n">${esc(note)}</div>` : ''}
           ${tr?.status === 'done' ? `<div class="tl-t">↳ ${esc(tr.text)}</div>` : ''}
+          ${(e.attachments ?? []).length ? `<div style="margin:2px 0 4px">${
+            e.attachments.map((a) => `
+            <div class="att">
+              <a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.name)}</a>
+              <span class="rel">${esc(a.originalFilename)} · ${(a.byteSize / 1024).toFixed(1)} KB</span>
+              <a class="btn sm" href="${esc(a.url)}" download="${esc(a.name)}">${t('dlFile')}</a>
+            </div>`).join('')}</div>` : ''}
         </div>`;
       }).join('')}
     </div>`;
@@ -954,6 +961,10 @@ function bugDetail() {
         <textarea id="commentnote" rows="3" placeholder="${t('addNote')}"
                   style="flex:1;resize:vertical">${esc(S.commentDraft ?? '')}</textarea>
         <button class="btn" data-action="comment" data-id="${esc(b.id)}">${t('addNote')}</button>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <label style="margin:0">${t('attachL')}</label>
+        <input id="commentfiles" type="file" accept="image/*" multiple>
       </div>
       <div class="hint" style="margin:4px 0 0">${t('commentHint')}</div>
 
@@ -1838,9 +1849,35 @@ async function retest(id, result) {
 async function comment(id) {
   const note = document.getElementById('commentnote')?.value.trim();
   if (!note) return;
+  // Screenshots picked with the reply go up first (presign → PUT → complete), the same
+  // three steps the report form uses, and only then is the comment posted naming them:
+  // a comment that referenced an upload which had not landed would show a broken
+  // picture to whoever reads it next.
+  const files = [...(document.getElementById('commentfiles')?.files ?? [])];
   S.busy = true;
   try {
-    await api('POST', `/api/bugs/${id}/comments`, { note });
+    const attachmentIds = [];
+    for (const file of files) {
+      const signed = await api('POST', `/api/bugs/${id}/attachments/presign`,
+        { contentType: file.type || 'image/png', byteSize: file.size });
+      const put = await fetch(signed.uploadUrl, {
+        method: 'PUT',
+        body: file,
+        // The signed headers must be sent verbatim, or the signature will not match.
+        headers: signed.uploadHeaders ?? { 'content-type': file.type || 'image/png' }
+      });
+      if (!put.ok) throw new Error(`upload failed for ${file.name}`);
+      const done = await api('POST', `/api/bugs/${id}/attachments/complete`, {
+        storageKey: signed.storageKey,
+        uploadToken: signed.uploadToken ?? undefined,
+        filename: file.name,
+        contentType: file.type || 'image/png'
+      });
+      attachmentIds.push(done.id);
+    }
+
+    await api('POST', `/api/bugs/${id}/comments`,
+      attachmentIds.length ? { note, attachmentIds } : { note });
     S.commentDraft = null;
     notice(t('saved'));
     await openBug(id);

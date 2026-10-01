@@ -29,6 +29,7 @@ import { enforce, hit, LIMITS } from './ratelimit.js';
 const iso = (v) => (v instanceof Date ? v.toISOString() : v);
 const MAX_ATTACHMENTS_PER_BUG = 12;
 const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/heic'];
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Event kinds that are operational audit rather than part of the bug's story.
@@ -204,6 +205,22 @@ async function timelineFor(db, bugId, { viewer = null } = {}) {
     byEvent[n.event_id][n.lang] = { status: n.status, text: n.text };
   }
 
+  // Screenshots a comment carried. Resolved against the bug's own attachments and
+  // shaped exactly like the bug payload's list, so the timeline renders them with the
+  // same markup and the same packet naming — a reply's picture is evidence like any
+  // other, and it must not need a second way of being displayed or downloaded.
+  const shots = await db.query(
+    `SELECT id, filename, byte_size, content_type FROM bug_attachments
+      WHERE bug_id = $1 ORDER BY uploaded_at, id`, [bugId]);
+  const shotById = new Map(shots.rows.map((a, i) => [a.id, {
+    id: a.id,
+    name: packetEntryName(i + 1, a.content_type),
+    originalFilename: a.filename,
+    contentType: a.content_type,
+    byteSize: Number(a.byte_size),
+    url: `/api/attachments/${a.id}`
+  }]));
+
   // Which comments someone has answered. A comment is answered once a comment from
   // *someone else* follows it — the same reading the question loop uses, so a
   // person adding a second note does not count as having answered themselves.
@@ -234,6 +251,10 @@ async function timelineFor(db, bugId, { viewer = null } = {}) {
       canRemove: row.kind === 'bug.commented' && (mine || admin)
                  && !answered.has(String(row.id)),
       note: row.payload?.note ?? null,
+      // The screenshots this comment carried, in the order it named them. An id with
+      // no row (purged project, deleted upload) is dropped rather than rendered blank.
+      attachments: (row.payload?.attachmentIds ?? [])
+        .map((id) => shotById.get(id)).filter(Boolean),
       reason: row.payload?.reason ?? null,
       closeKind: row.payload?.closeKind ?? null,
       closeRefCode: row.payload?.closeRefCode ?? null,
@@ -1302,14 +1323,35 @@ export function buildRoutes() {
 
   r.post('/api/bugs/:id/comments', handle(async (req, res, ctx) => {
     const { projectId } = await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
-    const { note } = await readJson(req);
+    const { note, attachmentIds } = await readJson(req);
     if (!note || !String(note).trim()) throw new HttpError(400, 'note_required', 'note required');
 
+    // Screenshots the reply carries: ids already uploaded against THIS bug (presign →
+    // PUT → complete). Checked here rather than trusted, because an id on its own is a
+    // bare uuid — without the check a comment could point at another bug's evidence and
+    // the timeline would show a picture that was never part of this report. The shape is
+    // validated first so a malformed id is a 400 rather than a cast error.
+    const wanted = [...new Set((Array.isArray(attachmentIds) ? attachmentIds : [])
+      .map((v) => String(v)))];
+    if (wanted.some((id) => !UUID_RE.test(id))) {
+      throw new HttpError(400, 'bad_attachment', 'attachmentIds must be uuids');
+    }
+
     const ev = await withTransaction(ctx.db, async (tx) => {
+      if (wanted.length) {
+        const found = await tx.query(
+          `SELECT id FROM bug_attachments WHERE bug_id = $1 AND id = ANY($2::uuid[])`,
+          [ctx.params.id, wanted]);
+        if (found.rows.length !== wanted.length) {
+          throw new HttpError(400, 'bad_attachment',
+            'every screenshot on a comment must already belong to this bug');
+        }
+      }
       const ins = await tx.query(
         `INSERT INTO events (project_id, bug_id, actor_id, kind, payload)
          VALUES ($1,$2,$3,'bug.commented',$4) RETURNING id`,
-        [projectId, ctx.params.id, ctx.actor.userId, JSON.stringify({ note })]);
+        [projectId, ctx.params.id, ctx.actor.userId,
+          JSON.stringify(wanted.length ? { note, attachmentIds: wanted } : { note })]);
       await enqueueEventTranslation(tx, { eventId: ins.rows[0].id, note });
 
       // Answering in the comment box IS answering. The tester and the developer
@@ -1983,10 +2025,13 @@ export async function buildPromptFor(db, bug, { attachments: given = null } = {}
       // change the next packet (RGM3-008).
       .filter((e) => !AUDIT_ONLY_KINDS.has(e.kind))
       .map(e => ({
-        at: stampIn(e.at, tz), actor: e.actor, kind: e.kind, note: e.note ?? e.reason
+        at: stampIn(e.at, tz), actor: e.actor, kind: e.kind, note: e.note ?? e.reason,
+        // Which screenshots this entry carried — the prompt names them on each
+        // attachment so a reply's picture is not read as part of the original report.
+        attachments: (e.attachments ?? []).map((a) => ({ id: a.id }))
       })),
     attachments: attachments.map((a, i) => ({
-      name: entries[i], originalFilename: a.filename
+      id: a.id, name: entries[i], originalFilename: a.filename
     }))
   });
 }

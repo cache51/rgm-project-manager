@@ -359,8 +359,18 @@ describe('the agent taking a comment back', () => {
   async function stub() {
     const { createServer } = await import('node:http');
     const seen = [];
-    const server = createServer((req, res) => {
+    const bodies = [];
+    let origin = '';
+    const server = createServer(async (req, res) => {
       seen.push(`${req.method} ${req.url}`);
+      const raw = await new Promise((resolve) => {
+        const chunks = [];
+        req.on('data', (d) => chunks.push(d));
+        req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+      });
+      try { bodies.push({ path: req.url, body: JSON.parse(raw) }); }
+      catch { bodies.push({ path: req.url, body: null }); }
+
       const send = (body, status = 200) => {
         res.statusCode = status;
         res.setHeader('content-type', 'application/json');
@@ -386,6 +396,14 @@ describe('the agent taking a comment back', () => {
           ]
         });
       }
+      if (req.url === '/api/bugs/b-1/attachments/presign') {
+        // The capability route is app-local: the upload PUTs back to this same stub.
+        return send({ storageKey: 'p-1/b-1/k', uploadUrl: `${origin}/put`, uploadToken: 'tok' }, 201);
+      }
+      if (req.url === '/put' && req.method === 'PUT') return send({ ok: true }, 201);
+      if (req.url === '/api/bugs/b-1/attachments/complete') {
+        return send({ id: 'att-9', filename: 'shot.png' }, 201);
+      }
       if (req.url === '/api/bugs/b-1/comments' && req.method === 'POST') {
         return send({ id: 99 }, 201);
       }
@@ -399,9 +417,11 @@ describe('the agent taking a comment back', () => {
       return send({ error: 'not_found' }, 404);
     });
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    origin = `http://127.0.0.1:${server.address().port}`;
     return {
-      url: `http://127.0.0.1:${server.address().port}`,
+      url: origin,
       seen,
+      bodies,
       stop: () => new Promise((r) => server.close(r))
     };
   }
@@ -463,5 +483,50 @@ describe('the agent taking a comment back', () => {
       assert.match(res.result.content[0].text, /comment 99/,
         'otherwise the agent has no way to name what it just wrote');
     } finally { s.stop(); await app.stop(); }
+  });
+
+  test('rgm_comment can attach a screenshot, and names it on the comment', async () => {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const dir = await mkdtemp(join(tmpdir(), 'rgm-mcp-shot-'));
+    const file = join(dir, 'after.png');
+    await writeFile(file, Buffer.from('89504e470d0a1a0a', 'hex'));
+
+    const app = await stub();
+    const s = open(app.url);
+    try {
+      const res = await call(s, 'rgm_comment',
+        { number: 7, note: 'sửa xong, ảnh sau khi sửa', files: [file],
+          project: 'Fabric Warehouse' });
+
+      assert.notEqual(res.result.isError, true, res.result.content[0].text);
+      assert.match(res.result.content[0].text, /with 1 screenshot\(s\): after\.png/);
+      assert.deepEqual(app.seen.filter((r) => r.includes('attachments')), [
+        'POST /api/bugs/b-1/attachments/presign',
+        'POST /api/bugs/b-1/attachments/complete'
+      ], 'the picture is uploaded, not merely mentioned');
+      assert.deepEqual(app.bodies.find((b) => b.path === '/api/bugs/b-1/comments').body,
+        { note: 'sửa xong, ảnh sau khi sửa', attachmentIds: ['att-9'] },
+        'and the comment names the upload it made');
+    } finally { s.stop(); await app.stop(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  test('a file that is not an image is refused before anything is uploaded', async () => {
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const dir = await mkdtemp(join(tmpdir(), 'rgm-mcp-shot-'));
+    const file = join(dir, 'notes.txt');
+    await writeFile(file, 'not an image');
+
+    const app = await stub();
+    const s = open(app.url);
+    try {
+      const res = await call(s, 'rgm_comment',
+        { number: 7, note: 'x', files: [file], project: 'Fabric Warehouse' });
+      assert.equal(res.result.isError, true);
+      assert.match(res.result.content[0].text, /not an image the app accepts/);
+      assert.deepEqual(app.seen.filter((r) => r.includes('attachments')), [],
+        'the app is never asked to store something it would reject anyway');
+    } finally { s.stop(); await app.stop(); await rm(dir, { recursive: true, force: true }); }
   });
 });

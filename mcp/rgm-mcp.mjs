@@ -17,7 +17,7 @@
 import { createInterface } from 'node:readline';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename, extname } from 'node:path';
 // The same extractor `rgm pull` uses, so the MCP inherits its path-traversal and
 // symlink checks rather than unzipping by hand.
 import { extractPacket, resolveProject } from '../src/cli.js';
@@ -132,6 +132,42 @@ async function bugId(number, wanted) {
 }
 
 const text = (value) => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] });
+
+/** The types the app accepts, so a .jpg is not uploaded as a .png. */
+const IMAGE_TYPES = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.gif': 'image/gif', '.heic': 'image/heic'
+};
+
+/**
+ * Upload one local image against a bug and return its attachment id.
+ *
+ * The same three steps the browser takes (presign → PUT → complete), because a
+ * comment may only name screenshots that already belong to the bug — the server
+ * checks that, and it is right to: an id alone would otherwise point anywhere.
+ */
+async function uploadShot(bugUuid, file) {
+  const bytes = await readFile(file);
+  const type = IMAGE_TYPES[extname(file).toLowerCase()];
+  if (!type) {
+    throw new Error(`${file} is not an image the app accepts (png, jpg, webp, gif, heic)`);
+  }
+  const signed = await json('POST', `/api/bugs/${bugUuid}/attachments/presign`,
+    { contentType: type, byteSize: bytes.length });
+  const put = await fetch(signed.uploadUrl, {
+    method: 'PUT',
+    body: bytes,
+    headers: signed.uploadHeaders ?? { 'content-type': type }
+  });
+  if (!put.ok) throw new Error(`upload failed for ${file}: ${put.status}`);
+  const done = await json('POST', `/api/bugs/${bugUuid}/attachments/complete`, {
+    storageKey: signed.storageKey,
+    uploadToken: signed.uploadToken ?? undefined,
+    filename: basename(file),
+    contentType: type
+  });
+  return { id: done.id, name: basename(file) };
+}
 
 const TOOLS = [
   {
@@ -314,22 +350,33 @@ const TOOLS = [
   {
     name: 'rgm_comment',
     description: 'Leave a note on the bug — what you changed, where, and anything the tester '
-      + 'should look at when they verify. Keep it to what a tester needs to read.',
+      + 'should look at when they verify. Keep it to what a tester needs to read. Attach a '
+      + 'screenshot with `files` when the picture is the explanation (the screen you changed, '
+      + 'before and after) — it lands on the bug with the comment and in the tester\'s packet.',
     inputSchema: {
       type: 'object',
       properties: {
         number: { type: 'integer' },
         note: { type: 'string' },
+        files: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'local paths of screenshots to attach (png, jpg, webp, gif, heic)'
+        },
         ...PROJECT_ARG
       },
       required: ['number', 'note'], additionalProperties: false
     },
-    async run({ number, note, project: wanted }) {
+    async run({ number, note, files, project: wanted }) {
       const { id, code } = await bugId(number, wanted);
-      const out = await json('POST', `/api/bugs/${id}/comments`, { note });
+      const shots = [];
+      for (const file of files ?? []) shots.push(await uploadShot(id, file));
+      const out = await json('POST', `/api/bugs/${id}/comments`,
+        shots.length ? { note, attachmentIds: shots.map((s) => s.id) } : { note });
       // The id is what rgm_remove_comment names: an agent that rereads its own note and
       // sees it is wrong can take it back before the tester reads it.
-      return text(`commented on ${code} (comment ${out.id})`);
+      return text(`commented on ${code} (comment ${out.id})`
+        + (shots.length ? ` with ${shots.length} screenshot(s): ${shots.map((s) => s.name).join(', ')}` : ''));
     }
   },
   {

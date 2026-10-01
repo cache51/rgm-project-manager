@@ -14,6 +14,7 @@
  *   rgm ask 142 "which warehouse is this lot in?"   # mailed to the reporter
  *   rgm questions 142        # questions and their answers, open or answered
  *   rgm comment 142 "fixed in abc1234"              # tell the tester what changed
+ *   rgm comment 142 "đã sửa" --file after.png       # ...with a screenshot of it
  *   rgm uncomment 142 57       # take that comment back, while nobody has answered it
  *   rgm fixed 142 --verified-by "test/packing.test.js: counts the last carton" \
  *                 --note "please re-check the packing list screen"
@@ -32,7 +33,7 @@ import { execFileSync } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename, extname } from 'node:path';
 import { readZip } from './unzip.js';
 import { assertSafeRelativePath, packetPathFor } from './packet.js';
 import { purgeProject } from './admin-purge.js';
@@ -43,6 +44,12 @@ export const CONFIG_PATH = process.env.RGM_CONFIG ?? join(homedir(), '.rgm', 'co
 
 /** The file that records which project a working directory pulls from. */
 export const BINDING_FILE = 'project.json';
+
+/** Image types the app accepts, so a screenshot is uploaded as what it is. */
+const IMAGE_TYPES = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.gif': 'image/gif', '.heic': 'image/heic'
+};
 
 /**
  * Extract a packet archive into `targetDir`.
@@ -375,12 +382,14 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a.startsWith('--')) {
       const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith('--')) {
-        args[a.slice(2)] = next;
-        i++;
-      } else {
-        args[a.slice(2)] = true;
-      }
+      const key = a.slice(2);
+      let value = true;
+      if (next !== undefined && !next.startsWith('--')) { value = next; i++; }
+      // A flag given more than once accumulates: `rgm comment 7 "note" --file a.png
+      // --file b.png` is how a person attaches two screenshots, and last-wins would
+      // quietly upload only the second.
+      if (key in args && args[key] !== true) args[key] = [].concat(args[key], value);
+      else args[key] = value;
     }
     else args._.push(a);
   }
@@ -449,6 +458,33 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
 
   if (!config.url || !config.token) throw new Error('not signed in — run: rgm login --url ... --token ...');
   const { call } = api(config);
+
+  /**
+   * Upload one local image against a bug and return its attachment id.
+   *
+   * The same three steps the browser takes (presign → PUT → complete): a comment may
+   * only name screenshots that already belong to the bug — the server checks that, and
+   * it is right to, because an id on its own would point anywhere.
+   */
+  const uploadShot = async (bugUuid, file) => {
+    const bytes = await readFile(file);
+    const type = IMAGE_TYPES[extname(file).toLowerCase()];
+    if (!type) {
+      throw new Error(`${file} is not an image the app accepts (png, jpg, webp, gif, heic)`);
+    }
+    const signed = await (await call('POST', `/api/bugs/${bugUuid}/attachments/presign`,
+      { body: { contentType: type, byteSize: bytes.length } })).json();
+    const put = await fetch(signed.uploadUrl, {
+      method: 'PUT',
+      body: bytes,
+      headers: signed.uploadHeaders ?? { 'content-type': type }
+    });
+    if (!put.ok) throw new Error(`upload failed for ${file}: ${put.status}`);
+    const done = await (await call('POST', `/api/bugs/${bugUuid}/attachments/complete`,
+      { body: { storageKey: signed.storageKey, uploadToken: signed.uploadToken ?? undefined,
+                filename: basename(file), contentType: type } })).json();
+    return { id: done.id, name: basename(file) };
+  };
 
   /** A project by id or name, as the app knows it. */
   const findProject = async (wanted) => {
@@ -576,12 +612,16 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
     const note = args._.slice(2).join(' ').trim();
     if (!note) throw new Error('comment needs a note, e.g. rgm comment 7 "fixed in commit abc123"');
     const { id, code } = await bugRef(1);
+    // `--file` once, or as many times as there are screenshots to show.
+    const shots = [];
+    for (const file of [].concat(args.file ?? [])) shots.push(await uploadShot(id, String(file)));
     const created = await (await call('POST', `/api/bugs/${id}/comments`,
-      { body: { note } })).json();
+      { body: shots.length ? { note, attachmentIds: shots.map((s) => s.id) } : { note } })).json();
     // The id is what `uncomment` names: a note that turns out to be wrong can be
     // taken back before the tester reads it, and this is the only place the CLI
     // learns it.
-    return `commented on ${code} (comment ${created.id})`;
+    return `commented on ${code} (comment ${created.id})`
+      + (shots.length ? ` with ${shots.length} screenshot(s): ${shots.map((s) => s.name).join(', ')}` : '');
   }
 
   if (command === 'uncomment') {

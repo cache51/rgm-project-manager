@@ -214,10 +214,20 @@ export function buildPrompt({
 
   out.push('');
   out.push('--- Attachments ---');
+  // Which pictures arrived with a comment, and from whom. A reply's screenshot is
+  // often the frame that explains the report, and a list that does not say where a
+  // picture came from invites reading it in the wrong place.
+  const fromComment = new Map();
+  for (const e of timeline) {
+    for (const a of e.attachments ?? []) fromComment.set(a.id, e.actor);
+  }
   out.push(fencedBlock(
     'ATTACHMENTS',
     attachments.length
-      ? attachments.map(a => `${a.name} (original: ${sanitizeInline(a.originalFilename)})`).join('\n')
+      ? attachments.map(a => `${a.name} (original: ${sanitizeInline(a.originalFilename)})`
+          + (fromComment.has(a.id)
+            ? ` — came with a comment by ${sanitizeInline(fromComment.get(a.id))}`
+            : '')).join('\n')
       : '(none)'
   ));
   out.push(REGION_END);

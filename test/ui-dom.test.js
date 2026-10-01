@@ -755,6 +755,50 @@ describe('ui (dom): every action reaches the API it should', () => {
       'a declined removal is not a removal');
   });
 
+  test('a reply can carry screenshots', async () => {
+    // The tester's "vẫn còn lỗi" almost always has a picture, and before this the
+    // only way to attach one was to file another bug.
+    seen.length = 0;
+    const app = loadApp({ routes: routes() });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+
+    app.input('commentnote', 'vẫn còn lỗi, xem ảnh');
+    app.field('commentfiles').files = [
+      { name: 'still-broken.png', size: 2048, type: 'image/png', lastModified: 1 }
+    ];
+    await app.click('comment', { id: bug.id });
+
+    const posted = seen.find((c) => c.path === `/api/bugs/${bug.id}/comments`);
+    assert.ok(posted, 'the comment is posted');
+    assert.deepEqual(posted.body.attachmentIds, ['a1'],
+      'naming the upload it just made, so the picture is part of the reply');
+    assert.equal(seen.filter((c) => c.path.endsWith('/attachments/complete')).length, 1,
+      'and the screenshot was uploaded before the comment that shows it');
+  });
+
+  test('the timeline shows the screenshot a reply carried', async () => {
+    const withShot = {
+      ...withComment(),
+      timeline: withComment().timeline.map((e) => (e.id === COMMENT_ID ? {
+        ...e,
+        attachments: [{
+          id: 'att-1', name: 'screenshot_02.png', originalFilename: 'still-broken.png',
+          contentType: 'image/png', byteSize: 2048, url: '/api/attachments/att-1'
+        }]
+      } : e))
+    };
+    const app = loadApp({
+      routes: { ...routes(), [`GET /api/bugs/${bug.id}`]: withShot }
+    });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+
+    const html = app.html();
+    assert.match(html, /screenshot_02\.png/, 'named as the packet names it');
+    assert.match(html, /\/api\/attachments\/att-1/, 'and linked to the stored image');
+  });
+
   test('an answered comment offers no button, whoever is reading', async () => {
     // The server decides this (canRemove), so the page must render what it is told
     // rather than assuming the author may always withdraw.

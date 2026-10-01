@@ -27,7 +27,7 @@ function recorder(bug = {}) {
   const fetchBefore = globalThis.fetch;
   globalThis.fetch = async (url, opts = {}) => {
     const path = String(url).replace(/^https?:\/\/[^/]+/, '');
-    const body = opts.body === undefined ? undefined : JSON.parse(opts.body);
+    const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : opts.body;
     seen.push({ method: opts.method ?? 'GET', path, body,
       contentType: opts.headers?.['content-type'] ?? null });
 
@@ -41,6 +41,11 @@ function recorder(bug = {}) {
       return json({ id: 'q1', notified: { queued: 1 } });
     }
     if (path.endsWith('/questions')) return json({ open: 0, questions: [] });
+    if (path.endsWith('/attachments/presign')) {
+      return json({ storageKey: 'p/b/k', uploadUrl: 'http://upload.test/put', uploadToken: 'tok' },
+        201);
+    }
+    if (path.endsWith('/attachments/complete')) return json({ id: 'att-9', filename: 'after.png' }, 201);
     if (path.endsWith('/comments') && opts.method === 'POST') return json({ id: 42 });
     return json({ ok: true });
   };
@@ -82,6 +87,45 @@ test('rgm comment delivers the note, and says which comment it made', async () =
     // The id is the only handle `uncomment` can be given, so it has to come back.
     assert.match(out, /\(comment 42\)/);
   } finally { r.restore(); }
+});
+
+test('rgm comment can carry screenshots, one --file per picture', async () => {
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const dir = await mkdtemp(join(tmpdir(), 'rgm-cli-shot-'));
+  const one = join(dir, 'after.png');
+  const two = join(dir, 'before.jpg');
+  await writeFile(one, Buffer.from('89504e470d0a1a0a', 'hex'));
+  await writeFile(two, Buffer.from('ffd8ffe0', 'hex'));
+
+  const r = recorder();
+  try {
+    const out = await run(['comment', '7', 'đã sửa', '--file', one, '--file', two]);
+
+    const post = r.seen.find((s) => s.path.endsWith('/comments'));
+    assert.deepEqual(post.body, { note: 'đã sửa', attachmentIds: ['att-9', 'att-9'] },
+      'the comment names the uploads it made');
+    assert.equal(r.seen.filter((s) => s.path.endsWith('/attachments/presign')).length, 2,
+      'both pictures went up — a repeated flag must not overwrite the first');
+    assert.match(out, /with 2 screenshot\(s\): after\.png, before\.jpg/);
+  } finally { r.restore(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('rgm comment refuses a file that is not an image, before uploading it', async () => {
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const dir = await mkdtemp(join(tmpdir(), 'rgm-cli-shot-'));
+  const file = join(dir, 'notes.txt');
+  await writeFile(file, 'not an image');
+
+  const r = recorder();
+  try {
+    await assert.rejects(() => run(['comment', '7', 'x', '--file', file]),
+      /not an image the app accepts/);
+    assert.deepEqual(r.seen.filter((s) => s.path.includes('/attachments/')), []);
+    assert.deepEqual(r.seen.filter((s) => s.path.endsWith('/comments')), [],
+      'nothing is posted either: the note would have been sent without its picture');
+  } finally { r.restore(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test('rgm uncomment takes that comment back', async () => {
