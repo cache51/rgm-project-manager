@@ -128,6 +128,31 @@ test('rgm comment refuses a file the app does not take, before uploading it', as
   } finally { r.restore(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test('rgm start says you are on it, and hands nothing back', async () => {
+  const r = recorder({ status: 'new', bug_number: 7 });
+  try {
+    const out = await run(['start', '7']);
+
+    const post = r.seen.find((s) => s.path === '/api/bugs/bug-7/status');
+    assert.ok(post, 'the transition is sent');
+    assert.equal(post.method, 'POST');
+    assert.deepEqual(post.body, { action: 'start_fixing' });
+    assert.match(out, /BUG-7 is now fixing/);
+    assert.match(out, /nothing is handed back/, 'it must not read as if the work were done');
+    assert.doesNotMatch(out, /awaiting verification by the filer/, 'starting is not finishing');
+  } finally { r.restore(); }
+});
+
+test('rgm start on a report already being fixed changes nothing', async () => {
+  const r = recorder({ status: 'fixing', bug_number: 7 });
+  try {
+    const out = await run(['start', '7']);
+    assert.match(out, /already being fixed/);
+    assert.deepEqual(r.seen.filter((s) => s.path.endsWith('/status')), [],
+      'a second call must not ask the board to move it again');
+  } finally { r.restore(); }
+});
+
 test('rgm uncomment takes that comment back', async () => {
   const r = recorder();
   try {

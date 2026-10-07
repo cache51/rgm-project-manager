@@ -361,6 +361,8 @@ describe('the agent taking a comment back', () => {
     const seen = [];
     const bodies = [];
     let origin = '';
+    // The bug's status is mutable so a transition can be observed rather than assumed.
+    const state = { status: 'fixing' };
     const server = createServer(async (req, res) => {
       seen.push(`${req.method} ${req.url}`);
       const raw = await new Promise((resolve) => {
@@ -388,7 +390,7 @@ describe('the agent taking a comment back', () => {
       }
       if (req.url === '/api/bugs/b-1') {
         return send({
-          status: 'fixing', severity: 'high', projectId: 'p-1', milestone: { code: 'M1' },
+          status: state.status, severity: 'high', projectId: 'p-1', milestone: { code: 'M1' },
           availableActions: [], questions: { questions: [] }, attachments: [],
           timeline: [
             { id: 41, kind: 'bug.commented', actor: 'tester', canRemove: false, note: 'vẫn còn lỗi' },
@@ -404,6 +406,16 @@ describe('the agent taking a comment back', () => {
       if (req.url === '/put' && req.method === 'PUT') return send({ ok: true }, 201);
       if (req.url === '/api/bugs/b-1/attachments/complete') {
         return send({ id: 'att-9', filename: 'shot.png' }, 201);
+      }
+      if (req.url === '/api/bugs/b-1/status' && req.method === 'POST') {
+        const body = JSON.parse(raw || '{}');
+        // Mirrors the real transition table: only new → fixing, and a refusal says so.
+        if (state.status !== 'new' || body.action !== 'start_fixing') {
+          return send({ error: 'bad_transition',
+            message: `cannot ${body.action} from ${state.status}` }, 409);
+        }
+        state.status = 'fixing';
+        return send({ status: 'fixing' });
       }
       if (req.url === '/api/bugs/b-1/comments' && req.method === 'POST') {
         return send({ id: 99 }, 201);
@@ -423,6 +435,7 @@ describe('the agent taking a comment back', () => {
       url: origin,
       seen,
       bodies,
+      state,
       stop: () => new Promise((r) => server.close(r))
     };
   }
@@ -472,6 +485,45 @@ describe('the agent taking a comment back', () => {
       assert.equal(res.result.isError, true);
       assert.match(res.result.content[0].text, /answered by tester/,
         'the agent is told why it is locked, not just that it failed');
+    } finally { s.stop(); await app.stop(); }
+  });
+
+  test('rgm_start_fixing moves a report nobody has touched to fixing', async () => {
+    const app = await stub();
+    app.state.status = 'new';
+    const s = open(app.url);
+    try {
+      const res = await call(s, 'rgm_start_fixing', { number: 7, project: 'Fabric Warehouse' });
+
+      assert.notEqual(res.result.isError, true, res.result.content[0].text);
+      assert.match(res.result.content[0].text, /is now fixing/);
+      assert.match(res.result.content[0].text, /Nothing is handed back/,
+        'it must not read as if the work were finished');
+      assert.deepEqual(app.bodies.find((b) => b.path === '/api/bugs/b-1/status')?.body,
+        { action: 'start_fixing' });
+      assert.equal(app.state.status, 'fixing', 'and the board actually moved it');
+    } finally { s.stop(); await app.stop(); }
+  });
+
+  test('starting one that is already being fixed is a harmless no-op', async () => {
+    const app = await stub();               // the stub starts out at 'fixing'
+    const s = open(app.url);
+    try {
+      const res = await call(s, 'rgm_start_fixing', { number: 7, project: 'Fabric Warehouse' });
+      assert.match(res.result.content[0].text, /already being fixed/);
+      assert.equal(app.seen.filter((r) => r.includes('/status')).length, 0,
+        'a retry must not ask the board to move an already-moved report');
+    } finally { s.stop(); await app.stop(); }
+  });
+
+  test("a transition the board refuses is reported as the board's refusal", async () => {
+    const app = await stub();
+    app.state.status = 'retest';            // somebody is already waiting to verify it
+    const s = open(app.url);
+    try {
+      const res = await call(s, 'rgm_start_fixing', { number: 7, project: 'Fabric Warehouse' });
+      assert.equal(res.result.isError, true, 'the tool must not invent a success');
+      assert.match(res.result.content[0].text, /cannot start_fixing from retest/);
     } finally { s.stop(); await app.stop(); }
   });
 

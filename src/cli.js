@@ -16,6 +16,9 @@
  *   rgm comment 142 "fixed in abc1234"              # tell the tester what changed
  *   rgm comment 142 "đã sửa" --file after.png       # ...with a screenshot of it
  *   rgm uncomment 142 57       # take that comment back, while nobody has answered it
+ *   rgm start 142             # say you are on it: new → fixing, before the fix
+ *                             # (the tester is watching a list; a row nobody has
+ *                             # touched looks the same as one being worked on)
  *   rgm fixed 142 --verified-by "test/packing.test.js: counts the last carton" \
  *                 --note "please re-check the packing list screen"
  *                            # hand it to the filer: fixed, awaiting verification.
@@ -638,6 +641,16 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
     const { id, code } = await bugRef(1);
     await call('DELETE', `/api/bugs/${id}/comments/${commentId}`);
     return `removed comment ${commentId} from ${code} — nobody had answered it`;
+  }
+
+  if (command === 'start') {
+    const { id, code } = await bugRef(1);
+    const before = await (await call('GET', `/api/bugs/${id}`)).json();
+    if (before.status === 'fixing') return `${code} is already being fixed`;
+    // The server owns the rule (new → fixing, developer or admin); this only asks.
+    await call('POST', `/api/bugs/${id}/status`, { body: { action: 'start_fixing' } });
+    return `${code} is now fixing — the tester sees it as being worked on\n`
+      + `  nothing is handed back until it is verified: rgm fixed ${String(args._[1] ?? '')} --verified-by "..."`;
   }
 
   if (command === 'fixed') {
