@@ -63,8 +63,10 @@ const T = {
     trPending: 'Đang dịch…', trFailed: 'Dịch lỗi', trMissing: 'Chưa có bản dịch',
     noProjects: 'Chưa có dự án nào — hãy tạo dự án đầu tiên.', create: 'Tạo dự án',
     nameL: 'Tên dự án', envL: 'Môi trường',
-    team: 'Nhóm', personL: 'Tên người', emailL: 'Email', roleL: 'Vai trò',
-    invite: 'Thêm người vào dự án', invited: 'Đã thêm vào dự án', needNameEmail: 'Cần tên và email',
+    team: 'Nhóm', roleL: 'Vai trò', peopleL: 'Danh sách người (mỗi dòng một email)',
+    peopleHint: 'Mỗi dòng một email, có thể kèm tên: "acc02@rgmdn.com - Hien". Dán cả danh sách cùng lúc.',
+    invite: 'Thêm người vào dự án', invited: 'Đã thêm vào dự án',
+    addedCount: 'người đã được thêm', skippedL: 'bỏ qua',
     members: 'Thành viên', you: 'bạn', needName: 'Cần tên dự án',
     noMilestones: 'Chưa có cột mốc nào — hãy tạo cột mốc đầu tiên.',
     msCodeL: 'Mã cột mốc', msTitleL: 'Tên cột mốc', addMs: 'Tạo cột mốc',
@@ -134,8 +136,10 @@ const T = {
     trPending: '翻譯中…', trFailed: '翻譯失敗', trMissing: '尚無譯文',
     noProjects: '尚無專案——先建立第一個專案。', create: '建立專案',
     nameL: '專案名稱', envL: '環境',
-    team: '團隊', personL: '姓名', emailL: '電子郵件', roleL: '角色',
-    invite: '新增成員', invited: '已加入專案', needNameEmail: '需要姓名和電子郵件',
+    team: '團隊', roleL: '角色', peopleL: '人員名單(每行一個 email)',
+    peopleHint: '每行一個 email,可附姓名:「acc02@rgmdn.com - Hien」。可一次貼上整份名單。',
+    invite: '新增成員', invited: '已加入專案',
+    addedCount: '人已加入', skippedL: '略過',
     members: '成員', you: '你', needName: '需要專案名稱',
     noMilestones: '尚無里程碑——先建立第一個。',
     msCodeL: '里程碑代碼', msTitleL: '里程碑名稱', addMs: '建立里程碑',
@@ -205,8 +209,10 @@ const T = {
     trPending: 'Translating…', trFailed: 'Translation failed', trMissing: 'No translation yet',
     noProjects: 'No projects yet — create the first one.', create: 'Create project',
     nameL: 'Project name', envL: 'Environment',
-    team: 'Team', personL: 'Name', emailL: 'Email', roleL: 'Role',
-    invite: 'Add someone to the project', invited: 'Added to the project', needNameEmail: 'A name and an email are required',
+    team: 'Team', roleL: 'Role', peopleL: 'People (one email per line)',
+    peopleHint: 'One email per line, optionally with a name: "acc02@rgmdn.com - Hien". Paste the whole list at once.',
+    invite: 'Add someone to the project', invited: 'Added to the project',
+    addedCount: 'added', skippedL: 'skipped',
     members: 'Members', you: 'you', needName: 'A project name is required',
     noMilestones: 'No milestones yet — create the first one.',
     msCodeL: 'Milestone code', msTitleL: 'Milestone name', addMs: 'Add milestone',
@@ -728,10 +734,11 @@ function teamPanel() {
     ${isAdmin ? `
     <div class="card" style="margin-bottom:16px">
       <h2 style="margin:0 0 12px;font-size:15px">👤 ${t('invite')}</h2>
-      <label>${t('personL')}</label>
-      <input id="f-mname" placeholder="Nguyễn Văn A">
-      <label>${t('emailL')}</label>
-      <input id="f-memail" placeholder="a@rgm.example">
+      <label>${t('peopleL')}</label>
+      <textarea id="f-mpeople" rows="4" placeholder="yang@rgmdn.com
+thibinh@rgmdn.com
+acc02@rgmdn.com - Hien"></textarea>
+      <div class="hint" style="margin:4px 0 0">${t('peopleHint')}</div>
       <label>${t('roleL')}</label>
       <select id="f-mrole">
         <option value="tester" selected>${t('tester')}</option>
@@ -1517,18 +1524,21 @@ document.getElementById('app').addEventListener('click', async (event) => {
         break;
       }
       case 'invite': {
-        const name = document.getElementById('f-mname').value.trim();
-        const email = document.getElementById('f-memail').value.trim();
+        const people = document.getElementById('f-mpeople').value.trim();
         const role = document.getElementById('f-mrole').value;
-        if (!name || !email) {
-          notice(t('needNameEmail'), 'bad');
-          break;
-        }
+        if (!people) { notice(t('peopleL'), 'bad'); break; }
         try {
           // Applied immediately: no invite token to deliver and no mailer to deliver
-          // it with. The person can sign in with this address straight away.
-          await api('POST', `/api/projects/${S.projectId}/members`, { name, email, role });
-          notice(t('invited'));
+          // it with. Whoever is named can sign in with that address straight away.
+          // The server parses the paste and adds each address on its own, so one bad
+          // line does not cost the rest — and it says which ones it skipped.
+          const out = await api('POST', `/api/projects/${S.projectId}/members`,
+            { people, role });
+          const skipped = out.skipped ?? [];
+          notice(`${(out.added ?? []).length} ${t('addedCount')}`
+            + (skipped.length
+              ? ` · ${skipped.length} ${t('skippedL')}: ${skipped.map((s) => s.email).join(', ')}`
+              : ''));
           await refresh();
         } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
         break;

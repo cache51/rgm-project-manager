@@ -299,9 +299,10 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
 
     const html = app.html();
     assert.match(html, /data-action="invite"/, 'an invite control');
-    assert.match(html, /id="f-mname"/, 'with a field for the person’s name');
-    assert.match(html, /id="f-memail"/, 'and their email');
+    assert.match(html, /id="f-mpeople"/, 'with one box that takes a pasted list');
     assert.match(html, /id="f-mrole"/, 'and their role');
+    assert.match(html, /placeholder="[^"]*acc02@rgmdn\.com - Hien/,
+      'and shows the shape it accepts, name included');
 
     for (const m of payloads.members.members) {
       assert.ok(html.includes(m.display_name), `the list names ${m.display_name}`);
@@ -321,7 +322,7 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
     }
   });
 
-  test('adding someone posts the name, email and role', async () => {
+  test('a pasted list is added in one request, and the reply names what was skipped', async () => {
     const seen = [];
     const app = loadApp({
       routes: {
@@ -329,24 +330,31 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
           userId: payloads.meDev.userId, email: payloads.meDev.email, isSiteAdmin: false,
           projects: payloads.meDev.projects.map((p) => ({ ...p, role: 'admin' }))
         })),
-        [`POST /api/projects/${w.project.id}/members`]: (c) => { seen.push(c); return { body: { userId: 'u9' }, status: 201 }; }
+        [`POST /api/projects/${w.project.id}/members`]: (c) => {
+          seen.push(c);
+          return { body: {
+            added: [{ email: 'a@x.test' }, { email: 'b@x.test' }],
+            skipped: [{ email: 'khong-phai-email', reason: 'not an email address' }]
+          }, status: 201 };
+        }
       }
     });
     await settle();
     await app.click('view', { view: 'team' });
 
-    app.field('f-mname').value = '  Nguyễn Văn A  ';
-    app.field('f-memail').value = 'a@rgm.example';
+    app.field('f-mpeople').value = 'a@x.test\nb@x.test - B\nkhong-phai-email';
     app.field('f-mrole').value = 'tester';
     await app.click('invite');
 
-    assert.equal(seen.length, 1, 'the person is added');
+    assert.equal(seen.length, 1, 'the whole list is one request, not one per address');
     assert.deepEqual(seen[0].body,
-      { name: 'Nguyễn Văn A', email: 'a@rgm.example', role: 'tester' },
-      'the name is what the admin will see next to the reports');
+      { people: 'a@x.test\nb@x.test - B\nkhong-phai-email', role: 'tester' },
+      'the text goes as pasted — the server owns what it means');
+    assert.match(app.html(), /2[^<]*khong-phai-email/,
+      'the reply reports how many were added and names the one it skipped');
   });
 
-  test('adding someone without a name is refused locally', async () => {
+  test('an empty paste sends nothing and says so', async () => {
     const seen = [];
     const app = loadApp({
       routes: {
@@ -360,11 +368,10 @@ describe('ui (dom): the screens, rendered from real server payloads', () => {
     await settle();
     await app.click('view', { view: 'team' });
 
-    app.field('f-mname').value = '';
-    app.field('f-memail').value = 'a@rgm.example';
+    app.field('f-mpeople').value = '   ';
     await app.click('invite');
 
-    assert.equal(seen.length, 0, 'a nameless invitation is the thing we are trying to avoid');
+    assert.equal(seen.length, 0, 'nothing pasted is nothing to add');
     assert.match(app.html(), /toast/);
   });
 
