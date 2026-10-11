@@ -96,6 +96,16 @@ Two rules are built in rather than documented and hoped for: an agent can ask bu
 member answers it — by using the answer box or simply by commenting on the bug, which
 counts as the answer because that is how the testers and developers already reply.
 
+The person being asked does not have to open each bug to find out. The list API counts,
+for whoever is reading it, the open questions addressed to them — on each row
+(`questionsForYou`) and for the project (`questionsForYouCount`); a question is the
+reporter's unless the reporter asked it. The web app lists those reports first, marked
+**Câu hỏi chờ bạn trả lời / Question for you** beside a status it leaves alone (a
+question can arrive in any of the four), counts them in the sidebar for every project,
+and says so on the milestones screen the app opens on — one click from the list
+narrowed to them. Opening the report puts the question waiting for them at the top,
+above the verify buttons; everyone else finds it where it always was.
+
 An answer can carry a file, and so can a comment: images, plus `pdf`, `csv`, `xls` and
 `xlsx` — 25 MB each, 12 per bug. That is what makes a question like *"please attach the
 Excel form you use"* answerable in one move instead of by email. The file becomes one of

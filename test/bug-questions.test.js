@@ -202,3 +202,113 @@ describe('a bug carries the questions asked about it', () => {
     } finally { await other.close(); }
   });
 });
+
+/**
+ * The list says which questions are waiting for *you*.
+ *
+ * `openQuestions` tells everyone that a bug is waiting on an answer, but not on whose
+ * — and the status beside it says something else entirely. On 6 Oct a question asked
+ * on a bug already in retest looked exactly like a bug waiting to be verified, so the
+ * tester it was addressed to had no way to know it was hers. A question is for the
+ * reporter (the person its mail is addressed to) unless the reporter asked it.
+ */
+describe('the bug list says which questions are waiting for the viewer', () => {
+  let w, ms;
+
+  before(async () => {
+    w = await makeProjectWorld();
+    ms = await makeMilestone(w.adminClient, w.project.id, 'M-1', 'First');
+    for (const action of ['start', 'ready']) {
+      await w.adminClient.post(`/api/milestones/${ms}/status`, { action });
+    }
+  });
+  after(async () => { await w.close(); });
+
+  const ask = (client, bugId, body) => client.post(`/api/bugs/${bugId}/questions`, { body });
+  const list = async (client) => (await client.get(`/api/projects/${w.project.id}/bugs`)).json;
+  const rowIn = (payload, bugId) => payload.bugs.find((b) => b.id === bugId);
+
+  test('a question the developer asks is waiting for the reporter, and only for them', async () => {
+    // Counts are compared with where they started: the world is shared, and an
+    // absolute total would depend on which test ran first.
+    const reporterBefore = (await list(w.testerClient)).questionsForYouCount;
+    const developerBefore = (await list(w.devClient)).questionsForYouCount;
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await ask(w.devClient, bug.id, 'Which warehouse is it received into — supplier or QC?');
+
+    const asReporter = await list(w.testerClient);
+    assert.equal(rowIn(asReporter, bug.id).questionsForYou, 1, 'the reporter is the one being asked');
+    assert.equal(asReporter.questionsForYouCount, reporterBefore + 1,
+      'and the list carries a total, so the sidebar can say so without the rows');
+
+    const asDeveloper = await list(w.devClient);
+    assert.equal(rowIn(asDeveloper, bug.id).questionsForYou, 0, 'the asker is not waiting on itself');
+    assert.equal(asDeveloper.questionsForYouCount, developerBefore);
+    assert.equal(rowIn(asDeveloper, bug.id).openQuestions, 1,
+      'everyone still sees that an answer is pending');
+  });
+
+  test('a question the reporter asked is not waiting for the reporter', async () => {
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await ask(w.testerClient, bug.id, 'Is this a setting rather than a bug?');
+
+    const row = rowIn(await list(w.testerClient), bug.id);
+    assert.equal(row.openQuestions, 1);
+    assert.equal(row.questionsForYou, 0, 'it is the developers who owe this answer');
+  });
+
+  test('a question on a report already in retest still waits for the reporter', async () => {
+    // The case that was reported: the status says "fixed — awaiting verification",
+    // which is a different request of the tester than "answer this".
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    for (const action of ['start_fixing', 'request_retest']) {
+      await w.devClient.post(`/api/bugs/${bug.id}/status`, { action });
+    }
+    await ask(w.devClient, bug.id, 'Did you test with the Excel import or by hand?');
+
+    const row = rowIn(await list(w.testerClient), bug.id);
+    assert.equal(row.status, 'retest', 'the status is left alone');
+    assert.equal(row.questionsForYou, 1, 'and the question is still marked as hers');
+  });
+
+  test('a question with no recorded asker is still waiting for the reporter', async () => {
+    // asked_by is nullable. Comparing it with "<>" would make the comparison NULL and
+    // silently drop the question from the reporter's count.
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await w.db.query(
+      `INSERT INTO bug_questions (bug_id, asked_by, body) VALUES ($1, NULL, $2)`,
+      [bug.id, 'Which printer?']);
+
+    assert.equal(rowIn(await list(w.testerClient), bug.id).questionsForYou, 1);
+  });
+
+  test('every unanswered question counts', async () => {
+    const before = (await list(w.testerClient)).questionsForYouCount;
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await ask(w.devClient, bug.id, 'Which screen?');
+    await ask(w.devClient, bug.id, 'And which user?');
+
+    const payload = await list(w.testerClient);
+    assert.equal(rowIn(payload, bug.id).questionsForYou, 2);
+    assert.equal(payload.questionsForYouCount, before + 2);
+  });
+
+  test('answering it, or replying with a comment, takes it off the list', async () => {
+    const before = (await list(w.testerClient)).questionsForYouCount;
+    const viaBox = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    const asked = await ask(w.devClient, viaBox.id, 'Which lot?');
+    const viaComment = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await ask(w.devClient, viaComment.id, 'Which carton?');
+    assert.equal((await list(w.testerClient)).questionsForYouCount, before + 2);
+
+    await w.testerClient.post(`/api/bugs/${viaBox.id}/questions/${asked.json.id}/answer`,
+      { answer: 'Lô 7.' });
+    // The mail tells the reporter to reply with a comment, so a comment has to count.
+    await w.testerClient.post(`/api/bugs/${viaComment.id}/comments`, { note: 'Thùng số 3.' });
+
+    const payload = await list(w.testerClient);
+    assert.equal(rowIn(payload, viaBox.id).questionsForYou, 0);
+    assert.equal(rowIn(payload, viaComment.id).questionsForYou, 0);
+    assert.equal(payload.questionsForYouCount, before);
+  });
+});
