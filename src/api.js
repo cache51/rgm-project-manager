@@ -22,6 +22,8 @@ import { makeZip } from './zip.js';
 import {
   enqueueBugTranslations, enqueueEventTranslation, retryTranslation
 } from './translate.js';
+// A pasted roster, parsed outside the route so the parsing can be tested on its own.
+import { parsePeople } from './people.js';
 import { enqueueReadyNotifications, enqueueRetestNotifications,
          enqueueQuestionNotifications } from './notify.js';
 import { enforce, hit, LIMITS } from './ratelimit.js';
@@ -647,7 +649,42 @@ export function buildRoutes() {
    */
   r.post('/api/projects/:id/members', handle(async (req, res, ctx) => {
     await authorize(ctx.db, ctx.actor, ctx.params.id, ['admin']);
-    const { email, name, role } = await readJson(req);
+    const { email, name, role, people } = await readJson(req);
+
+    // A pasted list. Adding a tester list one address at a time is the job that gets
+    // deferred, and a deferred job leaves the roster wrong — so this takes the paste.
+    // Partial success is the point: one typo among six addresses must not cost the
+    // other five, and what was skipped is reported rather than swallowed.
+    if (email === undefined && people !== undefined) {
+      if (!role) throw new HttpError(400, 'missing_fields', 'role required');
+      const wanted = parsePeople(people);
+      if (!wanted.length) {
+        throw new HttpError(400, 'no_members', 'no email addresses in that text');
+      }
+
+      const added = [];
+      const skipped = [];
+      for (const person of wanted) {
+        const normalized = normalizeEmail(person.email);
+        if (!looksLikeEmail(normalized)) {
+          skipped.push({ email: person.email, reason: 'not an email address' });
+          continue;
+        }
+        try {
+          added.push(await addMember(ctx.db, {
+            projectId: ctx.params.id, email: normalized, name: person.name, role,
+            actor: ctx.actor
+          }));
+        } catch (err) {
+          // Each address is its own transaction (inside addMember), so a refusal on
+          // one leaves the ones before it added — which is what the caller is told.
+          skipped.push({ email: person.email, reason: err.message ?? String(err) });
+        }
+      }
+      if (!added.length) return sendJson(res, 400, { error: 'no_members', added, skipped });
+      return sendJson(res, 201, { added, skipped });
+    }
+
     if (!email || !role) throw new HttpError(400, 'missing_fields', 'email and role required');
 
     const member = await addMember(ctx.db, {

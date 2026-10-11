@@ -89,6 +89,7 @@ the same loop:
 | `rgm_get_questions` | whether the answer has arrived |
 | `rgm_comment` | what was changed, in words a tester can act on, with a screenshot or a file attached |
 | `rgm_remove_comment` | take back a comment of its own that nobody has answered yet |
+| `rgm_start_fixing` | say you are on it: `new` → `fixing`, before the fix, so the tester's list shows it being worked on |
 | `rgm_mark_fixed` | hand it back: *fixed — awaiting verification*, with the test that proves it |
 
 Two rules are built in rather than documented and hoped for: an agent can ask but
@@ -325,6 +326,7 @@ From a shell, the same loop without an agent in the middle:
 ```
 rgm bugs                  # the unresolved list
 rgm prompt 7              # the handoff prompt for BUG-7, on stdout
+rgm start 7               # say you are on it: new → fixing
 rgm ask 7 "which warehouse?"   # question to the reporter
 rgm questions 7           # the answer, once it arrives
 rgm comment 7 "fixed in abc1234"   # say what changed (it prints the comment id)

@@ -17,7 +17,7 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
 2. **`rgm_get_bug {number}`** — the handoff prompt: the tester's original words
    beside the translation, the status, the attachments, and any question still
    unanswered. Read all of it. It also lists **your own comments that nobody has
-   answered**, with the id that takes one back (step 7).
+   answered**, with the id that takes one back (step 8).
 3. **`rgm_get_packet {number}`** — saves the screenshots into `.rgm/<CODE>/`.
    **Look at them.** Half of these bugs are "this number on this screen is
    wrong", and the screenshot is the only place that number appears. An
@@ -25,7 +25,12 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    The list also says which pictures **came with a comment**, and from whom: a
    reply's screenshot is usually the frame that explains the report, and a tester
    who replied with one has already answered part of what you were about to ask.
-4. **Do not guess.** If the report does not pin down what to change — which
+4. **Say you are on it.** `rgm_start_fixing {number}` (from a shell: `rgm start 142`)
+   moves the report to **fixing**. Call it when you pick the bug up, not when you
+   finish: the tester is watching a list, and a row nobody has touched looks exactly
+   like a row being worked on. It hands nothing back — the work is finished only when
+   `rgm_mark_fixed` says so, with evidence.
+5. **Do not guess.** If the report does not pin down what to change — which
    screen, which warehouse, which field, what "correct" would look like — call
    **`rgm_ask_question {number, question}`**. It is emailed to the reporter and
    shown on the bug until it is answered, and it stays open until someone answers.
@@ -34,7 +39,7 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    question that can be answered rather than one that stalls. Then either
    poll **`rgm_get_questions {number}`** or work another bug meanwhile; never
    invent an answer and never quietly do the wrong thing.
-5. **Find the area before you write the test.** A report names a screen or a voucher,
+6. **Find the area before you write the test.** A report names a screen or a voucher,
    not a file — "PACKING LIST TỔNG didn't update", "the cutting table has the wrong
    length". Two habits turn that into a place:
    - **Look the tester's words up in the app's own translations** (`frontend/src/i18n/vi/`
@@ -59,14 +64,14 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    DB, what must not be hand-rolled. **Read it before editing.** If the report's area is
    still not placeable, ask: a question costs one mail, an edit to the wrong screen costs
    a rework cycle.
-6. **Write the test before the fix.** Turn the report into a case that fails on
+7. **Write the test before the fix.** Turn the report into a case that fails on
    the current code — the carton count, the lot with no lining row, the label that
    prints off-centre — **watch it fail**, then change the code until it passes.
    Keep the test: it is this bug's regression case, and it is what you hand over
    as evidence. If the symptom genuinely cannot be automated (a layout, a printed
    label, a screen that only misbehaves by hand), reproduce it by hand and say
    exactly how — on which build, what you did, what you saw before and after.
-7. **`rgm_comment {number, note, files?}`** — say what changed and where, in words a
+8. **`rgm_comment {number, note, files?}`** — say what changed and where, in words a
    tester can act on ("the packing list now accepts a lot with no lining row").
    When the picture *is* the explanation — the screen you changed, before and after —
    attach it: `files` takes local image paths, and they land on the bug with the
@@ -80,7 +85,7 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    comment stops being read anywhere, including in this prompt). It removes a
    *comment*; a question you asked cannot be withdrawn this way — a mail has
    already gone out, so correct it by answering or by a plain comment.
-8. **Self-check before you claim fixed (Jev, if configured).** If a `jev` MCP
+9. **Self-check before you claim fixed (Jev, if configured).** If a `jev` MCP
    server is connected, call its `evaluate` with state = the tester's report +
    your diff + the test command and its fresh output, and these four Noul
    questions in one call: *the diff addresses the symptom the tester described
@@ -91,7 +96,7 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    whether you look again, not whether the tester verifies. A flag you disagree
    with is fine — say why in the comment. If `jev` is not connected, skip this
    step; it is a second pair of eyes, never a licence to claim fixed.
-9. **`rgm_mark_fixed {number, verified_by, note}`** — `verified_by` is **required**
+10. **`rgm_mark_fixed {number, verified_by, note}`** — `verified_by` is **required**
    and is the evidence: the test file and case name, or the exact command, or how
    you checked a symptom that cannot be automated. It is posted on the bug beside
    your note, so the tester reads what already proved it before they check it

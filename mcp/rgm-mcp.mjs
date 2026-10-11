@@ -415,6 +415,29 @@ const TOOLS = [
     }
   },
   {
+    name: 'rgm_start_fixing',
+    description: 'Say you are on it: moves the report to "fixing". Call this when you pick the bug '
+      + 'up, before you write the fix — a tester watching the list cannot tell a report nobody has '
+      + 'touched from one being worked on, and the board is how they know. It hands nothing back: '
+      + 'only rgm_mark_fixed does that, and only after the work is verifiable. From a shell: '
+      + 'rgm start 142.',
+    inputSchema: {
+      type: 'object',
+      properties: { number: { type: 'integer' }, ...PROJECT_ARG },
+      required: ['number'], additionalProperties: false
+    },
+    async run({ number, project: wanted }) {
+      const { id, code } = await bugId(number, wanted);
+      const before = await json('GET', `/api/bugs/${id}`);
+      // Idempotent so a retry is harmless; anything else (retest, closed) is the
+      // server's call to refuse, and its refusal says which transition it wanted.
+      if (before.status === 'fixing') return text(`${code} is already being fixed`);
+      await json('POST', `/api/bugs/${id}/status`, { action: 'start_fixing' });
+      return text(`${code} is now fixing — the tester sees it as being worked on.`
+        + `\nNothing is handed back until the work is verifiable: rgm_mark_fixed {verified_by}.`);
+    }
+  },
+  {
     name: 'rgm_mark_fixed',
     description: 'Mark a bug fixed so the FILER can verify it: moves it to "fixed — awaiting '
       + 'verification" (starting the fix first if nobody had). Only call this after you have '
