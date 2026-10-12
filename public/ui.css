@@ -50,3 +50,31 @@ input[type=file]{padding:7px;font-size:12px}
 .toast{margin:14px 26px 0;padding:9px 14px;border-radius:8px;font-size:13px;
   background:var(--ok-bg);color:var(--ok);border:1px solid #a7f3d0}
 .toast.bad{background:var(--high-bg);color:var(--high);border-color:#fecaca}
+
+/* ── a question waiting for the reader ──
+   Amber, because it is neither state colour: red means the problem is still there and
+   green means fixed, and "answer this" is a different request from both. The solid
+   chips use amber-700 rather than --med, so white text on them passes AA at 11px. */
+:root{--ask:#b45309;--ask-bg:#fffbeb;--ask-line:#fcd34d;--ask-ink:#92400e}
+.row.ask{background:var(--ask-bg);border-color:var(--ask-line);box-shadow:inset 4px 0 0 var(--ask)}
+.row.ask:hover{border-color:var(--ask);
+  box-shadow:inset 4px 0 0 var(--ask),0 3px 12px rgba(180,83,9,.12)}
+.row .state{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:0 0 auto}
+.qbadge{font-size:11px;font-weight:700;padding:3px 9px;border-radius:20px;text-align:center;
+  background:var(--ask);color:#fff}
+.card.ask{border-color:var(--ask-line);box-shadow:inset 4px 0 0 var(--ask)}
+.card.ask:hover{box-shadow:inset 4px 0 0 var(--ask),0 4px 16px rgba(15,23,42,.07)}
+button.hint.ask{display:block;width:100%;text-align:left;font:inherit;font-size:12.5px;
+  cursor:pointer;background:var(--ask-bg);border:1px solid var(--ask-line);color:var(--ask-ink)}
+button.hint.ask b{color:var(--ask-ink)}
+button.hint.ask:hover{border-color:var(--ask);box-shadow:0 0 0 3px rgba(180,83,9,.15)}
+button.hint.ask:focus-visible{outline:2px solid var(--ask);outline-offset:2px}
+.proj .qcnt{margin-left:auto;font-size:10px;font-weight:700;padding:1px 6px;border-radius:20px;
+  flex:0 0 auto;background:var(--ask);color:#fff}
+.proj .qcnt + .cnt{margin-left:6px}
+.nav .badge.ask{background:var(--ask);color:#fff}
+.nav .badge.ask + .badge{margin-left:6px}
+.statusbar .chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* Words for a screen reader beside a bare "💬 2"; the title attribute is not reliably read. */
+.vh{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0 0 0 0);white-space:nowrap;border:0}

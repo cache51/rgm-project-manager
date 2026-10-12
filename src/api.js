@@ -1059,18 +1059,32 @@ export function buildRoutes() {
               -- How many questions are still waiting for an answer, so the list
               -- can say "the agent is blocked on this" without opening it.
               (SELECT count(*) FROM bug_questions q
-                WHERE q.bug_id = b.id AND q.answered_at IS NULL)::int AS open_questions
+                WHERE q.bug_id = b.id AND q.answered_at IS NULL)::int AS open_questions,
+              -- And how many of those are waiting for the person reading the list.
+              -- A question is addressed to the reporter (its mail goes To: them)
+              -- unless the reporter asked it. IS DISTINCT FROM, because asked_by is
+              -- nullable and "<>" would quietly drop a question with no asker.
+              (SELECT count(*) FROM bug_questions q
+                WHERE q.bug_id = b.id AND q.answered_at IS NULL
+                  AND b.reporter_id = $2
+                  AND q.asked_by IS DISTINCT FROM $2)::int AS questions_for_you
          FROM bugs b
          JOIN milestones m ON m.id = b.milestone_id
          JOIN users u ON u.id = b.reporter_id
         WHERE b.project_id = $1 AND b.deleted_at IS NULL
-        ORDER BY b.bug_number DESC`, [ctx.params.id]);
+        ORDER BY b.bug_number DESC`, [ctx.params.id, ctx.actor.userId]);
+    const bugs = rows.rows.map(b => ({ ...b, code: reportCode(b.kind, b.bug_number),
+                                       // camelCase for the client; the SQL alias is snake_case.
+                                       openQuestions: b.open_questions ?? 0,
+                                       questionsForYou: b.questions_for_you ?? 0,
+                                       isOpen: isOpenBug(b.status) }));
     sendJson(res, 200, {
-      bugs: rows.rows.map(b => ({ ...b, code: reportCode(b.kind, b.bug_number),
-                                  // camelCase for the client; the SQL alias is snake_case.
-                                  openQuestions: b.open_questions ?? 0,
-                                  isOpen: isOpenBug(b.status) })),
-      openCount: rows.rows.filter(b => isOpenBug(b.status)).length
+      bugs,
+      openCount: rows.rows.filter(b => isOpenBug(b.status)).length,
+      // The total for the sidebar: a tester lands on the milestones screen, and may
+      // be on several projects, so "someone is waiting on you" has to be sayable
+      // without the rows.
+      questionsForYouCount: bugs.reduce((n, b) => n + b.questionsForYou, 0)
     });
   }));
 

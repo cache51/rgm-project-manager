@@ -30,6 +30,7 @@ const T = {
     qPanel: 'Câu hỏi cần làm rõ', qOpen: 'chưa trả lời', qAnswer: 'Gửi trả lời',
     qAnswerPlaceholder: 'Trả lời ngắn gọn giúp…', answerMissing: 'Hãy nhập câu trả lời trước',
     needsAnswer: 'chờ trả lời',
+    qForYou: 'Câu hỏi chờ bạn trả lời', qForYouAll: 'Câu hỏi chờ bạn trả lời', allReports: 'Tất cả',
     notifyL: 'Email báo khi sửa xong', addWatcher: 'Thêm email',
     noWatchers: 'Chưa có ai — thêm địa chỉ tester đã báo lỗi.',
     notifyHint: 'Những địa chỉ này nhận email khi lỗi chuyển sang “Đã sửa — chờ xác nhận”.',
@@ -103,6 +104,7 @@ const T = {
     qPanel: '待釐清的問題', qOpen: '尚未回答', qAnswer: '送出回答',
     qAnswerPlaceholder: '請簡短回答…', answerMissing: '請先輸入回答',
     needsAnswer: '待回答',
+    qForYou: '有提問待你回答', qForYouAll: '待你回答的提問', allReports: '全部',
     notifyL: '修復後通知的電郵', addWatcher: '新增電郵',
     noWatchers: '尚未設定——可加入回報問題的測試人員。',
     notifyHint: '問題轉為「已修復——待確認」時，這些地址會收到電郵。',
@@ -176,6 +178,7 @@ const T = {
     qPanel: 'Questions to clarify', qOpen: 'unanswered', qAnswer: 'Send answer',
     qAnswerPlaceholder: 'A short answer is fine…', answerMissing: 'Enter an answer first',
     needsAnswer: 'needs an answer',
+    qForYou: 'Question for you', qForYouAll: 'Questions for you', allReports: 'All',
     notifyL: 'Emails told when it is marked fixed', addWatcher: 'Add email',
     noWatchers: 'Nobody yet — add the tester who reported it.',
     notifyHint: 'These addresses get an email when the bug moves to “Fixed — awaiting verification”.',
@@ -296,6 +299,11 @@ const FILE_ACCEPT = 'image/*,.pdf,.csv,.xlsx,.xls';
 
 const S = {
   me: null, projects: [], counts: {}, projectId: null,
+  // Per project, how many unanswered questions are waiting for the reader — the
+  // reporter of those bugs. Said in the sidebar, which is on every screen.
+  askCounts: {},
+  // 'forYou' narrows the bug list to the reports waiting for the reader's answer.
+  bugFilter: 'all',
   // Declared above this object on purpose: `initialLang` reads LANGS, and using it
   // here from further down the file throws a temporal-dead-zone error.
   view: 'milestones', lang: initialLang(), bug: null, prompt: null,
@@ -378,6 +386,8 @@ async function api(method, path, body) {
 
 const myRole = () => S.me?.projects.find((p) => p.id === S.projectId)?.role ?? null;
 const canDevelop = () => ['admin', 'developer'].includes(myRole());
+/** Questions waiting for the reader in the project on screen. */
+const askHere = () => S.askCounts[S.projectId] ?? 0;
 
 function statusLabel(kind, status, reportKind = S.bug?.kind ?? S.reportKind) {
   // The states are the same for both kinds of report; the work is not. "Fixed" over a
@@ -440,14 +450,17 @@ async function loadProjects() {
   S.projects = projects;
   if (!S.projectId && projects.length) S.projectId = projects[0].id;
 
-  // Open-bug counts per project for the sidebar badges.
+  // Open-bug counts per project for the sidebar badges, and from the same lists the
+  // questions waiting for this reader — a tester on several projects has to see
+  // that one of them is asking, without opening each.
   const counts = await Promise.all(projects.map(async (p) => {
     try {
-      const { openCount } = await api('GET', `/api/projects/${p.id}/bugs`);
-      return [p.id, openCount];
-    } catch { return [p.id, null]; }
+      const { openCount, questionsForYouCount } = await api('GET', `/api/projects/${p.id}/bugs`);
+      return [p.id, openCount, questionsForYouCount ?? 0];
+    } catch { return [p.id, null, 0]; }
   }));
-  S.counts = Object.fromEntries(counts);
+  S.counts = Object.fromEntries(counts.map(([id, open]) => [id, open]));
+  S.askCounts = Object.fromEntries(counts.map(([id, , asking]) => [id, asking]));
 }
 
 async function loadMilestones() {
@@ -461,6 +474,9 @@ async function loadMilestones() {
 async function loadBugs() {
   const { bugs } = await api('GET', `/api/projects/${S.projectId}/bugs`);
   S.bugs = bugs ?? [];
+  // Once nothing waits, the narrowing is over — it must not come back by itself when
+  // the next question arrives.
+  if (!S.bugs.some((b) => b.questionsForYou > 0)) S.bugFilter = 'all';
 }
 
 /**
@@ -493,9 +509,13 @@ async function openBug(id) {
   // The close panel offers "duplicate of …" with the project's other live
   // reports, so the list has to be here even when the detail was reached
   // directly (a notification link, a transition) rather than via the list.
-  S.projectBugs = S.bug
-    ? (await api('GET', `/api/projects/${S.bug.projectId}/bugs`)).bugs
-    : [];
+  const siblings = S.bug ? await api('GET', `/api/projects/${S.bug.projectId}/bugs`) : null;
+  S.projectBugs = siblings ? siblings.bugs : [];
+  // The same list counts the questions still waiting for the reader, so answering one
+  // here (or replying with a comment) clears the sidebar without another request.
+  if (siblings) {
+    S.askCounts = { ...S.askCounts, [S.bug.projectId]: siblings.questionsForYouCount ?? 0 };
+  }
   render();
   // Fetch the server-built prompt lazily so the detail view is not blocked by it.
   try {
@@ -541,6 +561,8 @@ function sidebar() {
           <div class="proj ${p.id === S.projectId ? 'on' : ''}" data-action="project" data-id="${esc(p.id)}">
             <span class="sq" style="background:${p.id === S.projectId ? '#fff' : '#6366f1'}"></span>
             <span class="nm">${esc(p.name)}</span>
+            ${S.askCounts[p.id] ? `<span class="qcnt" title="${t('qForYouAll')}">💬 ${S.askCounts[p.id]}<span
+              class="vh"> ${t('qForYouAll')}</span></span>` : ''}
             <span class="cnt ${S.counts[p.id] ? '' : 'zero'}">${S.counts[p.id] ?? ''}</span>
           </div>`).join('') || `<div class="hint" style="background:none;border:0;color:#64748b">${t('loading')}</div>`}
       </div>
@@ -565,6 +587,8 @@ function sidebar() {
         </div>
         <div class="nav ${S.view === 'bugs' && !S.bug ? 'on' : ''}" data-action="view" data-view="bugs">
           <span>🐞</span> ${t('bugs')}
+          ${askHere() ? `<span class="badge ask" title="${t('qForYouAll')}">💬 ${askHere()}<span
+            class="vh"> ${t('qForYouAll')}</span></span>` : ''}
           <span class="badge">${S.counts[S.projectId] ?? 0}</span>
         </div>
         <div class="nav ${S.view === 'team' && !S.bug ? 'on' : ''}" data-action="view" data-view="team">
@@ -772,8 +796,17 @@ acc02@rgmdn.com - Hien"></textarea>
 function bugRows() {
   if (S.bugs === null) return `<div class="empty">${t('loading')}</div>`;
   if (!S.bugs.length) return `<div class="empty">${t('noBugs')}</div>` + removedBugs();
-  const rows = S.bugs.map((b) => `
-    <div class="row" data-action="openbug" data-id="${esc(b.id)}">
+  // Reports waiting for the reader's answer come first, each group in the server's
+  // order: a question asked on an old report must not sit below the newer ones.
+  const forYou = S.bugs.filter((b) => b.questionsForYou > 0);
+  const ordered = [...forYou, ...S.bugs.filter((b) => !(b.questionsForYou > 0))];
+  // Narrowed only while there is something to narrow to: answering the last question
+  // must not leave an empty list — or a false "no bugs" — behind.
+  const shown = S.bugFilter === 'forYou' && forYou.length ? forYou : ordered;
+  const rows = shown.map((b) => {
+    const asking = b.questionsForYou > 0;
+    return `
+    <div class="row${asking ? ' ask' : ''}" data-action="openbug" data-id="${esc(b.id)}">
       <span class="sev ${SEV_CLASS[b.severity]}">${esc(SEV[b.severity][S.lang])}</span>
       <div class="body">
         <div class="id">${esc(b.code)} · ${esc(b.milestone_code)}</div>
@@ -782,17 +815,55 @@ function bugRows() {
         <div class="tags">
           <span class="tag">${t('whenL')} ${fmt(b.updated_at)}</span>
           <span class="tag">${rel(b.updated_at)}</span>
-          <!-- Someone (usually an agent) is waiting on an answer here. -->
-          ${b.openQuestions ? `<span class="tag"
+          <!-- Someone (usually an agent) is waiting on an answer from someone other
+               than the reader. When it is the reader's, the badge by the state says so. -->
+          ${b.openQuestions && !asking ? `<span class="tag"
             style="background:var(--high-bg,#fee2e2);color:var(--high,#b91c1c)"
             >💬 ${t('needsAnswer')}</span>` : ''}
         </div>
       </div>
       <!-- The state, in its colour, so a tester scanning the list can see at a glance
-           which ones are waiting to be verified. -->
-      <span class="st ${BUG_CLASS[b.status]}">${statusLabel('bug', b.status)}</span>
-    </div>`).join('');
-  return rows + removedBugs();
+           which ones are waiting to be verified. Above it, a question waiting for the
+           reader: whatever the state says, the next move on that report is theirs. -->
+      <div class="state">
+        ${asking ? `<span class="qbadge">💬 ${t('qForYou')}${
+          b.questionsForYou > 1 ? ` (${b.questionsForYou})` : ''}</span>` : ''}
+        <span class="st ${BUG_CLASS[b.status]}">${statusLabel('bug', b.status)}</span>
+      </div>
+    </div>`;
+  }).join('');
+  return askFilter(forYou) + rows + removedBugs();
+}
+
+/** Everything, or only what waits for the reader's answer — offered while something does. */
+function askFilter(forYou) {
+  if (!forYou.length) return '';
+  const narrowed = S.bugFilter === 'forYou';
+  // Counted in questions, like the sidebar and the hint; "All" carries no number, so
+  // the two chips never set reports against questions.
+  const waiting = forYou.reduce((n, b) => n + b.questionsForYou, 0);
+  return `
+    <div class="statusbar" style="margin-bottom:12px">
+      <button type="button" class="chip ${narrowed ? '' : 'on'}" aria-pressed="${!narrowed}"
+              data-action="bugfilter" data-filter="all">${t('allReports')}</button>
+      <button type="button" class="chip ${narrowed ? 'on' : ''}" aria-pressed="${narrowed}"
+              data-action="bugfilter" data-filter="forYou">💬 ${t('qForYouAll')} (${waiting})</button>
+    </div>`;
+}
+
+/**
+ * "A question is waiting for you", on the screen the app opens on.
+ *
+ * The list marks the reports, but a tester lands on the milestones and may never open
+ * the list on a day nothing is ready to verify. One click opens it narrowed.
+ */
+function questionsHint() {
+  const waiting = askHere();
+  if (!waiting) return '';
+  return `
+    <button type="button" class="hint ask" data-action="questionsforyou">
+      💬 <b>${t('qForYouAll')}: ${waiting}</b> · ${t('bugs')} →
+    </button>`;
 }
 
 /** Bugs that were removed, with a way back. Removal must not be a one-way door. */
@@ -881,6 +952,10 @@ function timelineBlock() {
 function bugDetail() {
   const b = S.bug;
   const shots = b.attachments ?? [];
+  // A question waiting for this reader opens the page rather than closing it (see
+  // questionsPanel). Who it waits for is the list's answer, read from the row that
+  // openBug fetched, so the page and the list cannot disagree.
+  const asking = (S.projectBugs ?? []).some((r) => r.id === b.id && r.questionsForYou > 0);
   return `
   <div class="wrap">
     <a href="#" class="btn sm" data-action="closebug">${t('back')}</a>
@@ -904,6 +979,7 @@ function bugDetail() {
       </div>
     </div>
 
+    ${asking ? questionsPanel(b, { promoted: true }) : ''}
     ${S.editing ? editForm() : ''}
 
     <div class="grid2">
@@ -981,7 +1057,7 @@ function bugDetail() {
           ? `<span class="mini bad" data-action="removebug" data-id="${esc(b.id)}">🗑 ${t('remove')}</span>` : ''}
       </div>` : ''}
 
-      ${questionsPanel(b)}
+      ${asking ? '' : questionsPanel(b)}
       ${watchersPanel(b)}
     </div>
   </div>`;
@@ -995,12 +1071,20 @@ function bugDetail() {
  * only person who can settle a question, and whoever is fixing the bug may need
  * to answer one too. An answered question stays on the page, because the answer
  * is worth as much to the next reader as the report is.
+ *
+ * While one is waiting for the reader the panel is `promoted` to the top of the page.
+ * At the foot of the actions it sat below the prompt, the timeline and the retest
+ * buttons, so the person being asked could press "verified" without ever reaching it.
+ * Everyone else — the asker included — finds it where it always was.
  */
-function questionsPanel(b) {
+function questionsPanel(b, { promoted = false } = {}) {
   const list = b.questions?.questions ?? [];
   if (!list.length) return '';
+  const frame = promoted
+    ? 'class="card ask" style="margin-top:14px"'
+    : 'style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line,#e2e8f0)"';
   return `
-    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line,#e2e8f0)">
+    <div ${frame}>
       <label>${t('qPanel')}</label>
       ${list.map((q) => (q.open ? `
         <div class="card" style="padding:9px 11px;margin:6px 0">
@@ -1245,7 +1329,7 @@ function render() {
     </div>`
     : S.bug ? bugDetail()
     : S.reporting ? reportForm()
-    : S.view === 'milestones' ? milestoneCards()
+    : S.view === 'milestones' ? questionsHint() + milestoneCards()
     : S.view === 'team' ? teamPanel()
     : bugRows();
 
@@ -1309,7 +1393,8 @@ document.getElementById('app').addEventListener('click', async (event) => {
   if (!el) return;
   const action = el.dataset.action;
   event.preventDefault();
-  if (S.busy && !['project', 'view', 'cancelreport', 'newproject'].includes(action)) return;
+  if (S.busy && !['project', 'view', 'questionsforyou', 'cancelreport', 'newproject']
+    .includes(action)) return;
 
   try {
     switch (action) {
@@ -1461,16 +1546,27 @@ document.getElementById('app').addEventListener('click', async (event) => {
       case 'project':
         S.projectId = el.dataset.id; S.bug = null; S.prompt = null; S.closePanel = null;
         S.commentDraft = null; S.watcherDraft = null; S.answerDrafts = {};
+        S.bugFilter = 'all';
         // Leaving the report screen abandons any half-uploaded report (IR-036):
         // the next Send is a fresh one, not a silent edit of the old bug.
         S.reporting = false; abandonPendingReport();
         await refresh();
         break;
       case 'view':
-        S.view = el.dataset.view; S.bug = null; S.reporting = false; S.closePanel = null;
+      case 'questionsforyou':
+        // The hint on the milestones screen is the bug list, already narrowed to the
+        // reports waiting for this reader. Any other way in shows everything, so the
+        // list is never left narrowed by an earlier visit.
+        S.view = action === 'questionsforyou' ? 'bugs' : el.dataset.view;
+        S.bugFilter = action === 'questionsforyou' ? 'forYou' : 'all';
+        S.bug = null; S.reporting = false; S.closePanel = null;
         S.commentDraft = null; S.watcherDraft = null; S.answerDrafts = {};
         abandonPendingReport();
         await refresh();
+        break;
+      case 'bugfilter':
+        S.bugFilter = el.dataset.filter === 'forYou' ? 'forYou' : 'all';
+        render();
         break;
       case 'lang':
         S.lang = el.dataset.lang;
@@ -1753,7 +1849,9 @@ async function submitReport() {
     S.pendingUploads = null;
     S.reportDraft = null;
     S.reporting = false;
-    S.view = 'bugs';
+    // The whole list: a new report has no question on it, so a list still narrowed to
+    // the questions would say "saved" and not show it.
+    S.view = 'bugs'; S.bugFilter = 'all';
     notice(`${bug.code} ${t('saved')} · ${files.length} 📷`);
     await refresh();
   } catch (err) {
