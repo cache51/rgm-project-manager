@@ -19,6 +19,11 @@
  *   rgm start 142             # say you are on it: new → fixing, before the fix
  *                             # (the tester is watching a list; a row nobody has
  *                             # touched looks the same as one being worked on)
+ *   rgm close 142 --reason "expected behaviour: a lot with no lining row"   # not a bug
+ *   rgm close 142 --reason "same as BUG-7" --duplicate BUG-7                # a duplicate
+ *                             # --reason is required: whoever filed it reads why.
+ *                             # Closing is NOT verifying — a report already awaiting
+ *                             # verification can only be closed by the person who filed it.
  *   rgm fixed 142 --verified-by "test/packing.test.js: counts the last carton" \
  *                 --note "please re-check the packing list screen"
  *                            # hand it to the filer: fixed, awaiting verification.
@@ -651,6 +656,29 @@ export async function run(argv = process.argv.slice(2), { adminDelete = ownerAdm
     await call('POST', `/api/bugs/${id}/status`, { body: { action: 'start_fixing' } });
     return `${code} is now fixing — the tester sees it as being worked on\n`
       + `  nothing is handed back until it is verified: rgm fixed ${String(args._[1] ?? '')} --verified-by "..."`;
+  }
+
+  if (command === 'close') {
+    const { id, code } = await bugRef(1);
+    const reason = String(args.reason ?? '').trim();
+    if (reason.length < 8) {
+      throw new Error('close needs --reason "..." — whoever filed the report reads why it is not a '
+        + 'bug, and a reason that says nothing is worse than no close at all');
+    }
+    const duplicate = args.duplicate === undefined ? null : String(args.duplicate).trim();
+    const before = await (await call('GET', `/api/bugs/${id}`)).json();
+    if (before.status === 'closed') return `${code} is already closed`;
+    if (before.status === 'retest') {
+      // Verification is the filer's, and the server would refuse anyway: say which way
+      // forward instead of passing the refusal on unexplained.
+      throw new Error(`${code} is awaiting verification — only the person who filed it can close `
+        + 'it. Comment on what you found, or ask a question, instead.');
+    }
+    const body = { action: 'close', reason, closeKind: duplicate ? 'duplicate' : 'rejected' };
+    if (duplicate) body.closeRefCode = duplicate;
+    await call('POST', `/api/bugs/${id}/status`, { body });
+    return `${code} is closed — ${duplicate ? `duplicate of ${duplicate}` : 'rejected as not a bug'}`
+      + '\n  the reason is on the timeline for whoever filed it';
   }
 
   if (command === 'fixed') {

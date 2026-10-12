@@ -103,11 +103,24 @@ the `rgm` MCP tools (or the `rgm` CLI — same thing, one shell command at a tim
    themselves. This moves the bug to *fixed — awaiting verification*, and that is
    where your part ends: **you do not close the bug.** The tester who filed it
    verifies and closes, and if they send it back it returns to you with their note.
+11. **What is not a bug, say so — with a reason.** `rgm_close_bug {number, reason}`
+   closes a report as *rejected* (expected behaviour, cannot reproduce), and
+   `duplicate_of: "BUG-7"` closes it as a duplicate of another report. The reason is
+   required because it is the only thing the person who filed it gets back. This is
+   not a way to make a bug go away: it cannot close anything awaiting verification,
+   and a report you cannot reproduce is usually a question, not a rejection.
+   **`rgm_bug_action {number, action}`** is the general door when nothing else
+   covers the move you need — every lifecycle move the server will accept from your
+   role. `rgm_get_bug` lists them (`availableActions`), and a move the board refuses
+   comes back with the moves it does allow.
 
 ## Rules that matter
 
-- **Verification belongs to the filer.** Never close, never mark verified — the
-  tool does not even offer it.
+- **Verification belongs to the filer.** You cannot verify, and you cannot close a
+  report that is waiting to be verified — the tools refuse, because the person who
+  filed it is the one who checks. What you *can* do is **reject** a report that is
+  not a bug, or close it as a **duplicate**, with a reason the filer reads. That is a
+  judgement about the report, not a signature on your own work.
 - **A fix without a test that failed first is a guess.** The failing test is how
   you know you fixed the reported thing rather than something near it, and it is
   the evidence the tester reads.

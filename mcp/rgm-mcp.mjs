@@ -438,6 +438,170 @@ const TOOLS = [
     }
   },
   {
+    name: 'rgm_close_bug',
+    description: 'Close a report without fixing it, when the work is not a fix: it is not a bug '
+      + '(expected behaviour, cannot reproduce) or it is the same thing as another report. A reason '
+      + 'is required and goes on the bug for whoever filed it. This is NOT verification — a report '
+      + 'already awaiting verification can only be closed by the person who filed it, so if the fix '
+      + 'does not work, comment or ask instead of closing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        number: { type: 'integer' },
+        reason: { type: 'string', description: 'why it is closed — the person who filed it reads this' },
+        duplicate_of: {
+          type: 'string',
+          description: 'the code it duplicates, e.g. BUG-7 or REQ-3 — omit it for "not a bug"'
+        },
+        ...PROJECT_ARG
+      },
+      required: ['number', 'reason'], additionalProperties: false
+    },
+    async run({ number, reason, duplicate_of: duplicateOf, project: wanted }) {
+      const because = String(reason ?? '').trim();
+      if (because.length < 8) {
+        throw new Error('a reason is required, and it has to mean something: the person who filed '
+          + 'this reads it to know why their report was closed');
+      }
+      const { id, code } = await bugId(number, wanted);
+      const before = await json('GET', `/api/bugs/${id}`);
+      if (before.status === 'closed') return text(`${code} is already closed`);
+      // The line the whole design turns on: verification is the filer's. Refusing here,
+      // with the way forward, beats passing on the board's "illegal transition".
+      if (before.status === 'retest') {
+        throw new Error(`${code} is awaiting verification — only the person who filed it can close `
+          + 'it. Comment on what you found, or ask a question, instead of closing it.');
+      }
+
+      const body = { action: 'close', reason: because };
+      if (duplicateOf) {
+        body.closeKind = 'duplicate';
+        body.closeRefCode = String(duplicateOf).trim();
+      } else {
+        body.closeKind = 'rejected';
+      }
+      await json('POST', `/api/bugs/${id}/status`, body);
+      return text(`${code} is closed — ${body.closeKind === 'duplicate'
+        ? `duplicate of ${body.closeRefCode}` : 'rejected as not a bug'}.`
+        + '\nThe reason is on the timeline for the person who filed it.');
+    }
+  },
+  {
+    name: 'rgm_bug_action',
+    description: 'Do anything the board allows you to do to a report — every lifecycle move the '
+      + 'server will accept for it, from your role. rgm_get_bug lists those (availableActions): '
+      + 'start_fixing, request_retest, retest_pass, retest_fail, reopen, close. The server decides, '
+      + 'so it is safe to try what the board offers; a move it refuses comes back with the moves it '
+      + 'did allow. The named tools (rgm_mark_fixed with its evidence, rgm_close_bug with its reason) '
+      + 'are the door for their own cases; this one is for everything else.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        number: { type: 'integer' },
+        action: { type: 'string',
+          description: 'start_fixing, request_retest, retest_pass, retest_fail, reopen or close' },
+        reason: { type: 'string', description: 'required by close and reopen' },
+        duplicate_of: { type: 'string', description: 'with close: the code it duplicates, e.g. BUG-7' },
+        assignee: { type: 'string',
+          description: 'with request_retest: email of the tester who should verify it' },
+        ...PROJECT_ARG
+      },
+      required: ['number', 'action'], additionalProperties: false
+    },
+    async run({ number, action, reason, duplicate_of: duplicateOf, assignee, project: wanted }) {
+      const { id, code } = await bugId(number, wanted);
+      const before = await json('GET', `/api/bugs/${id}`);
+
+      const body = { action: String(action).trim() };
+      if (reason !== undefined) body.reason = String(reason);
+      if (duplicateOf !== undefined) {
+        body.closeKind = 'duplicate';
+        body.closeRefCode = String(duplicateOf).trim();
+      } else if (body.action === 'close') {
+        body.closeKind = 'rejected';
+      }
+      if (assignee !== undefined) {
+        // The board wants a user id; the caller knows an address. Resolved from the
+        // project's own roster so a name invented here cannot become an assignment.
+        const members = (await json('GET', `/api/projects/${before.projectId}/members`)).members
+          ?? [];
+        const found = members.find((m) =>
+          String(m.email).toLowerCase() === String(assignee).toLowerCase());
+        if (!found) {
+          throw new Error(`${assignee} is not on this project — `
+            + `it has: ${members.map((m) => m.email).join(', ')}`);
+        }
+        body.assigneeId = found.userId ?? found.id;
+      }
+
+      try {
+        await json('POST', `/api/bugs/${id}/status`, body);
+      } catch (err) {
+        // A refusal is where the agent learns what it may do; passing the server's
+        // sentence through alone leaves it guessing.
+        const now = await json('GET', `/api/bugs/${id}`).catch(() => null);
+        const can = (now?.availableActions ?? [])
+          .map((a) => a.action + (a.requiresReason ? ' (needs a reason)' : ''));
+        throw new Error(`${err.message}`
+          + (can.length ? `\nwhat ${code} allows from ${now.status}: ${can.join(', ')}` : ''));
+      }
+
+      const after = await json('GET', `/api/bugs/${id}`);
+      const can = (after.availableActions ?? []).map((a) => a.action);
+      return text(`${code} is now ${after.status}`
+        + (after.retestAttempt ? ` (attempt ${after.retestAttempt})` : '')
+        + (can.length ? `\nfrom here you can: ${can.join(', ')}` : ''));
+    }
+  },
+  {
+    name: 'rgm_answer_question',
+    description: 'Answer a question asked about a bug — a tester or a lead asking you something. '
+      + 'The question closes, the answer is posted on the bug, and rgm_get_questions shows the id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        number: { type: 'integer' },
+        question_id: { type: 'string' },
+        answer: { type: 'string' },
+        ...PROJECT_ARG
+      },
+      required: ['number', 'question_id', 'answer'], additionalProperties: false
+    },
+    async run({ number, question_id: questionId, answer, project: wanted }) {
+      const body = String(answer ?? '').trim();
+      if (!body) throw new Error('an answer needs some text');
+      const { id, code } = await bugId(number, wanted);
+      await json('POST', `/api/bugs/${id}/questions/${questionId}/answer`, { answer: body });
+      return text(`answered the question on ${code} — the tester sees it there.`);
+    }
+  },
+  {
+    name: 'rgm_watch',
+    description: 'Change who is told when this bug is marked fixed: add the tester who should '
+      + 'verify it (or anyone else who needs the mail), remove someone who does not. That list is '
+      + 'the notification list rgm_mark_fixed sends to — nobody on it, nobody told.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        number: { type: 'integer' },
+        email: { type: 'string' },
+        remove: { type: 'boolean', description: 'true to take the address off the list' },
+        ...PROJECT_ARG
+      },
+      required: ['number', 'email'], additionalProperties: false
+    },
+    async run({ number, email, remove, project: wanted }) {
+      const { id, code } = await bugId(number, wanted);
+      const address = String(email).trim();
+      if (remove) {
+        await call('DELETE', `/api/bugs/${id}/watchers/${encodeURIComponent(address)}`);
+        return text(`${address} will no longer be told when ${code} is marked fixed.`);
+      }
+      await json('POST', `/api/bugs/${id}/watchers`, { email: address });
+      return text(`${address} will be told when ${code} is marked fixed.`);
+    }
+  },
+  {
     name: 'rgm_mark_fixed',
     description: 'Mark a bug fixed so the FILER can verify it: moves it to "fixed — awaiting '
       + 'verification" (starting the fix first if nobody had). Only call this after you have '
