@@ -59,8 +59,25 @@ const T = {
     actions: 'Hành động', reasonL: 'Lý do', noteL: 'Ghi chú', retest: 'Test lại',
     pass: 'Đạt', fail: 'Không đạt', assignee: 'Người test', anyTester: 'Bất kỳ tester nào',
     saved: 'Đã lưu', signOut: 'Đăng xuất', addNote: 'Thêm bình luận',
+    noMembership: '{email} chưa là thành viên của dự án nào.',
+    inviteHint: 'Cần quản trị viên mời bạn.',
+    notifiedN: 'Đã thông báo {n} người — họ sẽ biết để kiểm tra lại',
+    assignedYou: 'đang chờ bạn kiểm tra',
+    searchBugs: 'Tìm theo tiêu đề, mã, người báo',
+    needsYou: 'Chờ bạn xử lý',
+    chipAll: 'Tất cả',
+    chipOpen: 'Đang mở',
+    filterNone: 'Không có báo cáo khớp bộ lọc',
+    agentNav: 'Truy cập agent',
+    agentHint: 'Agent lập trình làm việc trên các báo cáo bằng token này — đăng nhập bằng `rgm login --token`, rồi đọc và sửa lỗi qua CLI hoặc MCP.',
+    agentNameL: 'Tên token', needTokenName: 'Cần tên để nhận ra token về sau',
+    agentScopesL: 'Phạm vi', agentMint: 'Tạo token',
+    agentOnce: 'Mã này chỉ hiện một lần — hãy lưu ngay bây giờ. Sau đó chỉ còn bản băm.',
+    agentNone: 'Chưa có token nào.', agentRevoke: 'Thu hồi', agentNever: 'chưa dùng',
+    agentCopied: 'Đã sao chép', agentExpires: 'Hết hạn', agentLastUsed: 'Dùng lần cuối',
     noReady: 'Không có cột mốc nào ở trạng thái "Sẵn sàng kiểm thử".',
     trPending: 'Đang dịch…', trFailed: 'Dịch lỗi', trMissing: 'Chưa có bản dịch',
+    retry: 'Thử lại', retried: 'Đã xếp lại hàng đợi dịch',
     noProjects: 'Chưa có dự án nào — hãy tạo dự án đầu tiên.', create: 'Tạo dự án',
     nameL: 'Tên dự án', envL: 'Môi trường',
     team: 'Nhóm', roleL: 'Vai trò', peopleL: 'Danh sách người (mỗi dòng một email)',
@@ -132,8 +149,25 @@ const T = {
     actions: '可執行動作', reasonL: '原因', noteL: '備註', retest: '回歸測試',
     pass: '通過', fail: '不通過', assignee: '測試人員', anyTester: '任何測試人員',
     saved: '已儲存', signOut: '登出', addNote: '新增留言',
+    noMembership: '{email} 尚未加入任何專案。',
+    inviteHint: '需由管理員邀請你。',
+    notifiedN: '已通知 {n} 人 — 他們會知道來驗證',
+    assignedYou: '待你驗證',
+    searchBugs: '依標題、編號、回報人搜尋',
+    needsYou: '待你處理',
+    chipAll: '全部',
+    chipOpen: '進行中',
+    filterNone: '沒有符合篩選條件的報告',
+    agentNav: '代理存取',
+    agentHint: '編碼 agent 用這個 token 處理回報 — 以 `rgm login --token` 登入,透過 CLI 或 MCP 讀取與處理。',
+    agentNameL: 'Token 名稱', needTokenName: '請命名,日後才認得這個 token',
+    agentScopesL: '範圍', agentMint: '建立 token',
+    agentOnce: '此密鑰只顯示一次 — 請立刻保存,之後只剩雜湊值。',
+    agentNone: '尚無 token。', agentRevoke: '撤銷', agentNever: '從未使用',
+    agentCopied: '已複製', agentExpires: '到期', agentLastUsed: '上次使用',
     noReady: '目前沒有「待測試」的里程碑。',
     trPending: '翻譯中…', trFailed: '翻譯失敗', trMissing: '尚無譯文',
+    retry: '重試', retried: '已重新排入翻譯佇列',
     noProjects: '尚無專案——先建立第一個專案。', create: '建立專案',
     nameL: '專案名稱', envL: '環境',
     team: '團隊', roleL: '角色', peopleL: '人員名單(每行一個 email)',
@@ -205,8 +239,25 @@ const T = {
     actions: 'Actions', reasonL: 'Reason', noteL: 'Note', retest: 'Retest',
     pass: 'Pass', fail: 'Fail', assignee: 'Assignee', anyTester: 'Any tester',
     saved: 'Saved', signOut: 'Sign out', addNote: 'Add comment',
+    noMembership: '{email} is not a member of any project yet.',
+    inviteHint: 'An admin must invite you.',
+    notifiedN: 'Notified {n} people — they now know to verify',
+    assignedYou: 'awaiting your check',
+    searchBugs: 'Search by title, code, reporter',
+    needsYou: 'Needs you',
+    chipAll: 'All',
+    chipOpen: 'Open',
+    filterNone: 'No reports match this filter',
+    agentNav: 'Agent access',
+    agentHint: 'A coding agent works the reports with this token — it signs in with `rgm login --token`, then reads and moves bugs through the CLI or MCP.',
+    agentNameL: 'Token name', needTokenName: 'Name it so you recognise it later',
+    agentScopesL: 'Scopes', agentMint: 'Mint token',
+    agentOnce: 'This secret shows exactly once — save it now. After this only a hash remains.',
+    agentNone: 'No tokens yet.', agentRevoke: 'Revoke', agentNever: 'never used',
+    agentCopied: 'Copied', agentExpires: 'Expires', agentLastUsed: 'Last used',
     noReady: 'No milestone is currently ready for testing.',
     trPending: 'Translating…', trFailed: 'Translation failed', trMissing: 'No translation yet',
+    retry: 'Retry', retried: 'Put back in the translation queue',
     noProjects: 'No projects yet — create the first one.', create: 'Create project',
     nameL: 'Project name', envL: 'Environment',
     team: 'Team', roleL: 'Role', peopleL: 'People (one email per line)',
@@ -318,7 +369,14 @@ const S = {
   // roles that may put something back, so removal is reversible from the app rather
   // than only from SQL.
   removedMilestones: [], removedBugs: [],
-  showRemoved: false, editing: false
+  showRemoved: false, editing: false,
+  // The Agent access screen: the user's own API tokens, and the one plaintext
+  // shown exactly once at mint (it is never retrievable afterwards).
+  tokens: null, newToken: null, tokenDraft: null,
+  // The bugs list is filtered and searched in the browser — the payload is
+  // already the whole project, and a tester scanning for "mine" should not
+  // wait on the network for every keystroke.
+  bugQuery: '', bugStatus: 'all', keepFocus: null
 };
 
 // ───────────────────────── helpers ─────────────────────────
@@ -413,10 +471,15 @@ function titleFor(entity, field = 'title') {
   return entity[`${field}_en`] ?? entity[`${field}_vi`] ?? entity.title ?? '';
 }
 
+let noticeTimer = null;
 function notice(text, kind = 'ok') {
   S.notice = text ? { text, kind } : null;
   render();
-  if (text) setTimeout(() => { S.notice = null; render(); }, 4000);
+  // One timer, always the newest notice's: two old timers were disarming each
+  // other's messages, so a fresh confirmation could vanish after the previous
+  // notice's remaining seconds.
+  if (noticeTimer) clearTimeout(noticeTimer);
+  if (text) noticeTimer = setTimeout(() => { noticeTimer = null; S.notice = null; render(); }, 4000);
 }
 
 function abandonPendingReport() {
@@ -424,6 +487,9 @@ function abandonPendingReport() {
   S.pendingBug = null;
   S.pendingUploads = null;
   S.reportDraft = null;
+  // The saved copy deliberately survives: changing screens (or refreshing)
+  // should not cost the tester their half-written description. Only sending
+  // and explicit cancel erase it.
 }
 
 function uploadIdentity(file, occurrences) {
@@ -438,20 +504,29 @@ function uploadIdentity(file, occurrences) {
 async function loadProjects() {
   const { projects } = await api('GET', '/api/projects');
   S.projects = projects;
+
+  // The chosen project may no longer exist (removed elsewhere, membership ended).
+  // Without this the app keeps asking a dead project for data and every screen
+  // errors, with no way for the user to tell what is wrong.
+  if (S.projectId && !projects.some((p) => p.id === S.projectId)) {
+    S.projectId = projects[0]?.id ?? null;
+    S.bug = null; S.bugs = null; S.milestones = null; S.members = [];
+    S.removedMilestones = []; S.removedBugs = [];
+  }
   if (!S.projectId && projects.length) S.projectId = projects[0].id;
 
-  // Open-bug counts per project for the sidebar badges.
-  const counts = await Promise.all(projects.map(async (p) => {
-    try {
-      const { openCount } = await api('GET', `/api/projects/${p.id}/bugs`);
-      return [p.id, openCount];
-    } catch { return [p.id, null]; }
-  }));
-  S.counts = Object.fromEntries(counts);
+  // Open-bug counts per project for the sidebar badges — one call, not a full
+  // bug-list fetch per project.
+  try {
+    const { counts } = await api('GET', '/api/projects/counts');
+    S.counts = counts ?? {};
+  } catch { S.counts = {}; }
 }
 
 async function loadMilestones() {
-  const { milestones } = await api('GET', `/api/projects/${S.projectId}/milestones`);
+  const projectId = S.projectId;
+  const { milestones } = await api('GET', `/api/projects/${projectId}/milestones`);
+  if (S.projectId !== projectId) return;
   // `?? []` rather than trusting the key to be there: an unexpected body used to leave
   // S.milestones undefined, and render() then threw on `.length` — a blank screen from
   // a payload shape, not from anything the user did.
@@ -459,7 +534,10 @@ async function loadMilestones() {
 }
 
 async function loadBugs() {
-  const { bugs } = await api('GET', `/api/projects/${S.projectId}/bugs`);
+  const projectId = S.projectId;
+  const { bugs } = await api('GET', `/api/projects/${projectId}/bugs`);
+  // A slow response for a project the user left must not overwrite the new one.
+  if (S.projectId !== projectId) return;
   S.bugs = bugs ?? [];
 }
 
@@ -472,14 +550,17 @@ async function loadBugs() {
 async function loadRemoved() {
   S.removedMilestones = []; S.removedBugs = [];
   if (!['admin', 'developer'].includes(myRole())) return;
+  const projectId = S.projectId, view = S.view;
 
   try {
-    if (S.view === 'milestones') {
-      S.removedMilestones = (await api('GET',
-        `/api/projects/${S.projectId}/milestones/removed`)).milestones ?? [];
-    } else if (S.view === 'bugs') {
-      S.removedBugs = (await api('GET',
-        `/api/projects/${S.projectId}/bugs/removed`)).bugs ?? [];
+    if (view === 'milestones') {
+      const rows = (await api('GET',
+        `/api/projects/${projectId}/milestones/removed`)).milestones ?? [];
+      if (S.projectId === projectId && S.view === view) S.removedMilestones = rows;
+    } else if (view === 'bugs') {
+      const rows = (await api('GET',
+        `/api/projects/${projectId}/bugs/removed`)).bugs ?? [];
+      if (S.projectId === projectId && S.view === view) S.removedBugs = rows;
     }
   } catch (err) {
     // A failure to list removed rows must not break the screen that is working.
@@ -487,40 +568,78 @@ async function loadRemoved() {
   }
 }
 
+// Which openBug() call still owns the screen. Clicking two bugs fast starts two
+// sequences; whichever was asked for LAST paints, no matter which answer arrives
+// first — an id comparison cannot say that when both are still in flight.
+let openBugGen = 0;
+
 async function openBug(id) {
-  S.bug = await api('GET', `/api/bugs/${id}`);
+  const gen = ++openBugGen;
+  const detail = await api('GET', `/api/bugs/${id}`);
+  if (gen !== openBugGen) return;
+  S.bug = detail;
   S.prompt = null;
   // The close panel offers "duplicate of …" with the project's other live
   // reports, so the list has to be here even when the detail was reached
   // directly (a notification link, a transition) rather than via the list.
-  S.projectBugs = S.bug
+  const projectBugs = S.bug
     ? (await api('GET', `/api/projects/${S.bug.projectId}/bugs`)).bugs
     : [];
+  if (gen !== openBugGen) return;
+  S.projectBugs = projectBugs;
+  // The assignee picker for "Mark as fixed" needs the project's testers, and the
+  // detail can be reached without ever visiting the Team screen. A failure here
+  // must not break the detail — the picker degrades to "any tester" only.
+  if (S.bug && canDevelop()) {
+    try {
+      const { members } = await api('GET', `/api/projects/${S.bug.projectId}/members`);
+      if (gen === openBugGen && Array.isArray(members)) S.members = members;
+    } catch (err) { console.error(err); }
+  }
+  if (gen !== openBugGen) return;
   render();
   // Fetch the server-built prompt lazily so the detail view is not blocked by it.
   try {
     const res = await fetch(`/api/bugs/${id}/prompt`);
-    S.prompt = res.ok ? await res.text() : null;
-  } catch { S.prompt = null; }
-  if (S.bug?.id === id) render();
+    if (res.status === 401) { location.replace('/login'); return; }
+    if (gen === openBugGen) S.prompt = res.ok ? await res.text() : null;
+  } catch { if (gen === openBugGen) S.prompt = null; }
+  if (gen === openBugGen && S.bug?.id === id) render();
 }
 
 async function loadMembers() {
-  const { members } = await api('GET', `/api/projects/${S.projectId}/members`);
+  const projectId = S.projectId;
+  const { members } = await api('GET', `/api/projects/${projectId}/members`);
+  if (S.projectId !== projectId) return;
   // Only ever a list. This used to assign whatever came back, so a response without
   // `members` — a project not chosen yet, a request that raced the first paint —
   // left S.members undefined and the whole team view died on `.length` of it.
   if (Array.isArray(members)) S.members = members;
 }
 
+/** The signed-in user's own API tokens — the credentials an agent signs in with. */
+async function loadTokens() {
+  const { tokens } = await api('GET', '/api/tokens');
+  S.tokens = Array.isArray(tokens) ? tokens : [];
+}
+
 async function refresh() {
   try {
+    // Projects first: this is where a project that vanished since the last
+    // paint is noticed, and every load below asks about the chosen project.
+    await loadProjects();
     if (S.view === 'milestones') await loadMilestones();
     else if (S.view === 'team') await loadMembers();
+    else if (S.view === 'agent') await loadTokens();
     else await loadBugs();
-    await loadProjects();
     await loadRemoved();
-    if (S.bug) S.bug = await api('GET', `/api/bugs/${S.bug.id}`);
+    if (S.bug) {
+      const bugId = S.bug.id;
+      const fresh = await api('GET', `/api/bugs/${bugId}`);
+      // A transition-clicked bug may have been closed behind the reload;
+      // whatever the user is looking at stays theirs until they move.
+      if (S.bug?.id === bugId) S.bug = fresh;
+    }
     render();
   } catch (err) { console.error(err); notice(String(err.message), 'bad'); }
 }
@@ -570,6 +689,9 @@ function sidebar() {
         <div class="nav ${S.view === 'team' && !S.bug ? 'on' : ''}" data-action="view" data-view="team">
           <span>👤</span> ${t('team')}
         </div>
+        <div class="nav ${S.view === 'agent' && !S.bug ? 'on' : ''}" data-action="view" data-view="agent">
+          <span>🤖</span> ${t('agentNav')}
+        </div>
         <a class="nav" href="/help" target="_blank" rel="noopener">
           <span>❓</span> ${t('help')}
         </a>
@@ -593,7 +715,11 @@ function sidebar() {
 function topbar() {
   const project = S.projects.find((p) => p.id === S.projectId);
   const roleLabel = myRole() === 'admin' ? t('admin') : myRole() === 'developer' ? t('dev') : t('tester');
-  const heading = S.bug ? t('titleDetail') : S.view === 'milestones' ? t('ms') : t('bugs');
+  const heading = S.bug ? t('titleDetail')
+    : S.view === 'milestones' ? t('ms')
+    : S.view === 'team' ? t('team')
+    : S.view === 'agent' ? t('agentNav')
+    : t('bugs');
   return `
   <div class="top">
     <div>
@@ -769,10 +895,157 @@ acc02@rgmdn.com - Hien"></textarea>
   </div>`;
 }
 
+/**
+ * The user's own agent tokens (§10), minted here so the agent loop starts inside
+ * the app rather than at a curl prompt.
+ *
+ * The minted plaintext is returned by the server exactly once; this screen holds
+ * it in memory until the next navigation and shows it in a selectable field.
+ * Scopes are capped server-side at the user's own authority — the admin checkbox
+ * appears only for someone who holds admin authority, so the usual answer is an
+ * acceptance rather than a 403 to explain.
+ */
+function agentPanel() {
+  const tokens = (S.tokens ?? []).filter((x) => !x.revoked_at);
+  const mayAdmin = !!S.me?.isSiteAdmin || (S.me?.projects ?? []).some((p) => p.role === 'admin');
+  return `
+  <div class="card" style="max-width:640px">
+    <h3 style="margin:0 0 6px;font-size:14px">🤖 ${t('agentNav')}</h3>
+    <p class="muted" style="font-size:12.5px">${t('agentHint')}</p>
+
+    ${S.newToken ? `
+    <div class="card" style="border-color:var(--med)">
+      <b style="font-size:13px">${esc(S.newToken.name)}</b>
+      <div class="muted" style="font-size:12px;margin:6px 0">${t('agentOnce')}</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="newtoken" readonly value="${esc(S.newToken.token)}"
+          style="flex:1;font-family:ui-monospace,monospace;font-size:12px">
+        <button class="btn" data-action="copytoken">⧉</button>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:8px">
+        rgm login --url ${esc(location.origin)} --token &lt;${esc(S.newToken.name)}&gt;
+      </div>
+    </div>` : ''}
+
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-top:12px">
+      <label style="font-size:12px">${t('agentNameL')}<br>
+        <input id="tokenname" placeholder="claude — packing" value="${esc(S.tokenDraft ?? '')}"></label>
+      <label style="font-size:12px">${t('agentScopesL')}<br>
+        <span style="display:inline-flex;gap:10px;align-items:center;padding:6px 0">
+          <label style="font-size:12px"><input type="checkbox" id="sc-read" checked disabled> bug:read</label>
+          <label style="font-size:12px"><input type="checkbox" id="sc-write"> bug:write</label>
+          ${mayAdmin ? `<label style="font-size:12px"><input type="checkbox" id="sc-admin"> admin</label>` : ''}
+        </span></label>
+      <button class="btn" data-action="minttoken">${t('agentMint')}</button>
+    </div>
+
+    ${tokens.length ? `
+    <table style="width:100%;margin-top:14px;font-size:12.5px">
+      <thead><tr class="muted" style="text-align:left">
+        <th>${t('agentNameL')}</th><th>${t('agentScopesL')}</th>
+        <th>${esc(t('agentExpires')) || 'expires'}</th><th>${t('agentLastUsed') ?? ''}</th><th></th>
+      </tr></thead>
+      <tbody>
+      ${tokens.map((tk) => `
+        <tr style="border-top:1px solid var(--line)">
+          <td><b>${esc(tk.name)}</b></td>
+          <td>${(tk.scopes ?? []).map((s) => `<span class="tag">${esc(s)}</span>`).join(' ')}</td>
+          <td class="muted">${fmt(tk.expires_at)}</td>
+          <td class="muted">${tk.last_used_at ? fmt(tk.last_used_at) : t('agentNever')}</td>
+          <td style="text-align:right">
+            <a href="#" class="mini bad" data-action="revoketoken" data-id="${esc(tk.id)}">${t('agentRevoke')}</a>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table>` : `<p class="muted" style="font-size:12.5px;margin-top:14px">${t('agentNone')}</p>`}
+  </div>`;
+}
+
+function bugsView() {
+  if (S.bugs === null) return `<div class="empty">${t('loading')}</div>`;
+  return `
+    <div class="card" style="margin-bottom:14px;padding:10px 14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <button class="btn pri" style="margin:0" data-action="report" data-kind="bug">🐞 ${t('report')}</button>
+      <input id="bugsearch" value="${esc(S.bugQuery)}" placeholder="${t('searchBugs')}"
+             style="flex:1;min-width:200px;margin:0">
+      <div style="display:flex;gap:6px;flex-wrap:wrap">${filterChips()}</div>
+    </div>
+    ${needsYou()}
+    ${bugRows()}`;
+}
+
+function filterChips() {
+  const count = (f) => S.bugs.filter(f).length;
+  const chips = [
+    ['all', t('chipAll'), S.bugs.length],
+    ['open', t('chipOpen'), (b) => b.isOpen],
+    ['new', statusLabel('bug', 'new'), (b) => b.status === 'new'],
+    ['fixing', statusLabel('bug', 'fixing'), (b) => b.status === 'fixing'],
+    ['retest', statusLabel('bug', 'retest'), (b) => b.status === 'retest'],
+    ['closed', statusLabel('bug', 'closed'), (b) => b.status === 'closed']
+  ].map(([key, label, f]) =>
+    [key, label, typeof f === 'function' ? count(f) : f]);
+  return chips.map(([key, label, n]) => `
+    <span class="tag" style="cursor:pointer${S.bugStatus === key
+      ? ';background:var(--med-bg);color:var(--med);font-weight:600' : ''}"
+      data-action="bugfilter" data-status="${esc(key)}">${esc(label)} ${n}</span>`).join('');
+}
+
+/** Reports the current viewer is the one holding — the list's first question is
+    "which of these are mine?", and the answer was nowhere until now. */
+function needsYou() {
+  const role = myRole();
+  if (S.bugs === null || !role) return '';
+  // Once the reader has narrowed the list themselves, the group would fight
+  // their filter — it shows when the list is whole, and gets out of the way
+  // otherwise.
+  if (S.bugStatus !== 'all' || S.bugQuery.trim()) return '';
+  const mine = S.bugs.filter((b) =>
+    role === 'tester'
+      ? b.status === 'retest' && (!b.retestAssigneeId || b.retestAssigneeId === S.me?.userId)
+      : role === 'developer'
+        ? b.status === 'new' || b.status === 'fixing'
+        : b.isOpen);
+  if (!mine.length) return '';
+  return `
+  <div class="card" style="margin-bottom:14px;border-left:3px solid var(--med)">
+    <h3 style="margin:0 0 6px;font-size:13px">📌 ${t('needsYou')}
+      <span class="tag">${mine.length}</span></h3>
+    ${mine.slice(0, 5).map((b) => `
+      <div class="row" style="padding:8px 0" data-action="openbug" data-id="${esc(b.id)}">
+        <span class="sev ${SEV_CLASS[b.severity]}">${esc(SEV[b.severity][S.lang])}</span>
+        <div class="body">
+          <div class="id">${esc(b.code)} · ${esc(b.milestone_code)}</div>
+          <div class="ttl">${b.kind === 'feature' ? '✨' : '🐞'} ${esc(b.title_vi)}</div>
+        </div>
+        ${b.status === 'retest' && b.retestAssigneeId === S.me?.userId
+          ? `<span class="tag" style="background:var(--med-bg);color:var(--med)">🧪 ${t('assignedYou')}</span>` : ''}
+      </div>`).join('')}
+    ${mine.length > 5 ? `<div class="hint">+${mine.length - 5}</div>` : ''}
+  </div>`;
+}
+
+function visibleBugs() {
+  const q = S.bugQuery.trim().toLowerCase();
+  return S.bugs.filter((b) => {
+    if (S.bugStatus === 'open' ? !b.isOpen
+      : S.bugStatus !== 'all' && b.status !== S.bugStatus) return false;
+    if (!q) return true;
+    return [b.title_vi, b.code, b.reporter, b.milestone_code, b.retestAssignee]
+      .some((v) => v && String(v).toLowerCase().includes(q));
+  });
+}
+
 function bugRows() {
   if (S.bugs === null) return `<div class="empty">${t('loading')}</div>`;
   if (!S.bugs.length) return `<div class="empty">${t('noBugs')}</div>` + removedBugs();
-  const rows = S.bugs.map((b) => `
+  const list = visibleBugs();
+  if (!list.length) return `<div class="empty">${t('filterNone')}</div>` + removedBugs();
+  return list.map(bugRow).join('') + removedBugs();
+}
+
+function bugRow(b) {
+  return `
     <div class="row" data-action="openbug" data-id="${esc(b.id)}">
       <span class="sev ${SEV_CLASS[b.severity]}">${esc(SEV[b.severity][S.lang])}</span>
       <div class="body">
@@ -786,13 +1059,17 @@ function bugRows() {
           ${b.openQuestions ? `<span class="tag"
             style="background:var(--high-bg,#fee2e2);color:var(--high,#b91c1c)"
             >💬 ${t('needsAnswer')}</span>` : ''}
+          <!-- Whose verification this fix is waiting on — "yours" reads differently
+               from "someone else has this", and both beat opening every bug. -->
+          ${b.status === 'retest' ? (b.retestAssigneeId === S.me?.userId
+            ? `<span class="tag" style="background:var(--med-bg);color:var(--med)">🧪 ${t('assignedYou')}</span>`
+            : b.retestAssignee ? `<span class="tag">🧪 ${esc(b.retestAssignee)}</span>` : '') : ''}
         </div>
       </div>
       <!-- The state, in its colour, so a tester scanning the list can see at a glance
            which ones are waiting to be verified. -->
       <span class="st ${BUG_CLASS[b.status]}">${statusLabel('bug', b.status)}</span>
-    </div>`).join('');
-  return rows + removedBugs();
+    </div>`;
 }
 
 /** Bugs that were removed, with a way back. Removal must not be a one-way door. */
@@ -821,8 +1098,11 @@ function translationBlock(field) {
   if (!t9n) return `<div class="tag">${t('trMissing')}</div>`;
   if (t9n.status === 'done') return `<pre class="pre">${esc(t9n.text)}</pre>`;
   if (t9n.status === 'failed') {
+    // A failed translation used to be the end of the story on screen — the retry
+    // endpoint existed, but the reader could only read the error, not act on it.
     return `<div class="tag" style="background:var(--high-bg);color:var(--high)">
-      ${t('trFailed')}: ${esc(t9n.error ?? '')}</div>`;
+      ${t('trFailed')}: ${esc(t9n.error ?? '')}
+      <a href="#" class="mini" data-action="retrytr" data-field="${esc(field)}">↻ ${t('retry')}</a></div>`;
   }
   return `<div class="tag">${t('trPending')}</div>`;
 }
@@ -866,6 +1146,8 @@ function timelineBlock() {
           </div>
           ${note ? `<div class="tl-n">${esc(note)}</div>` : ''}
           ${tr?.status === 'done' ? `<div class="tl-t">↳ ${esc(tr.text)}</div>` : ''}
+          ${tr?.status === 'failed' ? `<div class="tl-t" style="color:var(--high)">↳ ${t('trFailed')}
+            <a href="#" class="mini" data-action="retrynote" data-id="${esc(e.id)}">↻ ${t('retry')}</a></div>` : ''}
           ${(e.attachments ?? []).length ? `<div style="margin:2px 0 4px">${
             e.attachments.map((a) => `
             <div class="att">
@@ -944,6 +1226,19 @@ function bugDetail() {
                 data-move="${esc(a.action)}" data-reason="${a.requiresReason ? '1' : ''}">
           ${esc(moveLabel(a.action))} → ${statusLabel('bug', a.to, b.kind)}
         </button>`).join(' ') : ''}
+      ${(b.availableActions ?? []).some((a) => a.action === 'request_retest') && S.members.length ? `
+      <!-- Handing back a fix used to always say "any tester": two testers could
+           verify the same fix unknowingly. Naming one is optional, the default is
+           still the open door. -->
+      <div style="margin-top:10px;font-size:12.5px;display:flex;gap:8px;align-items:center">
+        <label>${t('assignee')}
+          <select id="retestassignee">
+            <option value="">${t('anyTester')}</option>
+            ${S.members.filter((m) => m.role === 'tester').map((m) => `
+              <option value="${esc(m.id)}">${esc(m.display_name ?? m.email)}</option>`).join('')}
+          </select>
+        </label>
+      </div>` : ''}
       ${(b.availableActions ?? []).some((a) => a.action === 'close') ? `
         <button class="btn" data-action="openclose" data-kind="duplicate" data-id="${esc(b.id)}">
           🔁 ${t('closeDuplicate')} → ${statusLabel('bug', 'closed', b.kind)}
@@ -1209,8 +1504,8 @@ function firstRun() {
             <p class="rel">${t('noProjects')}</p>
             ${createProjectForm()}
           ` : `
-            <p>${esc(me.email)} is not a member of any project yet.</p>
-            <p class="rel">An admin must invite you.</p>
+            <p>${t('noMembership').replace('{email}', () => esc(me.email))}</p>
+            <p class="rel">${t('inviteHint')}</p>
           `}
           <div style="margin-top:16px">
             <button class="btn" data-action="signout">${t('signOut')}</button>
@@ -1247,7 +1542,8 @@ function render() {
     : S.reporting ? reportForm()
     : S.view === 'milestones' ? milestoneCards()
     : S.view === 'team' ? teamPanel()
-    : bugRows();
+    : S.view === 'agent' ? agentPanel()
+    : bugsView();
 
   app.innerHTML = sidebar() + `
     <main>
@@ -1255,6 +1551,18 @@ function render() {
       ${S.notice ? `<div class="toast ${S.notice.kind}">${esc(S.notice.text)}</div>` : ''}
       <div class="wrap">${body}</div>
     </main>`;
+
+  // A re-render on every keystroke of the list search would otherwise drop the
+  // caret mid-word, which is unusable. Whoever asked for the re-render says
+  // where the caret belongs.
+  if (S.keepFocus) {
+    const el = document.getElementById(S.keepFocus);
+    if (el) {
+      el.focus();
+      const v = el.value; el.value = ''; el.value = v;
+    }
+    S.keepFocus = null;
+  }
 }
 
 // ───────────────────────── actions ─────────────────────────
@@ -1266,6 +1574,27 @@ function syncReportDraft(event) {
     milestoneId: value('f-ms'), kind: value('f-kind') || 'bug',
     severity: value('f-sev'), titleVi: value('f-title'), bodyVi: value('f-body')
   };
+  saveReportDraft();
+}
+
+/**
+ * A half-written report survives a page refresh, not just a re-render: a long
+ * defect description typed over ten minutes should not hinge on the tab staying
+ * open. sessionStorage scopes it to this tab and drops it when the tab closes.
+ */
+function saveReportDraft() {
+  try {
+    if (S.reportDraft) sessionStorage.setItem('rgm.reportDraft', JSON.stringify(S.reportDraft));
+    else sessionStorage.removeItem('rgm.reportDraft');
+  } catch { /* private mode or quota — the draft simply stops surviving refreshes */ }
+}
+
+function restoreReportDraft() {
+  try {
+    const raw = sessionStorage.getItem('rgm.reportDraft');
+    const draft = raw ? JSON.parse(raw) : null;
+    if (draft && typeof draft === 'object') S.reportDraft = draft;
+  } catch { /* a corrupt draft is no draft */ }
 }
 
 document.getElementById('app').addEventListener('input', syncReportDraft);
@@ -1278,8 +1607,14 @@ document.getElementById('app').addEventListener('change', syncReportDraft);
  * one listener covers the kind, the reference and both textareas.
  */
 document.getElementById('app').addEventListener('input', (event) => {
+  if (event.target.id === 'bugsearch') {
+    S.bugQuery = event.target.value; S.keepFocus = 'bugsearch';
+    render();
+    return;
+  }
   if (event.target.id === 'commentnote') S.commentDraft = event.target.value;
   if (event.target.id === 'watcheremail') S.watcherDraft = event.target.value;
+  if (event.target.id === 'tokenname') S.tokenDraft = event.target.value;
   // An answer being typed survives a re-render (a poll can arrive mid-sentence).
   if (event.target.id?.startsWith('answer-')) {
     S.answerDrafts[event.target.id.slice('answer-'.length)] = event.target.value;
@@ -1461,6 +1796,9 @@ document.getElementById('app').addEventListener('click', async (event) => {
       case 'project':
         S.projectId = el.dataset.id; S.bug = null; S.prompt = null; S.closePanel = null;
         S.commentDraft = null; S.watcherDraft = null; S.answerDrafts = {};
+        // A filter written for one project's bug flood must not silence another
+        // project's list on arrival.
+        S.bugQuery = ''; S.bugStatus = 'all';
         // Leaving the report screen abandons any half-uploaded report (IR-036):
         // the next Send is a fresh one, not a silent edit of the old bug.
         S.reporting = false; abandonPendingReport();
@@ -1469,8 +1807,30 @@ document.getElementById('app').addEventListener('click', async (event) => {
       case 'view':
         S.view = el.dataset.view; S.bug = null; S.reporting = false; S.closePanel = null;
         S.commentDraft = null; S.watcherDraft = null; S.answerDrafts = {};
+        // A minted plaintext token does not survive leaving the screen it was
+        // shown on: the one-time reveal is the whole of its visibility.
+        S.newToken = null;
         abandonPendingReport();
         await refresh();
+        break;
+      case 'bugfilter':
+        S.bugStatus = el.dataset.status;
+        render();
+        break;
+      case 'retrytr':
+        await retryTranslationAction(S.bug.id, { field: el.dataset.field });
+        break;
+      case 'retrynote':
+        await retryTranslationAction(S.bug.id, { eventId: el.dataset.id });
+        break;
+      case 'minttoken':
+        await mintToken();
+        break;
+      case 'revoketoken':
+        await revokeToken(el.dataset.id);
+        break;
+      case 'copytoken':
+        await copyToken();
         break;
       case 'lang':
         S.lang = el.dataset.lang;
@@ -1556,6 +1916,13 @@ document.getElementById('app').addEventListener('click', async (event) => {
       case 'report':
       case 'cancelreport':
         abandonPendingReport();
+        if (action === 'report') {
+          // Walking away from the form no longer costs the text: the saved
+          // draft comes back until it is sent or deliberately cancelled.
+          restoreReportDraft();
+        } else {
+          try { sessionStorage.removeItem('rgm.reportDraft'); } catch {}
+        }
         S.bug = null; S.reporting = action === 'report';
         S.reportFor = action === 'report' ? el.dataset.ms : null;
         // The button you pressed decides; the form lets you change your mind.
@@ -1752,6 +2119,7 @@ async function submitReport() {
     S.pendingBug = null;
     S.pendingUploads = null;
     S.reportDraft = null;
+    saveReportDraft(); // sent — the saved draft is spent
     S.reporting = false;
     S.view = 'bugs';
     notice(`${bug.code} ${t('saved')} · ${files.length} 📷`);
@@ -1774,11 +2142,42 @@ async function transition(id, action, needsReason) {
   }
   S.busy = true;
   try {
-    await api('POST', `/api/bugs/${id}/status`, { action, reason });
-    notice(t('saved'));
+    // Only the hand-back into verification carries an assignee; the picker is
+    // optional, and leaving it on "any tester" sends nothing extra.
+    const assigneeId = action === 'request_retest'
+      ? (document.getElementById('retestassignee')?.value || undefined)
+      : undefined;
+    const res = await api('POST', `/api/bugs/${id}/status`,
+      { action, reason, ...(assigneeId ? { assigneeId } : {}) });
+    // "Mark as fixed" queues the notices that bring the tester back, so the answer
+    // says who heard about it — a silent zero once meant a fix nobody came to check.
+    const notified = action === 'request_retest' ? res?.json?.notified : null;
+    notice(notified?.recipients
+      ? t('notifiedN').replace('{n}', notified.recipients)
+      : t('saved'), notified && !notified.recipients ? 'bad' : undefined);
     await openBug(id);
     await loadProjects();
   } finally { S.busy = false; }
+}
+
+/**
+ * Re-queue a translation that failed, in the language the reader is viewing.
+ *
+ * The queue drains in the background and this app does not poll, so one guarded
+ * delayed re-read follows the retry — otherwise the honest answer "put back in
+ * the queue" would show as a permanent "Translating…".
+ */
+function retryTranslationAction(bugId, { field = null, eventId = null } = {}) {
+  S.busy = true;
+  const path = eventId
+    ? `/api/bugs/${bugId}/events/${eventId}/translations/${S.lang}/retry`
+    : `/api/bugs/${bugId}/translations/${S.lang}/retry`;
+  return api('POST', path, eventId ? undefined : { field })
+    .then(() => { notice(t('retried')); return openBug(bugId); })
+    .then(() => new Promise((r) => setTimeout(r, 2500)))
+    .then(() => { if (S.bug?.id === bugId) return openBug(bugId).catch(() => {}); })
+    .catch((err) => notice(String(err.message), 'bad'))
+    .finally(() => { S.busy = false; });
 }
 
 async function confirmClose(id) {
@@ -1815,6 +2214,44 @@ async function answerQuestion(bugId, questionId) {
     notice(t('saved'));
     await openBug(bugId);
   } finally { S.busy = false; }
+}
+
+async function mintToken() {
+  const name = (document.getElementById('tokenname')?.value ?? '').trim();
+  if (!name) return notice(t('needTokenName'), 'bad');
+  const scopes = ['bug:read',
+    ...(document.getElementById('sc-write')?.checked ? ['bug:write'] : []),
+    ...(document.getElementById('sc-admin')?.checked ? ['admin'] : [])];
+  S.busy = true;
+  try {
+    const created = await api('POST', '/api/tokens', { name, scopes });
+    // The plaintext exists only in this response and in this in-memory field;
+    // navigation drops it, exactly as the server forgets it.
+    S.newToken = { token: created.token, name: created.name };
+    S.tokenDraft = null;
+    notice(t('saved'));
+    await loadTokens();
+  } catch (err) {
+    notice(String(err.message), 'bad');
+  } finally { S.busy = false; render(); }
+}
+
+async function revokeToken(id) {
+  S.busy = true;
+  try {
+    await api('DELETE', `/api/tokens/${id}`);
+    notice(t('saved'));
+    await loadTokens();
+  } finally { S.busy = false; render(); }
+}
+
+async function copyToken() {
+  try {
+    await navigator.clipboard.writeText(S.newToken?.token ?? '');
+    notice(t('agentCopied'));
+  } catch {
+    document.getElementById('newtoken')?.select();
+  }
 }
 
 async function addWatcher(id) {
@@ -1969,6 +2406,9 @@ async function copyPrompt() {
 
 async function downloadPacket(id) {
   const res = await fetch(`/api/bugs/${id}/packet`);
+  // The packet is fetched raw (binary), so it must notice a dead session the
+  // same way api() does — otherwise the user sees "download failed (401)".
+  if (res.status === 401) { location.replace('/login'); throw new Error('signed out'); }
   if (!res.ok) throw new Error(`packet download failed (${res.status})`);
   const blob = await res.blob();
   const disposition = res.headers.get('content-disposition') ?? '';
@@ -1977,7 +2417,9 @@ async function downloadPacket(id) {
   const a = document.createElement('a');
   a.href = url; a.download = name;
   document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
+  // Releasing the blob in the same breath as the click can cancel the download
+  // in browsers that start it asynchronously.
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
   notice(`${name} (${(blob.size / 1024).toFixed(0)} KB)`);
 }
 

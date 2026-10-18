@@ -29,7 +29,7 @@ export async function settle(times = 60) {
  * `routes` maps "METHOD /path" to either a payload, or a function receiving the
  * recorded call and returning { body, status, headers }.
  */
-export function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
+export function loadApp({ routes = {}, stored = {}, browserLang = '', session } = {}) {
   const calls = [];
   const fields = new Map();
   const copied = [];
@@ -57,6 +57,15 @@ export function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
     removeItem: (k) => store.delete(k)
   };
 
+  // sessionStorage is where a half-written report survives a refresh. Passing the
+  // same Map to two loadApp() calls models exactly that: a new page, same tab.
+  const sessionStore = session ?? new Map();
+  const sessionStorage = {
+    getItem: (k) => (sessionStore.has(k) ? sessionStore.get(k) : null),
+    setItem: (k, v) => sessionStore.set(k, String(v)),
+    removeItem: (k) => sessionStore.delete(k)
+  };
+
   const decodeHtml = (value) => String(value ?? '')
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
@@ -75,8 +84,16 @@ export function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
     return '';
   };
 
+  let focusedId = null;
   const field = (id) => {
-    if (!fields.has(id)) fields.set(id, { id, value: renderedValue(id), files: [] });
+    if (!fields.has(id)) {
+      fields.set(id, {
+        id, value: renderedValue(id), files: [],
+        // The app restores the caret into the search box after re-rendering the
+        // list on every keystroke; without focus() that render would throw.
+        focus() { focusedId = id; }
+      });
+    }
     return fields.get(id);
   };
 
@@ -139,6 +156,7 @@ export function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
     location: { replace: (u) => redirects.push(u), href: 'http://127.0.0.1:3000/' },
     navigator: { clipboard: { writeText: async (t) => { copied.push(t); } }, language: browserLang },
     localStorage,
+    sessionStorage,
     URL: { createObjectURL: () => 'blob:stub', revokeObjectURL() {} },
     getSelection: () => ({ removeAllRanges() {}, addRange() {} }),
     // The status-change reason comes from a window.prompt dialog — see transition()
@@ -178,11 +196,12 @@ export function loadApp({ routes = {}, stored = {}, browserLang = '' } = {}) {
   vm.runInContext(SOURCE, ctx, { filename: 'public/app.js' });
 
   return {
-    calls, copied, downloads, listeners, fields, redirects, promptAnswer, confirmAnswer, store,
+    calls, copied, downloads, listeners, fields, redirects, promptAnswer, confirmAnswer, store, sessionStore,
     execCopies, execResult,
     ctx,
     html: () => appEl.innerHTML,
     field: (id) => field(id),
+    focused: () => focusedId,
     runTimers() { while (timers.length) timers.shift()(); },
     apiCalls: () => calls.filter((c) => String(c.path).startsWith('/api/')),
     input(id, value) {

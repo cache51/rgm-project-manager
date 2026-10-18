@@ -20,7 +20,7 @@ import { packetEntryName, packetEntryNames, packetArchiveName, isSafeRelativePat
 import { resolveTransition, availableTransitions, isOpenBug } from './transitions.js';
 import { makeZip } from './zip.js';
 import {
-  enqueueBugTranslations, enqueueEventTranslation, retryTranslation
+  enqueueBugTranslations, enqueueEventTranslation, retryTranslation, retryEventTranslation
 } from './translate.js';
 // A pasted roster, parsed outside the route so the parsing can be tested on its own.
 import { parsePeople } from './people.js';
@@ -109,6 +109,7 @@ export const SCOPE_POLICY = {
 
   // Reading the product.
   'GET /api/projects': 'bug:read',
+  'GET /api/projects/counts': 'bug:read',
   // Reading what was removed is a read; bringing it back is an admin act, enforced on
   // the restore routes themselves.
   'GET /api/projects/removed': 'bug:read',
@@ -139,6 +140,8 @@ export const SCOPE_POLICY = {
   'DELETE /api/bugs/:id/watchers/:email': 'bug:write',
   'POST /api/bugs/:id/retest': 'bug:write',
   'POST /api/bugs/:id/translations/:lang/retry': 'bug:write',
+  // The same operator action for a failed note on the timeline.
+  'POST /api/bugs/:id/events/:eventId/translations/:lang/retry': 'bug:write',
   'POST /api/bugs/:id/attachments/presign': 'bug:write',
   'POST /api/bugs/:id/attachments/complete': 'bug:write',
   'POST /api/projects/:id/milestones': 'bug:write',
@@ -340,6 +343,22 @@ const looksLikeEmail = (e) => /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(String(e ??
 
 /** At most this many addresses on one bug — a bounded, reviewable list. */
 const WATCHER_LIMIT = 10;
+
+/**
+ * May this actor mint a token carrying the `admin` scope?
+ *
+ * Only someone who holds admin authority themselves — a site admin, or an admin
+ * on at least one live project. A token acts as its owner; minting beyond the
+ * owner's own reach would hand out authority nobody holds.
+ */
+async function mayMintAdminScope(db, actor) {
+  if (actor.isSiteAdmin) return true;
+  const r = await db.query(
+    `SELECT 1 FROM active_memberships m JOIN projects p ON p.id = m.project_id
+      WHERE m.user_id = $1 AND m.role = 'admin' AND p.deleted_at IS NULL LIMIT 1`,
+    [actor.userId]);
+  return r.rows.length > 0;
+}
 
 /**
  * The questions asked about one bug, oldest first, each with its answer.
@@ -583,7 +602,24 @@ export function buildRoutes() {
     }
     const { name, scopes = ['bug:read'] } = await readJson(req);
     if (!name) throw new HttpError(400, 'name_required', 'name is required');
-    const token = await mintApiToken(ctx.db, ctx.actor.userId, { name, scopes });
+
+    // A token carries its owner's identity into an agent, so the scopes a session
+    // may mint are capped at what that session could do itself: any member works
+    // the bug loop (bug:read, bug:write), and only someone who actually holds
+    // admin authority anywhere mints the admin scope. Before this cap any
+    // signed-in browser — a tester's included — could mint an admin token and
+    // hand it out.
+    const wanted = [...new Set(
+      (Array.isArray(scopes) ? scopes : [scopes]).map((s) => String(s)))].filter(Boolean);
+    if (!wanted.length) throw new HttpError(400, 'bad_scope', 'a token needs at least one scope');
+    const allowed = ['bug:read', 'bug:write'];
+    if (await mayMintAdminScope(ctx.db, ctx.actor)) allowed.push('admin');
+    const tooBig = wanted.filter((s) => !allowed.includes(s));
+    if (tooBig.length) {
+      throw new HttpError(403, 'insufficient_role',
+        `your own authority does not include the ${tooBig.join(', ')} scope`);
+    }
+    const token = await mintApiToken(ctx.db, ctx.actor.userId, { name, scopes: wanted });
     // The plaintext is returned exactly once.
     sendJson(res, 201, token);
   }));
@@ -630,6 +666,23 @@ export function buildRoutes() {
          FROM active_memberships m JOIN projects p ON p.id = m.project_id
         WHERE m.user_id = $1 AND p.deleted_at IS NULL ORDER BY p.name`, [ctx.actor.userId]);
     sendJson(res, 200, { projects: rows.rows });
+  }));
+
+  // Open counts for every project at once. The sidebar used to fetch each
+  // project's entire bug list just to count it — one request per project on
+  // every refresh, growing with the board.
+  r.get('/api/projects/counts', handle(async (req, res, ctx) => {
+    if (!ctx.actor) throw new HttpError(401, 'unauthenticated', 'sign in required');
+    const rows = await ctx.db.query(
+      `SELECT p.id,
+              (SELECT count(*) FROM bugs b
+                WHERE b.project_id = p.id AND b.deleted_at IS NULL
+                  AND b.status <> 'closed')::int AS open_count
+         FROM active_memberships m JOIN projects p ON p.id = m.project_id
+        WHERE m.user_id = $1 AND p.deleted_at IS NULL`, [ctx.actor.userId]);
+    sendJson(res, 200, {
+      counts: Object.fromEntries(rows.rows.map((p) => [p.id, p.open_count]))
+    });
   }));
 
   r.get('/api/projects/:id/members', handle(async (req, res, ctx) => {
@@ -1048,7 +1101,11 @@ export function buildRoutes() {
     await authorize(ctx.db, ctx.actor, ctx.params.id);
     const rows = await ctx.db.query(
       `SELECT b.id, b.bug_number, b.kind, b.severity, b.status, b.title_vi, b.milestone_id,
-              b.updated_at, m.code AS milestone_code,
+              b.updated_at, b.retest_assignee_id, m.code AS milestone_code,
+              -- Who the verification is waiting on: the list must be able to say
+              -- "assigned to you" without opening every bug, so a tester can tell
+              -- their retests from someone else's at a glance.
+              ra.display_name AS retest_assignee,
               -- Who reported it, so a list row answers "who found this?" without
               -- opening every bug.
               u.display_name AS reporter,
@@ -1063,12 +1120,15 @@ export function buildRoutes() {
          FROM bugs b
          JOIN milestones m ON m.id = b.milestone_id
          JOIN users u ON u.id = b.reporter_id
+         LEFT JOIN users ra ON ra.id = b.retest_assignee_id
         WHERE b.project_id = $1 AND b.deleted_at IS NULL
         ORDER BY b.bug_number DESC`, [ctx.params.id]);
     sendJson(res, 200, {
       bugs: rows.rows.map(b => ({ ...b, code: reportCode(b.kind, b.bug_number),
                                   // camelCase for the client; the SQL alias is snake_case.
                                   openQuestions: b.open_questions ?? 0,
+                                  retestAssigneeId: b.retest_assignee_id,
+                                  retestAssignee: b.retest_assignee,
                                   isOpen: isOpenBug(b.status) })),
       openCount: rows.rows.filter(b => isOpenBug(b.status)).length
     });
@@ -1667,6 +1727,29 @@ export function buildRoutes() {
     const { field = 'body' } = await readJson(req);
     const out = await retryTranslation(ctx.db, {
       bugId: ctx.params.id, field, lang: ctx.params.lang
+    });
+    if (!out) throw new HttpError(404, 'not_found', 'no failed translation to retry');
+    sendJson(res, 200, out);
+  }));
+
+  /**
+   * Retry one failed note translation on the timeline.
+   *
+   * The event is checked to belong to THIS bug first: a note translation id is a
+   * bare bigint, and the retry must not be a way to touch another report's queue.
+   * The event translation field is always `note`, so there is no field argument.
+   */
+  r.post('/api/bugs/:id/events/:eventId/translations/:lang/retry', handle(async (req, res, ctx) => {
+    await authorizeBug(ctx.db, ctx.actor, ctx.params.id);
+    if (!/^\d+$/.test(String(ctx.params.eventId))) {
+      throw new HttpError(404, 'not_found', 'no such event on this bug');
+    }
+    const owns = await ctx.db.query(
+      `SELECT 1 FROM events WHERE id = $1 AND bug_id = $2`,
+      [ctx.params.eventId, ctx.params.id]);
+    if (!owns.rows.length) throw new HttpError(404, 'not_found', 'no such event on this bug');
+    const out = await retryEventTranslation(ctx.db, {
+      eventId: ctx.params.eventId, lang: ctx.params.lang
     });
     if (!out) throw new HttpError(404, 'not_found', 'no failed translation to retry');
     sendJson(res, 200, out);

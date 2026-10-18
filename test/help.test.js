@@ -60,4 +60,18 @@ describe('the help pages', () => {
     assert.equal(counts.vi, counts.zh, `vi has ${counts.vi} sections, zh ${counts.zh}`);
     assert.ok(counts.vi >= 6, 'the document lost whole sections');
   });
+
+  test('English carries the same sections, without naming screenshots it lacks', () => {
+    // English help arrived after the screenshots were shot: it must not go
+    // half-translated, and must not point at en-*.png files that do not exist.
+    const start = HELP_JS.indexOf('  en: {');
+    assert.ok(start > -1, 'the English document exists');
+    const end = HELP_JS.indexOf('\n  }', HELP_JS.indexOf('sections:', start));
+    const count = (HELP_JS.slice(start, end).match(/\n        h: '/g) ?? []).length;
+    assert.ok(count >= 6, `English has only ${count} sections`);
+    const block = HELP_JS.slice(start, end);
+    assert.equal(block.match(/img\(L, '/g), null,
+      'English names no figures until its own screenshots are shot');
+    assert.match(HELP_JS, /en: 'English'/, 'the switcher offers it');
+  });
 });
