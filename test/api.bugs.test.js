@@ -282,6 +282,38 @@ describe('bugs: lifecycle transitions', () => {
     assert.equal(rightTester.json.status, 'closed');
   });
 
+  test('the bug list names who the verification is waiting on', async () => {
+    const token = await w.invite({ projectId: w.project.id, email: 'p4@rgm.example',
+                                   role: 'tester', createdBy: w.admin.userId });
+    await w.redeem(token);
+    const tester4 = await w.loginAs('p4@rgm.example');
+    const tester4Id = (await tester4.get('/api/me')).json.userId;
+
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await w.devClient.post(`/api/bugs/${bug.id}/status`, { action: 'start_fixing' });
+    await w.devClient.post(`/api/bugs/${bug.id}/status`,
+      { action: 'request_retest', assigneeId: tester4Id });
+
+    // The list must say this, so a tester can tell "mine" from "someone else's"
+    // without opening every bug.
+    const list = await w.testerClient.get(`/api/projects/${w.project.id}/bugs`);
+    const row = list.json.bugs.find((b) => b.id === bug.id);
+    assert.equal(row.retest_assignee_id, tester4Id, 'the raw field, as every row carries it');
+    assert.equal(row.retestAssigneeId, tester4Id, 'and the camelCase alias the client reads');
+    assert.equal(row.retestAssignee, 'p4', 'with the assignee\'s name to show');
+    assert.equal(row.milestone_code, 'M-LIFE',
+      'and the milestone code is still on the row — the assignee column joined in without losing it');
+
+    // An unassigned retest names nobody, which is the "any tester" case.
+    const free = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await w.devClient.post(`/api/bugs/${free.id}/status`, { action: 'start_fixing' });
+    await w.devClient.post(`/api/bugs/${free.id}/status`, { action: 'request_retest' });
+    const freeRow = (await w.testerClient.get(`/api/projects/${w.project.id}/bugs`))
+      .json.bugs.find((b) => b.id === free.id);
+    assert.equal(freeRow.retestAssigneeId, null);
+    assert.equal(freeRow.retestAssignee, null);
+  });
+
   test('an assignee who is not a member of the project is refused', async () => {
     const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
     await w.devClient.post(`/api/bugs/${bug.id}/status`, { action: 'start_fixing' });
@@ -362,6 +394,51 @@ describe('bugs: translation', () => {
     assert.equal(failed.note, 'Thùng thứ 3 vẫn bị lệch');
     assert.equal(failed.noteTranslations.zh.status, 'done',
       'the note must be readable to a Chinese-speaking developer (RGM2-005)');
+  });
+
+  test('a failed note translation is retryable from the bug, not only from SQL', async () => {
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await w.devClient.post(`/api/bugs/${bug.id}/status`, { action: 'start_fixing' });
+    await w.devClient.post(`/api/bugs/${bug.id}/status`, { action: 'request_retest' });
+    await w.testerClient.post(`/api/bugs/${bug.id}/retest`,
+      { result: 'fail', expectedAttempt: 1, note: 'Vẫn lệch sau khi sửa' });
+
+    await runEventTranslations(w.db, FailingProvider('upstream 503'), { workerId: randomUUID() });
+    const ev = (await w.db.query(
+      `SELECT id FROM events WHERE bug_id = $1 AND kind = 'bug.retest_fail'`,
+      [bug.id])).rows[0];
+    const stuck = await w.db.query(
+      `SELECT status FROM event_translations WHERE event_id = $1 AND lang = 'zh'`, [ev.id]);
+    assert.equal(stuck.rows[0].status, 'failed', 'the note translation parked as failed');
+
+    // The way back, from the timeline of the bug the note is on:
+    const retry = await w.devClient.post(
+      `/api/bugs/${bug.id}/events/${ev.id}/translations/zh/retry`);
+    assert.equal(retry.status, 200, retry.text);
+
+    const again = await runEventTranslations(w.db, StubProvider(), { workerId: randomUUID() });
+    assert.ok(again.some((r) => r.eventId === ev.id && r.lang === 'zh' && r.status === 'done'),
+      'the retried note drains on the next pass');
+
+    const payload = (await w.devClient.get(`/api/bugs/${bug.id}`)).json;
+    const entry = payload.timeline.find((e) => String(e.id) === String(ev.id));
+    assert.equal(entry.noteTranslations.zh.status, 'done');
+  });
+
+  test('the note retry refuses another bug\'s event, a bad id, and nothing-to-retry', async () => {
+    const mine = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    const other = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await w.devClient.post(`/api/bugs/${other.id}/status`, { action: 'close', reason: 'đóng lại' });
+    const otherEvent = (await w.db.query(
+      `SELECT id FROM events WHERE bug_id = $1 AND kind = 'bug.closed'`, [other.id])).rows[0];
+
+    const foreign = await w.devClient.post(
+      `/api/bugs/${mine.id}/events/${otherEvent.id}/translations/zh/retry`);
+    assert.equal(foreign.status, 404, 'an event id from another bug is not a door');
+    const junk = await w.devClient.post(`/api/bugs/${mine.id}/events/1=2/translations/zh/retry`);
+    assert.equal(junk.status, 404, 'a non-numeric id answers 404, not 500');
+    const nothing = await w.devClient.post(`/api/bugs/${other.id}/events/${otherEvent.id}/translations/zh/retry`);
+    assert.equal(nothing.status, 404, 'a note that never failed has nothing to retry');
   });
 
   test('a close reason is translated, not silently dropped', async () => {

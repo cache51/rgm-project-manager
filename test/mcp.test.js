@@ -361,8 +361,17 @@ describe('the agent taking a comment back', () => {
     const seen = [];
     const bodies = [];
     let origin = '';
-    // The bug's status is mutable so a transition can be observed rather than assumed.
-    const state = { status: 'fixing' };
+    // The bug's status is mutable so a transition can be observed rather than assumed,
+// and what each status allows mirrors the real board (src/transitions.js).
+    const state = { status: 'fixing', retestAttempt: undefined };
+    const ALLOWED = {
+      new: [{ action: 'start_fixing', to: 'fixing' },
+            { action: 'close', to: 'closed', requiresReason: true }],
+      fixing: [{ action: 'request_retest', to: 'retest' },
+               { action: 'close', to: 'closed', requiresReason: true }],
+      retest: [{ action: 'retest_pass', to: 'closed' }, { action: 'retest_fail', to: 'fixing' }],
+      closed: []
+    };
     const server = createServer(async (req, res) => {
       seen.push(`${req.method} ${req.url}`);
       const raw = await new Promise((resolve) => {
@@ -391,7 +400,9 @@ describe('the agent taking a comment back', () => {
       if (req.url === '/api/bugs/b-1') {
         return send({
           status: state.status, severity: 'high', projectId: 'p-1', milestone: { code: 'M1' },
-          availableActions: [], questions: { questions: [] }, attachments: [],
+          availableActions: ALLOWED[state.status] ?? [],
+          retestAttempt: state.retestAttempt,
+          questions: { questions: [] }, attachments: [],
           timeline: [
             { id: 41, kind: 'bug.commented', actor: 'tester', canRemove: false, note: 'vẫn còn lỗi' },
             { id: 42, kind: 'bug.commented', actor: 'agent', canRemove: true, note: 'fixed in abc1234' }
@@ -409,13 +420,32 @@ describe('the agent taking a comment back', () => {
       }
       if (req.url === '/api/bugs/b-1/status' && req.method === 'POST') {
         const body = JSON.parse(raw || '{}');
-        // Mirrors the real transition table: only new → fixing, and a refusal says so.
-        if (state.status !== 'new' || body.action !== 'start_fixing') {
+        const rule = (ALLOWED[state.status] ?? []).find((r) => r.action === body.action);
+        if (!rule) {
           return send({ error: 'bad_transition',
-            message: `cannot ${body.action} from ${state.status}` }, 409);
+            message: `cannot ${body.action} a bug in status '${state.status}'` }, 409);
         }
-        state.status = 'fixing';
-        return send({ status: 'fixing' });
+        if (rule.requiresReason && !String(body.reason ?? '').trim()) {
+          return send({ error: 'reason_required', message: 'this move needs a reason' }, 400);
+        }
+        state.status = rule.to;
+        if (body.action === 'request_retest') state.retestAttempt = 1;
+        return send({ status: state.status, retestAttempt: state.retestAttempt });
+      }
+      if (req.url === '/api/projects/p-1/members') {
+        return send({ members: [
+          { userId: 'u-9', email: 'kelly@rgm.example', displayName: 'Kelly', role: 'tester' },
+          { userId: 'u-2', email: 'agent@rgm.example', displayName: 'Coding agent', role: 'developer' }
+        ] });
+      }
+      if (req.url === '/api/bugs/b-1/watchers' && req.method === 'POST') {
+        return send({ ok: true }, 201);
+      }
+      if (req.url.startsWith('/api/bugs/b-1/watchers/') && req.method === 'DELETE') {
+        return send({ ok: true });
+      }
+      if (req.url === '/api/bugs/b-1/questions/q-9/answer' && req.method === 'POST') {
+        return send({ id: 'q-9' });
       }
       if (req.url === '/api/bugs/b-1/comments' && req.method === 'POST') {
         return send({ id: 99 }, 201);
@@ -523,7 +553,162 @@ describe('the agent taking a comment back', () => {
     try {
       const res = await call(s, 'rgm_start_fixing', { number: 7, project: 'Fabric Warehouse' });
       assert.equal(res.result.isError, true, 'the tool must not invent a success');
-      assert.match(res.result.content[0].text, /cannot start_fixing from retest/);
+      assert.match(res.result.content[0].text, /cannot start_fixing/);
+      assert.match(res.result.content[0].text, /status 'retest'/);
+    } finally { s.stop(); await app.stop(); }
+  });
+
+  test('rgm_close_bug rejects a report, and the reason travels with it', async () => {
+    const app = await stub();
+    app.state.status = 'new';
+    const s = open(app.url);
+    try {
+      const res = await call(s, 'rgm_close_bug', {
+        number: 7, project: 'Fabric Warehouse',
+        reason: 'expected behaviour: a lot with no lining row is allowed'
+      });
+
+      assert.notEqual(res.result.isError, true, res.result.content[0].text);
+      assert.match(res.result.content[0].text, /rejected as not a bug/);
+      assert.deepEqual(app.bodies.find((b) => b.path === '/api/bugs/b-1/status')?.body, {
+        action: 'close', closeKind: 'rejected',
+        reason: 'expected behaviour: a lot with no lining row is allowed'
+      }, 'the reason is what the person who filed it reads');
+      assert.equal(app.state.status, 'closed', 'and the board closed it');
+    } finally { s.stop(); await app.stop(); }
+  });
+
+  test('rgm_close_bug can call it a duplicate and name the other report', async () => {
+    const app = await stub();
+    app.state.status = 'new';
+    const s = open(app.url);
+    try {
+      const res = await call(s, 'rgm_close_bug', {
+        number: 7, project: 'Fabric Warehouse',
+        reason: 'the same thing as BUG-7, reported twice', duplicate_of: 'BUG-7'
+      });
+
+      assert.notEqual(res.result.isError, true, res.result.content[0].text);
+      assert.match(res.result.content[0].text, /duplicate of BUG-7/);
+      assert.deepEqual(app.bodies.find((b) => b.path === '/api/bugs/b-1/status')?.body, {
+        action: 'close', closeKind: 'duplicate', closeRefCode: 'BUG-7',
+        reason: 'the same thing as BUG-7, reported twice'
+      });
+    } finally { s.stop(); await app.stop(); }
+  });
+
+  test('a report awaiting verification cannot be closed by the agent', async () => {
+    const app = await stub();
+    app.state.status = 'retest';        // the tester's half of the loop is open
+    const s = open(app.url);
+    try {
+      const res = await call(s, 'rgm_close_bug', {
+        number: 7, project: 'Fabric Warehouse', reason: 'looks fine to me, closing it'
+      });
+
+      assert.equal(res.result.isError, true, 'verification is the filer\'s, not the agent\'s');
+      assert.match(res.result.content[0].text, /only the person who filed it can close/);
+      assert.deepEqual(app.seen.filter((r) => r.includes('/status')), [],
+        'and nothing was sent to the board');
+    } finally { s.stop(); await app.stop(); }
+  });
+
+  test('a close reason that says nothing is refused before the board is asked', async () => {
+    const app = await stub();
+    const s = open(app.url);
+    try {
+      const res = await call(s, 'rgm_close_bug',
+        { number: 7, project: 'Fabric Warehouse', reason: 'done' });
+      assert.equal(res.result.isError, true);
+      assert.match(res.result.content[0].text, /a reason is required/);
+      assert.deepEqual(app.seen.filter((r) => r.includes('/status')), []);
+    } finally { s.stop(); await app.stop(); }
+  });
+
+  test('rgm_bug_action performs any move the board offers, and says what is next', async () => {
+    const app = await stub();           // 'fixing'
+    const s = open(app.url);
+    try {
+      const res = await call(s, 'rgm_bug_action',
+        { number: 7, action: 'request_retest', project: 'Fabric Warehouse' });
+
+      assert.notEqual(res.result.isError, true, res.result.content[0].text);
+      assert.match(res.result.content[0].text, /is now retest/);
+      assert.match(res.result.content[0].text, /attempt 1/);
+      assert.match(res.result.content[0].text, /from here you can: retest_pass, retest_fail/,
+        'the moves it may make next come back with the answer');
+      assert.equal(app.state.status, 'retest');
+    } finally { s.stop(); await app.stop(); }
+  });
+
+  test('a move the board refuses comes back with what it does allow', async () => {
+    const app = await stub();
+    const s = open(app.url);
+    try {
+      const res = await call(s, 'rgm_bug_action',
+        { number: 7, action: 'retest_pass', project: 'Fabric Warehouse' });
+
+      assert.equal(res.result.isError, true, 'it did not happen');
+      assert.match(res.result.content[0].text, /cannot retest_pass/);
+      assert.match(res.result.content[0].text,
+        /what BUG-7 allows from fixing: request_retest, close/,
+        'a refusal that does not say what is possible leaves the agent guessing');
+    } finally { s.stop(); await app.stop(); }
+  });
+
+  test('rgm_bug_action resolves an assignee from the project roster, or refuses', async () => {
+    const app = await stub();
+    const s = open(app.url);
+    try {
+      const ok = await call(s, 'rgm_bug_action', {
+        number: 7, action: 'request_retest', assignee: 'kelly@rgm.example',
+        project: 'Fabric Warehouse'
+      });
+      assert.notEqual(ok.result.isError, true, ok.result.content[0].text);
+      assert.equal(app.bodies.find((b) => b.path === '/api/bugs/b-1/status').body.assigneeId,
+        'u-9', 'the address becomes the roster\'s own user id');
+
+      const bad = await call(s, 'rgm_bug_action', {
+        number: 7, action: 'request_retest', assignee: 'nobody@rgm.example',
+        project: 'Fabric Warehouse'
+      });
+      assert.equal(bad.result.isError, true);
+      assert.match(bad.result.content[0].text, /not on this project/);
+      assert.match(bad.result.content[0].text, /kelly@rgm\.example/, 'and says who is');
+    } finally { s.stop(); await app.stop(); }
+  });
+
+  test('rgm_answer_question answers the question it is given', async () => {
+    const app = await stub();
+    const s = open(app.url);
+    try {
+      const res = await call(s, 'rgm_answer_question', {
+        number: 7, question_id: 'q-9', answer: 'Air — it is the order\'s ship mode.',
+        project: 'Fabric Warehouse'
+      });
+
+      assert.notEqual(res.result.isError, true, res.result.content[0].text);
+      assert.match(res.result.content[0].text, /answered the question on BUG-7/);
+      assert.deepEqual(app.bodies.find((b) => b.path === '/api/bugs/b-1/questions/q-9/answer')?.body,
+        { answer: 'Air — it is the order\'s ship mode.' });
+    } finally { s.stop(); await app.stop(); }
+  });
+
+  test('rgm_watch adds and removes the address that gets told', async () => {
+    const app = await stub();
+    const s = open(app.url);
+    try {
+      const added = await call(s, 'rgm_watch',
+        { number: 7, email: 'kelly@rgm.example', project: 'Fabric Warehouse' });
+      assert.match(added.result.content[0].text, /will be told when BUG-7 is marked fixed/);
+      assert.deepEqual(app.bodies.find((b) => b.path === '/api/bugs/b-1/watchers')?.body,
+        { email: 'kelly@rgm.example' });
+
+      const removed = await call(s, 'rgm_watch',
+        { number: 7, email: 'kelly@rgm.example', remove: true, project: 'Fabric Warehouse' });
+      assert.match(removed.result.content[0].text, /will no longer be told/);
+      assert.ok(app.seen.includes('DELETE /api/bugs/b-1/watchers/kelly%40rgm.example'),
+        'the address is encoded into the path, not guessed at');
     } finally { s.stop(); await app.stop(); }
   });
 

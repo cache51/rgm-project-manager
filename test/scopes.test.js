@@ -118,13 +118,13 @@ describe('token scopes: a narrowed token cannot exceed them', () => {
       { headers: bearer(token) })).status, 403);
   });
 
-  test('a bug:read token still cannot download nothing it should not', async () => {
-    // The packet is a read, so bug:read is enough — but a token with no scopes
-    // at all is not.
-    const none = await mint([]);
-    const res = await w.newClient().get(`/api/bugs/${bug.id}/packet`, { headers: bearer(none) });
-    assert.equal(res.status, 403, res.text);
-    assert.equal(res.json.error, 'insufficient_scope');
+  test('a token with no scopes is refused at the mint, so none can exist', async () => {
+    // The packet is a read, so bug:read is enough. A zero-scope token used to be
+    // mintable and inert everywhere; since the scope cap landed, the mint itself
+    // refuses to create one — the 403 below is now unreachable by construction.
+    const none = await w.adminClient.post('/api/tokens', { name: 'test token', scopes: [] });
+    assert.equal(none.status, 400, none.text);
+    assert.equal(none.json.error, 'bad_scope');
   });
 
   test('an admin token can administer', async () => {

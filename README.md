@@ -90,17 +90,23 @@ the same loop:
 | `rgm_comment` | what was changed, in words a tester can act on, with a screenshot or a file attached |
 | `rgm_remove_comment` | take back a comment of its own that nobody has answered yet |
 | `rgm_start_fixing` | say you are on it: `new` → `fixing`, before the fix, so the tester's list shows it being worked on |
+| `rgm_close_bug` | reject a report that is not a bug, or close it as a duplicate — reason required, and it cannot close anything awaiting verification |
+| `rgm_bug_action` | any lifecycle move the server accepts from the agent's role; refusals list what the bug does allow |
+| `rgm_answer_question` | answer a question asked about the bug |
+| `rgm_watch` | add or remove an address from the list told when the bug is marked fixed |
 | `rgm_mark_fixed` | hand it back: *fixed — awaiting verification*, with the test that proves it |
 
 Two rules are built in rather than documented and hoped for: an agent can ask but
-**cannot verify** (only the filer closes a report), and a question stays open until a
+**cannot verify** — it may reject a report as not-a-bug or a duplicate, with a reason
+the filer reads, but only the filer closes a fixed one — and a question stays open until a
 member answers it — by using the answer box or simply by commenting on the bug, which
 counts as the answer because that is how the testers and developers already reply.
 
 The person being asked does not have to open each bug to find out. The list API counts,
 for whoever is reading it, the open questions addressed to them — on each row
-(`questionsForYou`) and for the project (`questionsForYouCount`); a question is the
-reporter's unless the reporter asked it. The web app lists those reports first, marked
+(`questionsForYou`) and for the project (`questionsForYouCount`), and
+`/api/projects/counts` carries the same number per project for the sidebar; a question
+is the reporter's unless the reporter asked it. The web app lists those reports first, marked
 **Câu hỏi chờ bạn trả lời / Question for you** beside a status it leaves alone (a
 question can arrive in any of the four), counts them in the sidebar for every project,
 and says so on the milestones screen the app opens on — one click from the list
@@ -327,6 +333,8 @@ From a shell, the same loop without an agent in the middle:
 rgm bugs                  # the unresolved list
 rgm prompt 7              # the handoff prompt for BUG-7, on stdout
 rgm start 7               # say you are on it: new → fixing
+rgm close 7 --reason "expected behaviour: no lining row is allowed"   # not a bug
+rgm close 7 --reason "same as BUG-9" --duplicate BUG-9               # a duplicate
 rgm ask 7 "which warehouse?"   # question to the reporter
 rgm questions 7           # the answer, once it arrives
 rgm comment 7 "fixed in abc1234"   # say what changed (it prints the comment id)

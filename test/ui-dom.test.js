@@ -13,8 +13,10 @@
  */
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { makeProjectWorld, makeMilestone, fileBug, PNG_BYTES } from './helpers.js';
 import { loadApp, settle } from './ui-harness.js';
+import { runBugTranslations, runEventTranslations, FailingProvider } from '../src/translate.js';
 
 describe('ui (dom): a fresh install', () => {
   test('a site admin is offered a working create-project form', async () => {
@@ -35,7 +37,8 @@ describe('ui (dom): a fresh install', () => {
 
   test('someone who is not a site admin is told to ask an admin', async () => {
     const app = loadApp({
-      routes: { 'GET /api/me': { userId: 'u2', email: 't@b.test', isSiteAdmin: false, projects: [] } }
+      routes: { 'GET /api/me': { userId: 'u2', email: 't@b.test', isSiteAdmin: false, projects: [] } },
+      stored: { 'rgm.lang': 'en' }
     });
     await settle();
 
@@ -1412,5 +1415,363 @@ describe('ui (dom): every action reaches the API it should', () => {
 
     assert.doesNotMatch(app.html(), /id="f-title"/,
       'the new project never renders the old project locked retry form');
+  });
+});
+
+describe('ui (dom): a failed translation is retryable from where it is shown', () => {
+  let w, bug, msId, noteEventId, payload, me, projects, bugsList;
+
+  before(async () => {
+    w = await makeProjectWorld();
+    msId = await makeMilestone(w.adminClient, w.project.id, 'M-TRUI', 'Retry');
+    await w.adminClient.post(`/api/milestones/${msId}/status`, { action: 'start' });
+    await w.adminClient.post(`/api/milestones/${msId}/status`, { action: 'ready' });
+    bug = await fileBug(w.testerClient, w.project.id, { milestoneId: msId });
+    await w.devClient.post(`/api/bugs/${bug.id}/status`, { action: 'start_fixing' });
+    await w.devClient.post(`/api/bugs/${bug.id}/status`, { action: 'request_retest' });
+    await w.testerClient.post(`/api/bugs/${bug.id}/retest`,
+      { result: 'fail', expectedAttempt: 1, note: 'Vẫn lệch' });
+
+    // Break the translation provider and drain both queues: title/body and the
+    // note all park as 'failed', which is the state the screen must act on.
+    await runBugTranslations(w.db, FailingProvider('upstream 503'), { workerId: randomUUID() });
+    await runEventTranslations(w.db, FailingProvider('upstream 503'), { workerId: randomUUID() });
+
+    noteEventId = (await w.db.query(
+      `SELECT id FROM events WHERE bug_id = $1 AND kind = 'bug.retest_fail'`,
+      [bug.id])).rows[0].id;
+    payload = (await w.devClient.get(`/api/bugs/${bug.id}`)).json;
+    me = (await w.devClient.get('/api/me')).json;
+    projects = (await w.devClient.get('/api/projects')).json;
+    bugsList = (await w.devClient.get(`/api/projects/${w.project.id}/bugs`)).json;
+    assert.equal(payload.translations.body.en.status, 'failed', 'the world is as expected');
+  });
+  after(async () => { await w.close(); });
+
+  const routes = () => ({
+    'GET /api/me': me,
+    'GET /api/projects': projects,
+    [`GET /api/projects/${w.project.id}/bugs`]: bugsList,
+    [`GET /api/bugs/${bug.id}`]: payload,
+    [`GET /api/bugs/${bug.id}/prompt`]: '# prompt',
+    'GET /api/projects/removed': { projects: [] },
+    [`GET /api/projects/${w.project.id}/milestones/removed`]: { milestones: [] },
+    [`GET /api/projects/${w.project.id}/bugs/removed`]: { bugs: [] }
+  });
+
+  test('a failed body translation and a failed note each offer a retry', async () => {
+    const app = loadApp({ routes: routes(), stored: { 'rgm.lang': 'en' } });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+
+    const html = app.html();
+    assert.match(html, /data-action="retrytr" data-field="body"/,
+      'the reader shown "Translation failed" is also shown the way out');
+    assert.match(html, new RegExp(`data-action="retrynote" data-id="${noteEventId}"`),
+      'and the timeline note gets the same, addressed to its own event');
+  });
+
+  test('clicking retry re-queues the language being read, not some other one', async () => {
+    const app = loadApp({ routes: routes(), stored: { 'rgm.lang': 'en' } });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+
+    await app.click('retrytr', { field: 'body' });
+    app.runTimers();
+    await settle();
+
+    const post = app.apiCalls().find((c) =>
+      c.method === 'POST' && c.path === `/api/bugs/${bug.id}/translations/en/retry`);
+    assert.ok(post, 'the retry posts for the viewing language');
+    assert.deepEqual(post.body, { field: 'body' });
+  });
+
+  test('the note retry posts to its own event, on its own bug', async () => {
+    const app = loadApp({ routes: routes(), stored: { 'rgm.lang': 'en' } });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+
+    await app.click('retrynote', { id: String(noteEventId) });
+    app.runTimers();
+    await settle();
+
+    const post = app.apiCalls().find((c) => c.method === 'POST'
+      && c.path === `/api/bugs/${bug.id}/events/${noteEventId}/translations/en/retry`);
+    assert.ok(post, 'the note retry names the bug and the event it belongs to');
+  });
+});
+
+
+describe('ui (dom): the retest assignee — set it once, see it everywhere', () => {
+  let w, ms, bugAssigned, bugFresh, bugFreshDetail, meDev, meTester, members, bugsListTester;
+
+  before(async () => {
+    w = await makeProjectWorld();
+    ms = await makeMilestone(w.adminClient, w.project.id, 'M-AS', 'Assignment');
+    await w.adminClient.post(`/api/milestones/${ms}/status`, { action: 'start' });
+    await w.adminClient.post(`/api/milestones/${ms}/status`, { action: 'ready' });
+
+    bugAssigned = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    const testerId = (await w.testerClient.get('/api/me')).json.userId;
+    await w.devClient.post(`/api/bugs/${bugAssigned.id}/status`, { action: 'start_fixing' });
+    await w.devClient.post(`/api/bugs/${bugAssigned.id}/status`,
+      { action: 'request_retest', assigneeId: testerId });
+
+    bugFresh = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+
+    meDev = (await w.devClient.get('/api/me')).json;
+    meTester = (await w.testerClient.get('/api/me')).json;
+    members = (await w.devClient.get(`/api/projects/${w.project.id}/members`)).json;
+    bugsListTester = (await w.testerClient.get(`/api/projects/${w.project.id}/bugs`)).json;
+  });
+  after(async () => { await w.close(); });
+
+  const routes = (me) => ({
+    'GET /api/me': me,
+    'GET /api/projects': { projects: [{ id: w.project.id, name: 'P', env: 'staging',
+                                        client: 'RGM', role: me === meTester ? 'tester' : 'developer' }] },
+    [`GET /api/projects/${w.project.id}/bugs`]: bugsListTester,
+    [`GET /api/projects/${w.project.id}/members`]: members,
+    // The bug object carries its own `status` field, which the harness would read
+    // as an HTTP status — so the body has to be wrapped, not returned bare.
+    [`GET /api/bugs/${bugFresh.id}`]: () => ({ body: bugFreshDetail }),
+    [`GET /api/bugs/${bugFresh.id}/prompt`]: '# p',
+    'GET /api/projects/removed': { projects: [] },
+    [`GET /api/projects/${w.project.id}/milestones/removed`]: { milestones: [] },
+    [`GET /api/projects/${w.project.id}/bugs/removed`]: { bugs: [] }
+  });
+
+  test('a tester sees which retests are theirs in the list', async () => {
+    bugFreshDetail = (await w.testerClient.get(`/api/bugs/${bugFresh.id}`)).json;
+    const app = loadApp({ routes: routes(meTester), stored: { 'rgm.lang': 'en' } });
+    await settle();
+    await app.click('view', { view: 'bugs' });
+
+    const html = app.html();
+    assert.match(html, /awaiting your check/,
+      'the assigned row says it is waiting on the viewer');
+    const mine = bugsListTester.bugs.find((b) => b.id === bugAssigned.id);
+    assert.equal(mine.retestAssigneeId, meTester.userId, 'the payload backs that up');
+  });
+
+  test('marking a bug fixed can name the tester who should verify it', async () => {
+    await w.devClient.post(`/api/bugs/${bugFresh.id}/status`, { action: 'start_fixing' });
+    bugFreshDetail = (await w.devClient.get(`/api/bugs/${bugFresh.id}`)).json;
+    const app = loadApp({ routes: routes(meDev) });
+    await settle();
+    await app.click('openbug', { id: bugFresh.id });
+
+    const html = app.html();
+    assert.match(html, /id="retestassignee"/, 'the hand-back offers a picker');
+    const tester = members.members.find((m) => m.role === 'tester');
+    assert.ok(/<option value="[^"]+">/.test(html) && html.includes(tester.display_name ?? tester.email),
+      'and the project testers are choices');
+
+    app.field('retestassignee').value = tester.id;
+    await app.click('transition', { id: bugFresh.id, move: 'request_retest', reason: '' });
+
+    const post = app.apiCalls().find((c) => c.method === 'POST'
+      && c.path === `/api/bugs/${bugFresh.id}/status`);
+    assert.ok(post, 'the transition posts');
+    assert.equal(post.body.action, 'request_retest');
+    assert.equal(post.body.assigneeId, tester.id, 'with the chosen assignee');
+  });
+
+  test('leaving the picker on "any tester" sends no assignee at all', async () => {
+    // Still in "fixing" from the previous test — the stub POST changed no state.
+    bugFreshDetail = (await w.devClient.get(`/api/bugs/${bugFresh.id}`)).json;
+    const app = loadApp({ routes: routes(meDev) });
+    await settle();
+    await app.click('openbug', { id: bugFresh.id });
+
+    await app.click('transition', { id: bugFresh.id, move: 'request_retest', reason: '' });
+    const post = app.apiCalls().find((c) => c.method === 'POST'
+      && c.path === `/api/bugs/${bugFresh.id}/status`);
+    assert.ok(post, 'the transition still posts');
+    assert.equal(post.body.assigneeId, undefined,
+      '"any tester" is the default — no key, not a null one');
+  });
+});
+
+describe('ui (dom): the list answers "which of these are mine?"', () => {
+  const w = { projectId: randomUUID() };
+  const meTester = { userId: 'u-tester', email: 'tester@rgm.example',
+                     projects: [{ id: w.projectId, name: 'P', env: 'staging',
+                                  client: 'RGM', role: 'tester' }] };
+  const at = new Date('2026-10-17T09:00:00Z').toISOString();
+  const bugs = [
+    { id: 'b1', code: 'BUG-1', kind: 'bug', severity: 'high', status: 'closed',
+      title_vi: 'Thiếu hàng', milestone_code: 'M1', reporter: 'tester',
+      attachments: 0, openQuestions: 0, isOpen: false, updated_at: at },
+    { id: 'b2', code: 'BUG-2', kind: 'bug', severity: 'medium', status: 'retest',
+      title_vi: 'Nhầm nhãn', milestone_code: 'M1', reporter: 'tester',
+      attachments: 1, openQuestions: 0, isOpen: true, updated_at: at,
+      retestAssigneeId: 'u-tester', retestAssignee: 'tester' },
+    { id: 'b3', code: 'REQ-1', kind: 'feature', severity: 'low', status: 'new',
+      title_vi: 'Xuất PDF', milestone_code: 'M2', reporter: 'dev',
+      attachments: 0, openQuestions: 0, isOpen: true, updated_at: at }
+  ];
+  const routes = () => ({
+    'GET /api/me': meTester,
+    'GET /api/projects': { projects: [{ id: w.projectId, name: 'P', env: 'staging',
+                                        client: 'RGM', role: 'tester' }] },
+    [`GET /api/projects/${w.projectId}/bugs`]: { bugs, openCount: 2 },
+    'GET /api/projects/removed': { projects: [] },
+    [`GET /api/projects/${w.projectId}/milestones/removed`]: { milestones: [] },
+    [`GET /api/projects/${w.projectId}/bugs/removed`]: { bugs: [] }
+  });
+
+  test('the retests waiting on the viewer are gathered under their own heading', async () => {
+    const app = loadApp({ routes: routes(), stored: { 'rgm.lang': 'en' } });
+    await settle();
+    await app.click('view', { view: 'bugs' });
+
+    const html = app.html();
+    assert.match(html, /Needs you/, 'the list leads with the tester\'s own question');
+    const iNeeds = html.indexOf('Needs you');
+    const iMine = html.indexOf('Nhầm nhãn');
+    const iClosed = html.indexOf('Thiếu hàng');
+    assert.ok(iNeeds > -1 && iNeeds < iMine && iMine < iClosed,
+      'the retest waiting on me leads the page; the closed report waits below it');
+    assert.match(html, /awaiting your check/, 'and the row says so in its own tags too');
+  });
+
+  test('a status chip narrows the list to that state', async () => {
+    const app = loadApp({ routes: routes(), stored: { 'rgm.lang': 'en' } });
+    await settle();
+    await app.click('view', { view: 'bugs' });
+    await app.click('bugfilter', { status: 'closed' });
+
+    const html = app.html();
+    assert.ok(html.includes('Thiếu hàng'), 'the closed one is shown');
+    assert.ok(!html.includes('Nhầm nhãn') && !html.includes('Xuất PDF'),
+      'and only the closed one');
+  });
+
+  test('the search box filters as you type, and keeps the caret', async () => {
+    const app = loadApp({ routes: routes(), stored: { 'rgm.lang': 'en' } });
+    await settle();
+    await app.click('view', { view: 'bugs' });
+
+    app.input('bugsearch', 'Xuất');
+    let html = app.html();
+    assert.ok(html.includes('Xuất PDF'), 'the match survives');
+    assert.ok(!html.includes('Thiếu hàng'), 'the rest of the list does not');
+    assert.equal(app.focused(), 'bugsearch',
+      'the box re-renders under each keystroke but does not steal the caret');
+
+    app.input('bugsearch', 'zzz nothing');
+    html = app.html();
+    assert.match(html, /No reports match this filter/,
+      'an empty result says so, instead of echoing the whole list back');
+    const input = html.match(/<input[^>]*id="bugsearch"[^>]*>/)[0];
+    assert.match(input, /value="zzz nothing"/, 'and what was typed is still in the box');
+  });
+});
+
+describe('ui (dom): the app stops lying about state it no longer has', () => {
+  let w, ms, bug, bugDetail, meTester, projectsPayload, milestonesA, bugsA;
+
+  before(async () => {
+    w = await makeProjectWorld();
+    ms = await makeMilestone(w.adminClient, w.project.id, 'M-ST', 'Staleness');
+    await w.adminClient.post(`/api/milestones/${ms}/status`, { action: 'start' });
+    await w.adminClient.post(`/api/milestones/${ms}/status`, { action: 'ready' });
+    bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    bugDetail = (await w.testerClient.get(`/api/bugs/${bug.id}`)).json;
+    meTester = (await w.testerClient.get('/api/me')).json;
+    projectsPayload = (await w.testerClient.get('/api/projects')).json;
+    milestonesA = (await w.testerClient.get(`/api/projects/${w.project.id}/milestones`)).json;
+    bugsA = (await w.testerClient.get(`/api/projects/${w.project.id}/bugs`)).json;
+  });
+  after(async () => { await w.close(); });
+
+  const routes = () => ({
+    'GET /api/me': meTester,
+    'GET /api/projects': projectsPayload,
+    [`GET /api/projects/${w.project.id}/bugs`]: bugsA,
+    [`GET /api/projects/${w.project.id}/milestones`]: milestonesA,
+    [`GET /api/bugs/${bug.id}`]: () => ({ body: bugDetail }),
+    'GET /api/projects/removed': { projects: [] },
+    [`GET /api/projects/${w.project.id}/milestones/removed`]: { milestones: [] },
+    [`GET /api/projects/${w.project.id}/bugs/removed`]: { bugs: [] }
+  });
+
+  test('a half-written report survives a refresh, and dies on cancel', async () => {
+    const app1 = loadApp({ routes: routes() });
+    await settle();
+    await app1.click('report', { ms, kind: 'bug' });
+    app1.input('f-title', 'Mô tả đang viết dở');
+    app1.input('f-body', 'Các bước tái hiện qua năm màn hình…');
+
+    const saved = JSON.parse(app1.sessionStore.get('rgm.reportDraft'));
+    assert.equal(saved.titleVi, 'Mô tả đang viết dở', 'the words are kept as typed');
+
+    // Same tab, new page: the session map carries over.
+    const app2 = loadApp({ routes: routes(), session: app1.sessionStore });
+    await settle();
+    await app2.click('report', { ms, kind: 'bug' });
+    const title = app2.html().match(/<input[^>]*id="f-title"[^>]*>/)[0];
+    assert.match(title, /value="Mô tả đang viết dở"/,
+      'reopening the form returns the text a refresh used to swallow');
+
+    await app2.click('cancelreport', {});
+    assert.equal(app2.sessionStore.get('rgm.reportDraft'), undefined,
+      'but an explicit cancel means "throw it away", and storage agrees');
+  });
+
+  test('a project that vanished underneath the app is not kept being polled', async () => {
+    const gone = w.project.id;
+    const other = randomUUID();
+    let projectsCalls = 0;
+    const staleRoutes = {
+      ...routes(),
+      'GET /api/projects': () => {
+        projectsCalls += 1;
+        return { body: projectsCalls === 1 ? projectsPayload : {
+          projects: projectsPayload.projects
+            .filter((p) => p.id !== gone)
+            .concat([{ id: other, name: 'Other', env: 'prod', client: 'RGM', role: 'tester' }])
+        } };
+      },
+      [`GET /api/projects/${other}/bugs`]: bugsA,
+      [`GET /api/projects/${other}/milestones`]: milestonesA,
+      [`GET /api/projects/${other}/bugs/removed`]: { bugs: [] },
+      [`GET /api/projects/${other}/milestones/removed`]: { milestones: [] }
+    };
+    staleRoutes['GET /api/me'] = {
+      ...meTester,
+      projects: [...meTester.projects,
+        { id: other, name: 'Other', env: 'prod', client: 'RGM', role: 'tester' }]
+    };
+
+    const app = loadApp({ routes: staleRoutes });
+    await settle();
+    await app.click('view', { view: 'bugs' });
+    await settle();
+
+    // Whatever happened before the app last read the project list is history;
+    // everything after it must respect that the project is gone.
+    const calls = app.apiCalls();
+    const lastProjects = calls.map((c) => c.path).lastIndexOf('/api/projects');
+    assert.ok(lastProjects > 0, 'the project list was re-read after the first paint');
+    const after = calls.slice(lastProjects + 1);
+    assert.ok(!after.some((c) => c.path.startsWith(`/api/projects/${gone}/`)),
+      'once the project is known gone, nothing more is asked of it');
+    assert.match(app.html(), new RegExp(`class="proj on" data-action="project" data-id="${other}"`),
+      'the app adopted a project that still exists');
+  });
+
+  test('a packet download with a dead session goes to the login screen', async () => {
+    const app = loadApp({ routes: {
+      ...routes(),
+      [`GET /api/bugs/${bug.id}/packet`]: () => ({ status: 401 })
+    } });
+    await settle();
+    await app.click('openbug', { id: bug.id });
+    await app.click('packet', { id: bug.id });
+
+    assert.ok(app.redirects.includes('/login'),
+      'raw fetches notice the dead session the way api() does');
   });
 });

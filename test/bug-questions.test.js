@@ -282,6 +282,22 @@ describe('the bug list says which questions are waiting for the viewer', () => {
     assert.equal(rowIn(await list(w.testerClient), bug.id).questionsForYou, 1);
   });
 
+  test('the sidebar counts say how many questions wait for the viewer, per project', async () => {
+    // The sidebar reads one counts call for every project rather than each project's
+    // list, so the questions waiting for you have to be in that call too.
+    const counts = async (client) =>
+      (await client.get('/api/projects/counts')).json.questionsForYou[w.project.id];
+    const reporterBefore = await counts(w.testerClient);
+    const developerBefore = await counts(w.devClient);
+    const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await ask(w.devClient, bug.id, 'Which shift?');
+
+    assert.equal(await counts(w.testerClient), reporterBefore + 1);
+    assert.equal(await counts(w.devClient), developerBefore, 'the asker is not waiting on itself');
+    assert.equal(await counts(w.testerClient), (await list(w.testerClient)).questionsForYouCount,
+      'and it agrees with the list');
+  });
+
   test('every unanswered question counts', async () => {
     const before = (await list(w.testerClient)).questionsForYouCount;
     const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });

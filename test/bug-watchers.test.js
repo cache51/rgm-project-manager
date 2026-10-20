@@ -2,8 +2,10 @@
  * The addresses carried on a bug, and the notice they get when the fix is ready.
  *
  * A developer attaches the people who should hear "this is fixed, please verify"
- * — usually the tester who reported it, who need not be a project member — and
- * the transition into retest mails exactly that list.
+ * — colleagues or outsiders who need not be a project member — and the transition
+ * into retest mails the reporter first, then that list. The reporter is always in
+ * the audience: they are the one being asked to verify, and forgetting to attach
+ * an address must not silently un-notify them.
  */
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -94,7 +96,7 @@ describe('a bug carries the addresses that hear about the fix', () => {
     assert.equal((await detail(bug.id)).watchers.length, 10);
   });
 
-  test('marking a bug fixed mails every address on it, and only those', async () => {
+  test('marking a bug fixed mails the reporter and every address on it, and only those', async () => {
     const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
     await add(w.devClient, bug.id, 'krixi@rgmdn.com');
     await add(w.devClient, bug.id, 'tuongvi@rgmdn.com');
@@ -103,20 +105,22 @@ describe('a bug carries the addresses that hear about the fix', () => {
     const moved = await w.devClient.post(`/api/bugs/${bug.id}/status`,
       { action: 'request_retest' });
     assert.equal(moved.json.status, 'retest');
-    // One addressed mail, not one per address: two people are told in a single
+    // One addressed mail, not one per address: everyone is told in a single
     // notice, so no mailbox gets the same fix twice.
-    assert.equal(moved.json.notified.recipients, 2, 'the audience is still two people');
+    assert.equal(moved.json.notified.recipients, 3,
+      'the reporter plus the two attached addresses');
     assert.equal(moved.json.notified.queued, 1, '...but exactly one mail is queued');
 
     const sender = RecordingSender();
     await runOutbox(w.db, sender, { workerId: randomUUID(), baseUrl: 'http://app.test' });
     const sent = retestMails(sender);
     assert.equal(sent.length, 1, 'one message, not two');
-    assert.equal(sent[0].to, 'krixi@rgmdn.com', 'the first address is the addressee');
+    assert.equal(sent[0].to, 'tester@rgm.example',
+      'the reporter is the addressee: the notice asks them to verify');
 
     const msg = sent[0];
-    assert.deepEqual(msg.cc, ['tuongvi@rgmdn.com'],
-      'the other address rides on Cc — together they get it, once each');
+    assert.deepEqual(msg.cc, ['krixi@rgmdn.com', 'tuongvi@rgmdn.com'],
+      'the attached addresses ride on Cc — together they get it, once each');
     assert.match(msg.subject, /đã sửa — chờ xác nhận/, 'the subject says why');
     // A tester watching several projects picks the mail up by its subject; a bare
     // BUG-7 says which bug and none about which project.
@@ -150,17 +154,19 @@ describe('a bug carries the addresses that hear about the fix', () => {
     assert.equal(retestMails(sender).length, 2);
   });
 
-  test('a bug with nobody attached notifies nobody and still transitions', async () => {
+  test('a bug with nobody attached still notifies the reporter, and transitions', async () => {
     const bug = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
     await w.devClient.post(`/api/bugs/${bug.id}/status`, { action: 'start_fixing' });
     const moved = await w.devClient.post(`/api/bugs/${bug.id}/status`,
       { action: 'request_retest' });
     assert.equal(moved.json.status, 'retest');
-    assert.equal(moved.json.notified.queued, 0);
+    assert.equal(moved.json.notified.recipients, 1, 'the reporter, at minimum');
+    assert.equal(moved.json.notified.queued, 1);
 
     const sender = RecordingSender();
     await runOutbox(w.db, sender, { workerId: randomUUID() });
-    assert.equal(retestMails(sender).length, 0);
+    assert.deepEqual(retestMails(sender).map((m) => m.to), ['tester@rgm.example'],
+      'a forgotten watcher list never silently un-notifies the person asked to verify');
   });
 
   test('an address attached to the bug is not dropped as a non-member', async () => {
@@ -173,7 +179,10 @@ describe('a bug carries the addresses that hear about the fix', () => {
 
     const sender = RecordingSender();
     await runOutbox(w.db, sender, { workerId: randomUUID() });
-    assert.deepEqual(retestMails(sender).map((m) => m.to), ['outsider@elsewhere.test']);
+    const mail = retestMails(sender);
+    assert.equal(mail.length, 1);
+    assert.deepEqual(mail[0].cc, ['outsider@elsewhere.test'],
+      'the outsider rides on Cc — a bare address has no membership to fail');
     const rows = await w.db.query(
       `SELECT status FROM notifications_outbox WHERE subject_id = $1`, [bug.id]);
     assert.deepEqual(rows.rows.map((r) => r.status), ['sent']);

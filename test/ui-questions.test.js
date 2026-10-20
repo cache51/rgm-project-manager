@@ -15,13 +15,17 @@ import assert from 'node:assert/strict';
 import { makeProjectWorld, makeMilestone, fileBug } from './helpers.js';
 import { loadApp, settle } from './ui-harness.js';
 
-/** One list row, from its opening tag to the next row's. */
+/** One row of the list itself — the last one for the id, because the "Needs you"
+ *  group above the list can carry the same report — up to the next row. */
 function rowFor(html, id) {
-  const start = html.indexOf(`data-action="openbug" data-id="${id}"`);
+  const start = html.lastIndexOf(`data-action="openbug" data-id="${id}"`);
   assert.ok(start > -1, `no row for ${id}`);
   const end = html.indexOf('data-action="openbug"', start + 1);
   return html.slice(start, end === -1 ? undefined : end);
 }
+
+/** Where a report's row sits in the list itself (not in the group above it). */
+const listPos = (html, id) => html.lastIndexOf(`data-action="openbug" data-id="${id}"`);
 
 /** The inside of the sidebar's "bug list" item. */
 function navToBugs(html) {
@@ -64,6 +68,8 @@ describe('ui (dom): a question waiting for the reader', () => {
       meTester: await get(w.testerClient, '/api/me'),
       meDev: await get(w.devClient, '/api/me'),
       projects: await get(w.testerClient, '/api/projects'),
+      testerCounts: await get(w.testerClient, '/api/projects/counts'),
+      devCounts: await get(w.devClient, '/api/projects/counts'),
       milestones: await get(w.testerClient, `/api/projects/${w.project.id}/milestones`),
       testerList: await get(w.testerClient, list),
       devList: await get(w.devClient, list),
@@ -74,14 +80,16 @@ describe('ui (dom): a question waiting for the reader', () => {
     await w.testerClient.post(`/api/bugs/${waiting.id}/questions/${asked.id}/answer`,
       { answer: 'Nhập bằng file Excel.' });
     payloads.testerListAnswered = await get(w.testerClient, list);
+    payloads.testerCountsAnswered = await get(w.testerClient, '/api/projects/counts');
     payloads.testerDetailAnswered = await get(w.testerClient, `/api/bugs/${waiting.id}`);
   });
   after(async () => { await w.close(); });
 
   const routes = ({ me = payloads.meTester, list = payloads.testerList,
-                    detail = payloads.testerDetail } = {}) => ({
+                    detail = payloads.testerDetail, counts = payloads.testerCounts } = {}) => ({
     'GET /api/me': me,
     'GET /api/projects': payloads.projects,
+    'GET /api/projects/counts': counts,
     [`GET /api/projects/${w.project.id}/milestones`]: payloads.milestones,
     [`GET /api/projects/${w.project.id}/bugs`]: list,
     [`GET /api/bugs/${waiting.id}`]: detail,
@@ -119,11 +127,12 @@ describe('ui (dom): a question waiting for the reader', () => {
     await app.click('view', { view: 'bugs' });
 
     const html = app.html();
-    assert.ok(html.indexOf(`data-id="${waiting.id}"`) < html.indexOf(`data-id="${newer.id}"`));
+    assert.ok(listPos(html, waiting.id) < listPos(html, newer.id));
   });
 
   test('the developer who asked sees an answer is pending, not a question for them', async () => {
-    const app = loadApp({ routes: routes({ me: payloads.meDev, list: payloads.devList }) });
+    const app = loadApp({ routes: routes({ me: payloads.meDev, list: payloads.devList,
+                                           counts: payloads.devCounts }) });
     await settle();
 
     assert.doesNotMatch(app.html(), /data-action="questionsforyou"/,
@@ -132,7 +141,7 @@ describe('ui (dom): a question waiting for the reader', () => {
     const html = app.html();
     assert.match(rowFor(html, waiting.id), />💬 chờ trả lời</);
     assert.doesNotMatch(html, /Câu hỏi chờ bạn trả lời/);
-    assert.ok(html.indexOf(`data-id="${newer.id}"`) < html.indexOf(`data-id="${waiting.id}"`),
+    assert.ok(listPos(html, newer.id) < listPos(html, waiting.id),
       'and their list keeps its order');
   });
 
@@ -155,25 +164,32 @@ describe('ui (dom): a question waiting for the reader', () => {
     await settle();
     await app.click('questionsforyou');
 
-    let html = app.html();
+    const html = app.html();
     assert.match(html, new RegExp(`data-id="${waiting.id}"`));
     assert.doesNotMatch(html, new RegExp(`data-id="${newer.id}"`), 'only what is waiting for her');
-    assert.match(html, /class="chip on"[^>]*data-filter="forYou"/, 'and the filter says it is on');
-    assert.match(html, /<button[^>]*aria-pressed="true"[^>]*data-filter="forYou"/,
-      'to a screen reader as well as by its colour');
-    // The harness hands a click its dataset, so the markup has to be checked to
-    // know the button really carries what the click below pretends it does.
-    assert.match(html, /<button[^>]*aria-pressed="false"[^>]*data-action="bugfilter"\s+data-filter="all"/);
+    // The harness hands a click its dataset, so the markup has to be checked to know
+    // the chips really carry what the clicks pretend they do.
+    assert.match(html, /data-action="bugfilter" data-status="forYou">[^<]*Câu hỏi chờ bạn trả lời 1/,
+      'the narrowing is one of the list\'s own filters, with its count');
+    assert.match(html, /data-action="bugfilter" data-status="all"/);
 
-    await app.click('bugfilter', { filter: 'all' });
+    await app.click('bugfilter', { status: 'all' });
     assert.match(app.html(), new RegExp(`data-id="${newer.id}"`), 'everything again');
+  });
 
-    await app.click('bugfilter', { filter: 'forYou' });
-    await app.click('view', { view: 'milestones' });
+  test('a question for her puts the report in "Needs you", whatever its state', async () => {
+    // A question can arrive on a report that is not waiting to be verified; "Needs you"
+    // has to include it, or the group says less than the list below it.
+    const asNew = { ...payloads.testerList, bugs: payloads.testerList.bugs.map((b) =>
+      (b.id === waiting.id ? { ...b, status: 'new', isOpen: true } : b)) };
+    const app = loadApp({ routes: routes({ list: asNew }) });
+    await settle();
     await app.click('view', { view: 'bugs' });
-    html = app.html();
-    assert.match(html, new RegExp(`data-id="${newer.id}"`),
-      'leaving the list drops the filter, so it is never stuck narrowed');
+
+    const html = app.html();
+    const rows = (id) => html.split(`data-action="openbug" data-id="${id}"`).length - 1;
+    assert.equal(rows(waiting.id), 2, 'in the group and in the list');
+    assert.equal(rows(newer.id), 1, 'a report with nothing for her stays in the list only');
   });
 
   test('a report filed from the narrowed list is not hidden by it', async () => {
@@ -248,6 +264,8 @@ describe('ui (dom): a question waiting for the reader', () => {
     let answered = false;
     const app = loadApp({ routes: {
       ...routes(),
+      'GET /api/projects/counts': () =>
+        ({ body: answered ? payloads.testerCountsAnswered : payloads.testerCounts }),
       [`GET /api/projects/${w.project.id}/bugs`]: () =>
         ({ body: answered ? payloads.testerListAnswered : payloads.testerList }),
       [`GET /api/bugs/${waiting.id}`]: () =>
@@ -271,6 +289,6 @@ describe('ui (dom): a question waiting for the reader', () => {
     assert.match(html, new RegExp(`data-id="${newer.id}"`),
       'the narrowed list does not leave an empty screen behind');
     assert.doesNotMatch(html, /Câu hỏi chờ bạn trả lời/);
-    assert.doesNotMatch(html, /data-action="bugfilter"/, 'and there is nothing left to filter');
+    assert.doesNotMatch(html, /data-status="forYou"/, 'and there is nothing left to narrow to');
   });
 });

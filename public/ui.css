@@ -74,7 +74,6 @@ button.hint.ask:focus-visible{outline:2px solid var(--ask);outline-offset:2px}
 .proj .qcnt + .cnt{margin-left:6px}
 .nav .badge.ask{background:var(--ask);color:#fff}
 .nav .badge.ask + .badge{margin-left:6px}
-.statusbar .chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 /* Words for a screen reader beside a bare "💬 2"; the title attribute is not reliably read. */
 .vh{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
   clip:rect(0 0 0 0);white-space:nowrap;border:0}

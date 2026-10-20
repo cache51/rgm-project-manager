@@ -153,6 +153,50 @@ test('rgm start on a report already being fixed changes nothing', async () => {
   } finally { r.restore(); }
 });
 
+test('rgm close rejects a report and carries the reason', async () => {
+  const r = recorder({ status: 'new', bug_number: 7 });
+  try {
+    const out = await run(['close', '7', '--reason', 'expected behaviour: no lining row is allowed']);
+    const post = r.seen.find((s) => s.path === '/api/bugs/bug-7/status');
+    assert.ok(post, 'the close is sent');
+    assert.deepEqual(post.body, {
+      action: 'close', closeKind: 'rejected',
+      reason: 'expected behaviour: no lining row is allowed'
+    });
+    assert.match(out, /BUG-7 is closed/);
+    assert.match(out, /rejected as not a bug/);
+  } finally { r.restore(); }
+});
+
+test('rgm close can name the report it duplicates', async () => {
+  const r = recorder({ status: 'fixing', bug_number: 7 });
+  try {
+    await run(['close', '7', '--reason', 'same thing as BUG-9', '--duplicate', 'BUG-9']);
+    assert.deepEqual(r.seen.find((s) => s.path === '/api/bugs/bug-7/status').body, {
+      action: 'close', closeKind: 'duplicate', closeRefCode: 'BUG-9',
+      reason: 'same thing as BUG-9'
+    });
+  } finally { r.restore(); }
+});
+
+test('rgm close refuses a bug awaiting verification, and sends nothing', async () => {
+  const r = recorder({ status: 'retest', bug_number: 7 });
+  try {
+    await assert.rejects(() => run(['close', '7', '--reason', 'looks fine to me']),
+      /only the person who filed it can close/);
+    assert.deepEqual(r.seen.filter((s) => s.path.endsWith('/status')), [],
+      'verification is the filer\'s, so the CLI does not even ask');
+  } finally { r.restore(); }
+});
+
+test('rgm close without a real reason sends nothing', async () => {
+  const r = recorder({ status: 'new', bug_number: 7 });
+  try {
+    await assert.rejects(() => run(['close', '7', '--reason', 'x']), /close needs --reason/);
+    assert.deepEqual(r.seen.filter((s) => s.path.endsWith('/status')), []);
+  } finally { r.restore(); }
+});
+
 test('rgm uncomment takes that comment back', async () => {
   const r = recorder();
   try {

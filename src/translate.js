@@ -167,8 +167,8 @@ export async function runEventTranslations(db, provider, { workerId, max = 50,
       await db.query(
         `UPDATE event_translations SET status = 'failed', error = $1, updated_at = now()
           WHERE event_id = $2 AND field = $3 AND lang = $4 AND claimed_by = $5`,
-        [String(err.message).slice(0, 500), eventId, field, lang, workerId]);
-      results.push({ eventId, field, lang, status: 'failed', error: err.message });
+        [String(err?.message ?? err).slice(0, 500), eventId, field, lang, workerId]);
+      results.push({ eventId, field, lang, status: 'failed', error: err?.message ?? String(err) });
     }
   }
 
@@ -183,5 +183,22 @@ export async function retryTranslation(db, { bugId, field, lang }) {
             claimed_by = NULL, updated_at = now()
       WHERE bug_id = $1 AND field = $2 AND lang = $3 AND status = 'failed'
       RETURNING bug_id, field, lang`, [bugId, field, lang]);
+  return r.rows[0] ?? null;
+}
+
+/**
+ * The same operator action for an event note.
+ *
+ * A parked note translation used to be permanent: a tester's retest reason that
+ * failed once stayed unreadable unless someone ran SQL by hand. The event field is
+ * always `note`; the caller has already proven the event belongs to this bug.
+ */
+export async function retryEventTranslation(db, { eventId, lang }) {
+  const r = await db.query(
+    `UPDATE event_translations
+        SET status = 'pending', error = NULL, attempts = 0, lease_until = NULL,
+            claimed_by = NULL, updated_at = now()
+      WHERE event_id = $1 AND field = 'note' AND lang = $2 AND status = 'failed'
+      RETURNING event_id, field, lang`, [eventId, lang]);
   return r.rows[0] ?? null;
 }

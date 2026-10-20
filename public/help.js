@@ -1,9 +1,11 @@
 /**
- * Help pages (vi / zh-Hant), illustrated with screenshots of the real UI.
+ * Help pages (vi / zh-Hant / en), illustrated with screenshots of the real UI.
  *
  * The screenshots are shot against a seeded disposable instance by
  * scripts/shoot-help.mjs and live in public/help/. Each language shows its own
- * screenshots, so a Vietnamese reader never sees a Chinese screen.
+ * screenshots, so a Vietnamese reader never sees a Chinese screen. English —
+ * the reading language of the agents, not of the shop floor — carries the same
+ * sections in text until its own screenshots are shot.
  */
 const img = (lang, name, cap) =>
   `<figure><img src="/help/${lang}-${name}.png" alt="${cap}"><figcaption>${cap}</figcaption></figure>`;
@@ -207,6 +209,98 @@ const DOCS = {
           ${img(L, 'team', '團隊畫面：成員與角色')}`
       }
     ]
+  },
+  en: {
+    htmlLang: 'en',
+    title: 'Guide — RGM Project Manager',
+    h1: 'How to use the board',
+    lead: 'For testers and developers: file a bug, fix it, verify it — and how to read a report’s state.',
+    sections: [
+      {
+        h: '1. Signing in',
+        body: () => `
+          <p>Type the email address an admin added to the project. <b>There are no passwords</b> —
+          your role (tester / developer / admin) comes from that address.</p>
+          <div class="note">If you see <i>“this address is not in any project”</i>, ask an admin to
+          add you first.</div>`
+      },
+      {
+        h: '2. The three screens',
+        body: () => `
+          <ul>
+            <li><b>Milestones</b> — progress across the project; testers file reports from here.</li>
+            <li><b>Bug list</b> — every report and feature request, with its state.</li>
+            <li><b>Team</b> — who is in the project, and in what role.</li>
+          </ul>`
+      },
+      {
+        h: '3. Filing a report (tester)',
+        body: () => `
+          <p>On the milestones screen — or with the 🐞 button on the Bugs tab — start a report.
+          It carries: kind (<b>bug</b> or <b>feature request</b>), milestone, severity, a title, a
+          description in Vietnamese, and screenshots when you have them.</p>
+          <p>The Vietnamese text is translated into Chinese and English for developers; the
+          original is always kept on the report, and a failed translation can be retried from
+          where it is shown.</p>`
+      },
+      {
+        h: '4. The life of a bug',
+        body: () => `
+          <p>The state chip’s colour tells you where a report stands:</p>
+          ${CHIPS('still broken', 'fixed — awaiting verification', 'done')}
+          <table>
+            <tr><th>Step</th><th>Who</th><th>What</th><th>Becomes</th></tr>
+            <tr><td>1</td><td>Tester</td><td>files the bug</td><td><b>Reported</b></td></tr>
+            <tr><td>2</td><td>Developer</td><td>starts fixing</td><td><b>Fixing</b></td></tr>
+            <tr><td>3</td><td>Developer</td><td>marks it fixed — optionally naming the tester who should verify</td><td><b>Fixed — awaiting verification</b></td></tr>
+            <tr><td>4a</td><td>Tester</td><td>confirms the fix</td><td><b>Closed</b></td></tr>
+            <tr><td>4b</td><td>Tester</td><td>sends it back, with a note</td><td><b>Fixing</b></td></tr>
+          </table>
+          <p>A developer closes a report with one of two buttons: <b>🔁 Duplicate of another
+          report</b> — picking the original from the list — or <b>🚫 Rejected</b>. Both want a
+          reason, and the decision is kept in the report’s history.</p>
+          <p>Verification is the tester’s call: while a report awaits verification, the assigned
+          tester (or any tester, if nobody was named) sees <b>Confirm fixed</b> and
+          <b>Still broken — send back</b>; the list marks which ones are yours. The developer who
+          marked a fix cannot confirm it.</p>
+          <p>The comment box takes several lines; Ctrl+Enter sends.</p>`
+      },
+      {
+        h: '5. Who gets the email when a fix lands',
+        body: () => `
+          <p>A developer or admin can add one or more email addresses per bug, in the
+          <b>Email to notify when fixed</b> block. When the report moves to
+          <b>Fixed — awaiting verification</b>, every address on the list is emailed the report’s
+          number, title and a link — and so is the tester who filed it.</p>
+          <p>Removing an address stops its future notices; the filer always hears about their own
+          bug.</p>`
+      },
+      {
+        h: '6. Screenshots and the packet',
+        body: () => `
+          <p>Attachments are listed on the report and downloadable one by one.
+          <b>⬇ Download packet</b> gives a ZIP with <code>bug.md</code> (the prompt for an AI
+          agent), every screenshot and the metadata — built to drop into a developer’s repo. File
+          names inside are assigned by the server, so unpacking cannot write outside the folder
+          you chose.</p>`
+      },
+      {
+        h: '7. Language',
+        body: () => `
+          <p>The sidebar’s bottom switches the interface: <b>Tiếng Việt / 中文 / English</b>, and
+          the choice is remembered. Whatever the interface language, a report keeps its
+          Vietnamese original beside its translations.</p>`
+      },
+      {
+        h: '8. Team, roles and agents',
+        body: () => `
+          <p>An admin adds people by email and gives them a role: <b>tester</b> (files, verifies),
+          <b>developer</b> (fixes, closes, reopens), <b>admin</b> (people, roles, milestones).</p>
+          <p>The 🤖 Agent access screen mints API tokens for AI agents. A token sees only the
+          scopes it was given — anyone on the team can mint a tester- or developer-level token;
+          an admin-scope token needs an admin.</p>`
+      }
+    ]
   }
 };
 
@@ -225,7 +319,7 @@ function render() {
   const doc = DOCS[lang];
   document.documentElement.lang = doc.htmlLang;
   document.title = doc.title;
-  document.getElementById('langs').innerHTML = Object.entries({ vi: 'Tiếng Việt', zh: '中文' })
+  document.getElementById('langs').innerHTML = Object.entries({ vi: 'Tiếng Việt', zh: '中文', en: 'English' })
     .map(([code, label]) =>
       `<button class="${code === lang ? 'on' : ''}" data-lang="${code}">${label}</button>`)
     .join('');

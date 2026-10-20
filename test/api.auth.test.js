@@ -585,6 +585,37 @@ describe('auth: authorization', () => {
     assert.equal((await w.testerClient.patch(
       `/api/projects/${w.project.id}/members/${testerId}`, { role: 'admin' })).status, 403);
   });
+
+  test('project open counts cover the caller’s projects only', async () => {
+    // The sidebar reads every project's badge in one call; that call must not
+    // leak other projects' existence, and must stop counting closed reports.
+    const otherId = await w.addProject({ name: 'Counts Site', createdBy: w.admin.userId });
+    const ms = await makeMilestone(w.adminClient, w.project.id, 'M-CNT', 'Counts');
+    await w.adminClient.post(`/api/milestones/${ms}/status`, { action: 'start' });
+    await w.adminClient.post(`/api/milestones/${ms}/status`, { action: 'ready' });
+    // Other tests on this world have their own bugs; the assertion is about the
+    // change this test causes, so start from the current badge.
+    const base = (await w.testerClient.get('/api/projects/counts')).json.counts[w.project.id];
+    const open = await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    await fileBug(w.testerClient, w.project.id, { milestoneId: ms });
+    // adminClient, not devClient: an earlier test in this shared world demoted
+    // the developer, and a tester cannot start fixing.
+    await w.adminClient.post(`/api/bugs/${open.id}/status`, { action: 'start_fixing' });
+    await w.adminClient.post(`/api/bugs/${open.id}/status`, { action: 'request_retest' });
+    const closed = await w.testerClient.post(`/api/bugs/${open.id}/retest`,
+      { result: 'pass', expectedAttempt: 1 }); // closed — must not be counted
+    assert.equal(closed.status, 200, 'retest: ' + JSON.stringify(closed.json));
+    assert.equal(closed.json.status, 'closed', 'the world is as this test believes');
+
+    const mine = (await w.testerClient.get('/api/projects/counts')).json.counts;
+    assert.equal(mine[w.project.id], base + 1, 'two filed, one closed: one more open');
+    assert.equal(otherId in mine, false,
+      'a project the tester is not a member of does not even appear');
+    assert.equal(mine[otherId], undefined);
+
+    const adminCounts = (await w.adminClient.get('/api/projects/counts')).json.counts;
+    assert.equal(adminCounts[otherId], 0, 'the admin sees their own zero, not a blank');
+  });
 });
 
 describe('auth: membership revocation', () => {
@@ -710,5 +741,35 @@ describe('auth: api tokens', () => {
     const res = await w.newClient().post('/api/tokens', { name: 'child' },
       { headers: { authorization: `Bearer ${created.json.token}` } });
     assert.equal(res.status, 403);
+  });
+
+  test('any member mints the scopes their own work needs — bug:read and bug:write', async () => {
+    const res = await w.testerClient.post('/api/tokens',
+      { name: 'reporter-cli', scopes: ['bug:read', 'bug:write'] });
+    assert.equal(res.status, 201, res.text);
+    assert.deepEqual(res.json.scopes, ['bug:read', 'bug:write']);
+  });
+
+  test('a session may not mint a scope it does not itself hold', async () => {
+    for (const client of [w.testerClient, w.devClient]) {
+      const res = await client.post('/api/tokens', { name: 'overreach', scopes: ['admin'] });
+      assert.equal(res.status, 403);
+      assert.equal(res.json.error, 'insufficient_role');
+    }
+    const mixed = await w.devClient.post('/api/tokens',
+      { name: 'mixed', scopes: ['bug:read', 'admin'] });
+    assert.equal(mixed.status, 403, 'a request capped by one too-big scope is refused whole');
+  });
+
+  test('an admin may mint the admin scope, and no one mints invented scopes', async () => {
+    const admin = await w.adminClient.post('/api/tokens',
+      { name: 'ops', scopes: ['bug:read', 'bug:write', 'admin'] });
+    assert.equal(admin.status, 201, admin.text);
+    assert.deepEqual(admin.json.scopes, ['bug:read', 'bug:write', 'admin']);
+
+    const bogus = await w.adminClient.post('/api/tokens', { name: 'oops', scopes: ['god'] });
+    assert.equal(bogus.status, 403, 'even a site admin mints only known scopes');
+    const empty = await w.devClient.post('/api/tokens', { name: 'hollow', scopes: [] });
+    assert.equal(empty.status, 400, 'and a token with no scope is not a token');
   });
 });

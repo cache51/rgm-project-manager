@@ -77,26 +77,53 @@ const backoffSeconds = (attempts) => Math.min(300, 2 ** Math.min(attempts, 8));
  *
  * The attempt number is part of the dedupe key: a genuinely new fix cycle
  * notifies again, while a retry of the same transition stays one message.
+ *
+ * The reporter leads the audience, ahead of the watchers: "fixed — awaiting
+ * verification" is the notice that asks *them* to verify, and their address was
+ * never required to be typed into the watcher list. A fix that notified nobody
+ * because a developer forgot to attach an address was a fix the tester never
+ * came back to check. Same shape as the question flow: the reporter rides as a
+ * user id (delivery re-checks the membership), watchers as bare addresses.
  */
 export async function enqueueRetestNotifications(db, {
   projectId, bugId, code, titleVi = null, projectName = null, attempt
 }) {
+  const who = await db.query(
+    `SELECT b.reporter_id, u.email AS reporter_email
+       FROM bugs b LEFT JOIN users u ON u.id = b.reporter_id
+      WHERE b.id = $1`, [bugId]);
+  const reporterId = who.rows[0]?.reporter_id ?? null;
+  const reporterEmail = who.rows[0]?.reporter_email ?? null;
+
   const watchers = await db.query(
     `SELECT email FROM bug_watchers WHERE bug_id = $1 ORDER BY added_at, email`, [bugId]);
-  if (!watchers.rows.length) return { recipients: 0, queued: 0 };
 
-  const everyone = watchers.rows.map((w) => w.email);
-  const [primary, ...cc] = everyone;
+  const audience = [];
+  const seen = new Set();
+  const add = (email, userId = null) => {
+    const key = String(email ?? '').toLowerCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    audience.push({ userId, email });
+  };
+  add(reporterEmail, reporterId);            // first = primary: the one asked to verify
+  for (const w of watchers.rows) add(w.email);
+  if (!audience.length) return { recipients: 0, queued: 0 };
+
+  const [primary, ...cc] = audience;
   const payload = JSON.stringify({ code, title: titleVi, projectName, attempt });
   const res = await db.query(
     `INSERT INTO notifications_outbox
-       (kind, project_id, subject_id, recipient_email, cc_recipients, dedupe_key, payload)
-     VALUES ('bug.retest', $1, $2, $3, $4::jsonb, $5, $6)
+       (kind, project_id, subject_id, recipient_id, recipient_email, cc_recipients,
+        dedupe_key, payload)
+     VALUES ('bug.retest', $1, $2, $3, $4, $5::jsonb, $6, $7)
      ON CONFLICT (dedupe_key) DO NOTHING
      RETURNING id`,
-    [projectId, bugId, primary, JSON.stringify(cc),
+    [projectId, bugId, primary.userId,
+      primary.userId ? null : primary.email,
+      JSON.stringify(cc.map((c) => c.userId ? { userId: c.userId, email: c.email } : c.email)),
       `bug.retest:${bugId}:attempt${attempt}`, payload]);
-  return { recipients: everyone.length, queued: res.rows.length };
+  return { recipients: audience.length, queued: res.rows.length };
 }
 
 /** The whole audience of a question, deduplicated, asker excluded, in order. */
