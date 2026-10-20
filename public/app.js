@@ -30,6 +30,7 @@ const T = {
     qPanel: 'Câu hỏi cần làm rõ', qOpen: 'chưa trả lời', qAnswer: 'Gửi trả lời',
     qAnswerPlaceholder: 'Trả lời ngắn gọn giúp…', answerMissing: 'Hãy nhập câu trả lời trước',
     needsAnswer: 'chờ trả lời',
+    qForYou: 'Câu hỏi chờ bạn trả lời', qForYouAll: 'Câu hỏi chờ bạn trả lời', allReports: 'Tất cả',
     notifyL: 'Email báo khi sửa xong', addWatcher: 'Thêm email',
     noWatchers: 'Chưa có ai — thêm địa chỉ tester đã báo lỗi.',
     notifyHint: 'Những địa chỉ này nhận email khi lỗi chuyển sang “Đã sửa — chờ xác nhận”.',
@@ -120,6 +121,7 @@ const T = {
     qPanel: '待釐清的問題', qOpen: '尚未回答', qAnswer: '送出回答',
     qAnswerPlaceholder: '請簡短回答…', answerMissing: '請先輸入回答',
     needsAnswer: '待回答',
+    qForYou: '有提問待你回答', qForYouAll: '待你回答的提問', allReports: '全部',
     notifyL: '修復後通知的電郵', addWatcher: '新增電郵',
     noWatchers: '尚未設定——可加入回報問題的測試人員。',
     notifyHint: '問題轉為「已修復——待確認」時，這些地址會收到電郵。',
@@ -210,6 +212,7 @@ const T = {
     qPanel: 'Questions to clarify', qOpen: 'unanswered', qAnswer: 'Send answer',
     qAnswerPlaceholder: 'A short answer is fine…', answerMissing: 'Enter an answer first',
     needsAnswer: 'needs an answer',
+    qForYou: 'Question for you', qForYouAll: 'Questions for you', allReports: 'All',
     notifyL: 'Emails told when it is marked fixed', addWatcher: 'Add email',
     noWatchers: 'Nobody yet — add the tester who reported it.',
     notifyHint: 'These addresses get an email when the bug moves to “Fixed — awaiting verification”.',
@@ -347,6 +350,9 @@ const FILE_ACCEPT = 'image/*,.pdf,.csv,.xlsx,.xls';
 
 const S = {
   me: null, projects: [], counts: {}, projectId: null,
+  // Per project, how many unanswered questions are waiting for the reader — the
+  // reporter of those bugs. Said in the sidebar, which is on every screen.
+  askCounts: {},
   // Declared above this object on purpose: `initialLang` reads LANGS, and using it
   // here from further down the file throws a temporal-dead-zone error.
   view: 'milestones', lang: initialLang(), bug: null, prompt: null,
@@ -436,6 +442,8 @@ async function api(method, path, body) {
 
 const myRole = () => S.me?.projects.find((p) => p.id === S.projectId)?.role ?? null;
 const canDevelop = () => ['admin', 'developer'].includes(myRole());
+/** Questions waiting for the reader in the project on screen. */
+const askHere = () => S.askCounts[S.projectId] ?? 0;
 
 function statusLabel(kind, status, reportKind = S.bug?.kind ?? S.reportKind) {
   // The states are the same for both kinds of report; the work is not. "Fixed" over a
@@ -516,11 +524,13 @@ async function loadProjects() {
   if (!S.projectId && projects.length) S.projectId = projects[0].id;
 
   // Open-bug counts per project for the sidebar badges — one call, not a full
-  // bug-list fetch per project.
+  // bug-list fetch per project — and the questions waiting for this reader, so a
+  // tester on several projects sees which one is asking without opening each.
   try {
-    const { counts } = await api('GET', '/api/projects/counts');
+    const { counts, questionsForYou } = await api('GET', '/api/projects/counts');
     S.counts = counts ?? {};
-  } catch { S.counts = {}; }
+    S.askCounts = questionsForYou ?? {};
+  } catch { S.counts = {}; S.askCounts = {}; }
 }
 
 async function loadMilestones() {
@@ -539,6 +549,9 @@ async function loadBugs() {
   // A slow response for a project the user left must not overwrite the new one.
   if (S.projectId !== projectId) return;
   S.bugs = bugs ?? [];
+  // Once nothing waits, the narrowing is over — it must not come back by itself when
+  // the next question arrives.
+  if (S.bugStatus === 'forYou' && !S.bugs.some((b) => b.questionsForYou > 0)) S.bugStatus = 'all';
 }
 
 /**
@@ -582,11 +595,14 @@ async function openBug(id) {
   // The close panel offers "duplicate of …" with the project's other live
   // reports, so the list has to be here even when the detail was reached
   // directly (a notification link, a transition) rather than via the list.
-  const projectBugs = S.bug
-    ? (await api('GET', `/api/projects/${S.bug.projectId}/bugs`)).bugs
-    : [];
+  const siblings = S.bug ? await api('GET', `/api/projects/${S.bug.projectId}/bugs`) : null;
   if (gen !== openBugGen) return;
-  S.projectBugs = projectBugs;
+  S.projectBugs = siblings ? siblings.bugs : [];
+  // The same list counts the questions still waiting for the reader, so answering one
+  // here (or replying with a comment) clears the sidebar without another request.
+  if (siblings) {
+    S.askCounts = { ...S.askCounts, [S.bug.projectId]: siblings.questionsForYouCount ?? 0 };
+  }
   // The assignee picker for "Mark as fixed" needs the project's testers, and the
   // detail can be reached without ever visiting the Team screen. A failure here
   // must not break the detail — the picker degrades to "any tester" only.
@@ -660,6 +676,8 @@ function sidebar() {
           <div class="proj ${p.id === S.projectId ? 'on' : ''}" data-action="project" data-id="${esc(p.id)}">
             <span class="sq" style="background:${p.id === S.projectId ? '#fff' : '#6366f1'}"></span>
             <span class="nm">${esc(p.name)}</span>
+            ${S.askCounts[p.id] ? `<span class="qcnt" title="${t('qForYouAll')}">💬 ${S.askCounts[p.id]}<span
+              class="vh"> ${t('qForYouAll')}</span></span>` : ''}
             <span class="cnt ${S.counts[p.id] ? '' : 'zero'}">${S.counts[p.id] ?? ''}</span>
           </div>`).join('') || `<div class="hint" style="background:none;border:0;color:#64748b">${t('loading')}</div>`}
       </div>
@@ -684,6 +702,8 @@ function sidebar() {
         </div>
         <div class="nav ${S.view === 'bugs' && !S.bug ? 'on' : ''}" data-action="view" data-view="bugs">
           <span>🐞</span> ${t('bugs')}
+          ${askHere() ? `<span class="badge ask" title="${t('qForYouAll')}">💬 ${askHere()}<span
+            class="vh"> ${t('qForYouAll')}</span></span>` : ''}
           <span class="badge">${S.counts[S.projectId] ?? 0}</span>
         </div>
         <div class="nav ${S.view === 'team' && !S.bug ? 'on' : ''}" data-action="view" data-view="team">
@@ -985,6 +1005,10 @@ function filterChips() {
     ['closed', statusLabel('bug', 'closed'), (b) => b.status === 'closed']
   ].map(([key, label, f]) =>
     [key, label, typeof f === 'function' ? count(f) : f]);
+  // Offered only while a question waits for the reader, and counted in questions like
+  // the sidebar and the milestones hint.
+  const waiting = S.bugs.reduce((n, b) => n + (b.questionsForYou ?? 0), 0);
+  if (waiting) chips.unshift(['forYou', `💬 ${t('qForYouAll')}`, waiting]);
   return chips.map(([key, label, n]) => `
     <span class="tag" style="cursor:pointer${S.bugStatus === key
       ? ';background:var(--med-bg);color:var(--med);font-weight:600' : ''}"
@@ -1000,12 +1024,12 @@ function needsYou() {
   // their filter — it shows when the list is whole, and gets out of the way
   // otherwise.
   if (S.bugStatus !== 'all' || S.bugQuery.trim()) return '';
-  const mine = S.bugs.filter((b) =>
-    role === 'tester'
+  const mine = S.bugs.filter((b) => b.questionsForYou > 0 ||
+    (role === 'tester'
       ? b.status === 'retest' && (!b.retestAssigneeId || b.retestAssigneeId === S.me?.userId)
       : role === 'developer'
         ? b.status === 'new' || b.status === 'fixing'
-        : b.isOpen);
+        : b.isOpen));
   if (!mine.length) return '';
   return `
   <div class="card" style="margin-bottom:14px;border-left:3px solid var(--med)">
@@ -1020,6 +1044,7 @@ function needsYou() {
         </div>
         ${b.status === 'retest' && b.retestAssigneeId === S.me?.userId
           ? `<span class="tag" style="background:var(--med-bg);color:var(--med)">🧪 ${t('assignedYou')}</span>` : ''}
+        ${b.questionsForYou > 0 ? `<span class="qbadge">💬 ${t('qForYou')}</span>` : ''}
       </div>`).join('')}
     ${mine.length > 5 ? `<div class="hint">+${mine.length - 5}</div>` : ''}
   </div>`;
@@ -1027,8 +1052,13 @@ function needsYou() {
 
 function visibleBugs() {
   const q = S.bugQuery.trim().toLowerCase();
-  return S.bugs.filter((b) => {
-    if (S.bugStatus === 'open' ? !b.isOpen
+  const asking = (b) => b.questionsForYou > 0;
+  // Reports waiting for the reader's answer come first, each group in the server's
+  // order: a question asked on an old report must not sit below the newer ones.
+  const ordered = [...S.bugs.filter(asking), ...S.bugs.filter((b) => !asking(b))];
+  return ordered.filter((b) => {
+    if (S.bugStatus === 'forYou' ? !asking(b)
+      : S.bugStatus === 'open' ? !b.isOpen
       : S.bugStatus !== 'all' && b.status !== S.bugStatus) return false;
     if (!q) return true;
     return [b.title_vi, b.code, b.reporter, b.milestone_code, b.retestAssignee]
@@ -1045,8 +1075,9 @@ function bugRows() {
 }
 
 function bugRow(b) {
+  const asking = b.questionsForYou > 0;
   return `
-    <div class="row" data-action="openbug" data-id="${esc(b.id)}">
+    <div class="row${asking ? ' ask' : ''}" data-action="openbug" data-id="${esc(b.id)}">
       <span class="sev ${SEV_CLASS[b.severity]}">${esc(SEV[b.severity][S.lang])}</span>
       <div class="body">
         <div class="id">${esc(b.code)} · ${esc(b.milestone_code)}</div>
@@ -1055,8 +1086,9 @@ function bugRow(b) {
         <div class="tags">
           <span class="tag">${t('whenL')} ${fmt(b.updated_at)}</span>
           <span class="tag">${rel(b.updated_at)}</span>
-          <!-- Someone (usually an agent) is waiting on an answer here. -->
-          ${b.openQuestions ? `<span class="tag"
+          <!-- Someone (usually an agent) is waiting on an answer from someone other
+               than the reader. When it is the reader's, the badge by the state says so. -->
+          ${b.openQuestions && !asking ? `<span class="tag"
             style="background:var(--high-bg,#fee2e2);color:var(--high,#b91c1c)"
             >💬 ${t('needsAnswer')}</span>` : ''}
           <!-- Whose verification this fix is waiting on — "yours" reads differently
@@ -1067,9 +1099,29 @@ function bugRow(b) {
         </div>
       </div>
       <!-- The state, in its colour, so a tester scanning the list can see at a glance
-           which ones are waiting to be verified. -->
-      <span class="st ${BUG_CLASS[b.status]}">${statusLabel('bug', b.status)}</span>
+           which ones are waiting to be verified. Above it, a question waiting for the
+           reader: whatever the state says, the next move on that report is theirs. -->
+      <div class="state">
+        ${asking ? `<span class="qbadge">💬 ${t('qForYou')}${
+          b.questionsForYou > 1 ? ` (${b.questionsForYou})` : ''}</span>` : ''}
+        <span class="st ${BUG_CLASS[b.status]}">${statusLabel('bug', b.status)}</span>
+      </div>
     </div>`;
+}
+
+/**
+ * "A question is waiting for you", on the screen the app opens on.
+ *
+ * The list marks the reports, but a tester lands on the milestones and may never open
+ * the list on a day nothing is ready to verify. One click opens it narrowed.
+ */
+function questionsHint() {
+  const waiting = askHere();
+  if (!waiting) return '';
+  return `
+    <button type="button" class="hint ask" data-action="questionsforyou">
+      💬 <b>${t('qForYouAll')}: ${waiting}</b> · ${t('bugs')} →
+    </button>`;
 }
 
 /** Bugs that were removed, with a way back. Removal must not be a one-way door. */
@@ -1163,6 +1215,10 @@ function timelineBlock() {
 function bugDetail() {
   const b = S.bug;
   const shots = b.attachments ?? [];
+  // A question waiting for this reader opens the page rather than closing it (see
+  // questionsPanel). Who it waits for is the list's answer, read from the row that
+  // openBug fetched, so the page and the list cannot disagree.
+  const asking = (S.projectBugs ?? []).some((r) => r.id === b.id && r.questionsForYou > 0);
   return `
   <div class="wrap">
     <a href="#" class="btn sm" data-action="closebug">${t('back')}</a>
@@ -1186,6 +1242,7 @@ function bugDetail() {
       </div>
     </div>
 
+    ${asking ? questionsPanel(b, { promoted: true }) : ''}
     ${S.editing ? editForm() : ''}
 
     <div class="grid2">
@@ -1276,7 +1333,7 @@ function bugDetail() {
           ? `<span class="mini bad" data-action="removebug" data-id="${esc(b.id)}">🗑 ${t('remove')}</span>` : ''}
       </div>` : ''}
 
-      ${questionsPanel(b)}
+      ${asking ? '' : questionsPanel(b)}
       ${watchersPanel(b)}
     </div>
   </div>`;
@@ -1290,12 +1347,20 @@ function bugDetail() {
  * only person who can settle a question, and whoever is fixing the bug may need
  * to answer one too. An answered question stays on the page, because the answer
  * is worth as much to the next reader as the report is.
+ *
+ * While one is waiting for the reader the panel is `promoted` to the top of the page.
+ * At the foot of the actions it sat below the prompt, the timeline and the retest
+ * buttons, so the person being asked could press "verified" without ever reaching it.
+ * Everyone else — the asker included — finds it where it always was.
  */
-function questionsPanel(b) {
+function questionsPanel(b, { promoted = false } = {}) {
   const list = b.questions?.questions ?? [];
   if (!list.length) return '';
+  const frame = promoted
+    ? 'class="card ask" style="margin-top:14px"'
+    : 'style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line,#e2e8f0)"';
   return `
-    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line,#e2e8f0)">
+    <div ${frame}>
       <label>${t('qPanel')}</label>
       ${list.map((q) => (q.open ? `
         <div class="card" style="padding:9px 11px;margin:6px 0">
@@ -1540,7 +1605,7 @@ function render() {
     </div>`
     : S.bug ? bugDetail()
     : S.reporting ? reportForm()
-    : S.view === 'milestones' ? milestoneCards()
+    : S.view === 'milestones' ? questionsHint() + milestoneCards()
     : S.view === 'team' ? teamPanel()
     : S.view === 'agent' ? agentPanel()
     : bugsView();
@@ -1644,7 +1709,8 @@ document.getElementById('app').addEventListener('click', async (event) => {
   if (!el) return;
   const action = el.dataset.action;
   event.preventDefault();
-  if (S.busy && !['project', 'view', 'cancelreport', 'newproject'].includes(action)) return;
+  if (S.busy && !['project', 'view', 'questionsforyou', 'cancelreport', 'newproject']
+    .includes(action)) return;
 
   try {
     switch (action) {
@@ -1805,7 +1871,12 @@ document.getElementById('app').addEventListener('click', async (event) => {
         await refresh();
         break;
       case 'view':
-        S.view = el.dataset.view; S.bug = null; S.reporting = false; S.closePanel = null;
+      case 'questionsforyou':
+        // The hint on the milestones screen is the bug list, already narrowed to the
+        // reports waiting for this reader.
+        S.view = action === 'questionsforyou' ? 'bugs' : el.dataset.view;
+        if (action === 'questionsforyou') { S.bugStatus = 'forYou'; S.bugQuery = ''; }
+        S.bug = null; S.reporting = false; S.closePanel = null;
         S.commentDraft = null; S.watcherDraft = null; S.answerDrafts = {};
         // A minted plaintext token does not survive leaving the screen it was
         // shown on: the one-time reveal is the whole of its visibility.
@@ -2121,7 +2192,10 @@ async function submitReport() {
     S.reportDraft = null;
     saveReportDraft(); // sent — the saved draft is spent
     S.reporting = false;
+    // A new report has no question on it, so a list still narrowed to the questions
+    // would say "saved" and not show it.
     S.view = 'bugs';
+    if (S.bugStatus === 'forYou') S.bugStatus = 'all';
     notice(`${bug.code} ${t('saved')} · ${files.length} 📷`);
     await refresh();
   } catch (err) {

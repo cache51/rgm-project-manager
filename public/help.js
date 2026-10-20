@@ -75,7 +75,11 @@ const DOCS = {
           nút <b>Xác nhận đã sửa</b> và <b>Vẫn còn lỗi — trả lại</b>; ghi chú trả lại được dịch
           cho developer. Developer đã đánh dấu sửa xong thì không tự xác nhận được.</p>
           ${img(L, 'bugdetail', 'Chi tiết lỗi dưới mắt tester: nút xác nhận và ô bình luận')}
-          <p>Ô bình luận nhận nhiều dòng; bấm Ctrl+Enter để gửi.</p>`
+          <p>Ô bình luận nhận nhiều dòng; bấm Ctrl+Enter để gửi.</p>
+          <p>Khi developer (hoặc AI agent) cần bạn làm rõ một lỗi bạn đã báo, lỗi đó được đưa
+          lên đầu danh sách với nhãn <b>💬 Câu hỏi chờ bạn trả lời</b> — trạng thái của lỗi giữ
+          nguyên. Thanh bên và màn hình cột mốc cho biết có bao nhiêu câu hỏi đang chờ bạn.
+          Mở lỗi: câu hỏi nằm ngay trên cùng; trả lời ở đó, hoặc bằng một bình luận.</p>`
       },
       {
         h: '5. Ai nhận email khi sửa xong',
@@ -169,7 +173,10 @@ const DOCS = {
           <b>確認已修復</b> 與 <b>仍有問題——退回</b> 兩個按鈕；退回註記會翻譯給開發人員。
           標記已修復的開發人員不能自己確認。</p>
           ${img(L, 'bugdetail', '測試人員視角的問題詳情：確認按鈕與留言欄')}
-          <p>留言欄可輸入多行；按 Ctrl+Enter 送出。</p>`
+          <p>留言欄可輸入多行；按 Ctrl+Enter 送出。</p>
+          <p>當開發人員（或 AI agent）需要您釐清您回報的內容時，該筆回報會排到列表最上方，並標示
+          <b>💬 有提問待你回答</b>——回報的狀態不變。側欄與里程碑畫面也會顯示有幾個提問在等您回答。
+          打開回報，提問就在最上方；在那裡回答，或直接留言即可。</p>`
       },
       {
         h: '5. 修復後誰會收到電郵',
