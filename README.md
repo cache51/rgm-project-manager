@@ -441,6 +441,14 @@ Two things the UI deliberately does **not** do:
 2. **It does not lay out the packet.** It downloads `GET /api/bugs/:id/packet` and
    saves the archive the server produced.
 
+## Deploying
+
+Production ships itself when CI proves `main`: `.github/workflows/deploy.yml`
+ssh's to the deployment host and runs `scripts/deploy.sh`, which builds,
+migrates, swaps the stack and refuses to call a deploy done until
+`/api/health` answers. First-time host setup, the required secrets and
+variables, manual deploys and rollback are in [DEPLOY.md](DEPLOY.md).
+
 ## Configuration
 
 Everything is environment-driven, through one loader (`src/config.js`) that the

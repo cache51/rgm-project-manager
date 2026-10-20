@@ -1,0 +1,102 @@
+# Deploy production when CI has proved main.
+#
+# This workflow does not run the tests — `ci.yml` does, on both database
+# drivers. What it consumes is CI's verdict, and deploys exactly the commit CI
+# was run on (not "main as of now", which could have moved under the tests).
+#
+# Required repository configuration (Settings → Secrets and variables → Actions):
+#   secrets.DEPLOY_HOST      host name or address of the deployment host
+#   secrets.DEPLOY_USER      ssh user with sudo-free access to the compose project
+#   secrets.DEPLOY_SSH_KEY   private key whose public half is in authorized_keys
+#   vars.DEPLOY_PATH         repo checkout on the host (default: /opt/rgm)
+#   vars.DEPLOY_URL          public base URL to health-check after the swap (optional)
+#
+# Manual deploys (a rollback, or a deploy before CI's queue clears) go through
+# workflow_dispatch with an explicit ref.
+name: deploy
+
+on:
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit SHA or ref to deploy
+        required: false
+        default: main
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    # The workflow_run trigger also fires for CI runs on pull requests and
+    # forks; production only ever takes the repository's own tested main.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Resolve the commit CI proved
+        id: sha
+        run: |
+          INPUT='${{ github.event.inputs.ref }}'
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ref=${INPUT:-main}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.event.workflow_run.head_commit.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.sha.outputs.ref }}
+
+      # The first runs land before the host secrets exist; the deploy job should
+      # say "not configured yet" and stay green, not turn main red.
+      - name: Check the deployment is configured
+        id: configured
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          ok=$([ -n "$DEPLOY_HOST" ] && echo yes || echo no)
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          [ "$ok" = yes ] || echo "::notice::DEPLOY_HOST/DEPLOY_USER/DEPLOY_SSH_KEY not set — see DEPLOY.md"
+
+      - name: Set up ssh
+        if: steps.configured.outputs.ok == 'yes'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy on the host
+        if: steps.configured.outputs.ok == 'yes'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/rgm' }}
+          DEPLOY_REF: ${{ steps.sha.outputs.ref }}
+        run: |
+          ssh -o BatchMode=yes "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd '$DEPLOY_PATH' && DEPLOY_REF='$DEPLOY_REF' ./scripts/deploy.sh"
+
+      - name: Verify from outside
+        if: steps.configured.outputs.ok == 'yes' && vars.DEPLOY_URL != ''
+        run: |
+          curl --fail --silent --show-error --retry 6 --retry-delay 10 \
+            "${{ vars.DEPLOY_URL }}/api/health"
+          echo
+          echo "production answers: ${{ vars.DEPLOY_URL }}/api/health"
